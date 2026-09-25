@@ -1,11 +1,33 @@
-<div align="center">
+# InfraTrack ERP — obras viales
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+Backend Express + Prisma + PostgreSQL (Neon). Frontend React + Tailwind.
 
-  <h1>Built with AI Studio</h2>
+## Arranque
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+```bash
+# backend (carpeta sistema-erp)
+npm install
+npx prisma generate
+npx prisma db push
+npx prisma db seed
+npm run dev
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+# frontend (carpeta erp-frontend)
+npm run dev
+```
 
-</div>
+`DATABASE_URL` ya vive en `.env` (Neon). Plantilla: `.env.example`.
+
+## API
+
+| Método | Ruta | Efecto |
+|---|---|---|
+| GET | `/api/dashboard` | KPIs gerencia |
+| GET/POST | `/api/pedidos` | Pedidos de material (origen jefe de frente) |
+| POST | `/api/pedidos/:id/aprobar` | BORRADOR → APROBADO_PARA_COMPRA |
+| GET/POST | `/api/compras` | OC **obligatoriamente** ligada a un pedido |
+| POST | `/api/compras/:id/aprobar` | → APROBADO_PARA_COMPRA |
+| POST | `/api/compras/:id/emitir` | Compromete presupuesto (techo duro) |
+| POST | `/api/compras/:id/recibir` | Stock + ejecución |
+| POST | `/api/compras/:id/anular` | Libera compromiso si estaba EMITIDA |
+| POST | `/api/subcontratos/certificados/:id/certificar` | Techo de partida + techo de contrato |

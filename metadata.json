@@ -1,0 +1,8 @@
+{
+  "name": "InfraTrack ERP",
+  "description": "ERP de Construcción y Obras — Control presupuestario, certificaciones, requisiciones y compras con membrete oficial CCC S.A.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@layer base {
+  html, body {
+    background-color: #ffffff;
+    color: #0f172a;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    letter-spacing: -0.011em;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  h1, h2, h3, h4, h5, h6, .font-display {
+    font-family: 'Inter', 'Plus Jakarta Sans', -apple-system, sans-serif;
+    letter-spacing: -0.025em;
+    font-weight: 700;
+  }
+
+  .font-mono, td, th {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+

@@ -1,0 +1,622 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum CertificationStatus {
+  MEDICION_BORRADOR
+  MEDICION_CERRADA
+  CERTIFICADO_BORRADOR
+  APROBADO
+}
+
+enum InvoiceType {
+  EMITIDA
+  RECIBIDA
+}
+
+enum InvoiceStatus {
+  BORRADOR
+  EN_REVISION
+  APROBADA
+  PAGADA
+  ANULADA
+}
+
+enum PaymentMethod {
+  TRANSFERENCIA
+  CHEQUE
+  EFECTIVO
+}
+
+enum ProjectStatus {
+  ACTIVO
+  SUSPENDIDO
+  CERRADO
+}
+
+enum PartnerKind {
+  SUPPLIER
+  SUBCONTRACTOR
+  BOTH
+}
+
+enum PersonnelRole {
+  JEFE_FRENTE
+  COMPRAS
+  GERENCIA
+  ALMACEN
+}
+
+enum DocumentStatus {
+  BORRADOR
+  APROBADO_PARA_COMPRA
+  EMITIDA
+  RECIBIDO
+  ANULADO
+}
+
+enum SubcontractStatus {
+  BORRADOR
+  CERTIFICADO
+  PAGADO
+  CERRADO
+}
+
+enum CertificacionEstado {
+  BORRADOR
+  EN_REVISION
+  APROBADA
+  PAGADA
+  RECHAZADA
+}
+
+enum CommitmentKind {
+  PURCHASE_ORDER
+  SUBCONTRACT_CERTIFICATE
+  RELEASE
+}
+
+enum StockMovementKind {
+  RECEIPT
+  CONSUMPTION
+  ADJUSTMENT
+  REVERSAL
+}
+
+enum BudgetNodeKind {
+  RUBRO
+  SUBRUBRO
+  ITEM
+  AGREGADO
+}
+
+model Project {
+  id              Int           @id @default(autoincrement())
+  code            String        @unique
+  name            String
+  location        String
+  clientName      String?
+  executionMonths Int?
+  roadSection     String?
+  contractNumber  String?
+  globalBudget    Decimal       @db.Decimal(18, 2)
+  montoContractualManual Decimal @default(0) @map("monto_contractual") @db.Decimal(18, 2)
+  montoPresupuestoBase   Decimal @default(0) @map("monto_presupuesto_base") @db.Decimal(18, 2)
+  montoRealActualizado   Decimal @default(0) @map("monto_real_actualizado") @db.Decimal(18, 2)
+  totalGastado           Decimal @default(0) @map("total_gastado") @db.Decimal(18, 2)
+  deletedAt       DateTime?
+  deletedBy       String?
+  status          ProjectStatus @default(ACTIVO)
+  startDate       DateTime?
+  endDate         DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  budgetItems     BudgetItem[]
+  costCenters     CostCenter[]
+  workFronts      WorkFront[]
+  materialRequests MaterialRequest[]
+  purchaseOrders  PurchaseOrder[]
+  subcontracts    SubcontractorContract[]
+  warehouseStock  WarehouseStock[]
+  stockMovements  StockMovement[]
+  certificaciones Certificacion[]
+  certifications  Certification[]
+  backups         ProjectBackup[]
+  invoices        Invoice[]
+
+  @@index([status])
+}
+
+model ProjectBackup {
+  id              Int      @id @default(autoincrement())
+  originalProjectId Int
+  projectCode     String
+  projectName     String
+  deletedAt       DateTime @default(now())
+  snapshot        Json
+
+  project         Project  @relation(fields: [originalProjectId], references: [id], onDelete: Restrict)
+
+  @@unique([originalProjectId])
+  @@index([deletedAt])
+}
+
+model BudgetItem {
+  id               Int     @id @default(autoincrement())
+  projectId        Int
+  code             String
+  name             String
+  category         String
+  unit             String?
+  totalQuantity    Decimal @default(0) @db.Decimal(18, 4)
+  executedQuantity Decimal @default(0) @db.Decimal(18, 4)
+  unitPrice        Decimal @default(0) @db.Decimal(18, 4)
+  originalAmount   Decimal @db.Decimal(18, 2)
+  committedAmount  Decimal @default(0) @db.Decimal(18, 2)
+  executedAmount   Decimal @default(0) @db.Decimal(18, 2)
+  parentId         Int?
+  path             String?
+  hierarchyLevel   Int       @default(0)
+  nodeKind         BudgetNodeKind @default(ITEM)
+  noCotiza         Boolean   @default(false)
+  unitReview       Boolean   @default(false)
+  unitSuggestion   String?
+  sourceSheet      String?
+  sourceRow        Int?
+  costCenterId     Int?
+
+  project          Project @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  parent           BudgetItem? @relation("BudgetItemTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children         BudgetItem[] @relation("BudgetItemTree")
+  costCenter       CostCenter? @relation(fields: [costCenterId], references: [id], onDelete: SetNull)
+
+  requestDetails   MaterialRequestDetail[]
+  purchaseDetails  PurchaseOrderDetail[]
+  subcontracts     SubcontractorContract[]
+  commitments      BudgetCommitment[]
+  certificaciones   Certificacion[]
+  certificationItems CertificationItem[]
+
+  @@unique([projectId, code])
+  @@index([projectId])
+  @@index([projectId, path])
+  @@index([parentId])
+}
+
+model CostCenter {
+  id        Int       @id @default(autoincrement())
+  projectId Int
+  parentId  Int?
+  code      String
+  name      String
+  level     Int       @default(0)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  project   Project    @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  parent    CostCenter? @relation("CostCenterTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children  CostCenter[] @relation("CostCenterTree")
+  budgetItems BudgetItem[]
+
+  @@unique([projectId, code])
+  @@index([projectId, parentId])
+}
+
+model BudgetCommitment {
+  id           Int            @id @default(autoincrement())
+  budgetItemId Int
+  kind         CommitmentKind
+  amount       Decimal        @db.Decimal(18, 2)
+  sourceType   String
+  sourceId     Int
+  note         String?
+  createdAt    DateTime       @default(now())
+
+  budgetItem   BudgetItem     @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+
+  @@index([budgetItemId])
+  @@index([sourceType, sourceId])
+}
+
+model Personnel {
+  id        Int            @id @default(autoincrement())
+  fullName  String
+  role      PersonnelRole
+  email     String?        @unique
+  active    Boolean        @default(true)
+
+  workFronts WorkFront[]
+  requests   MaterialRequest[]
+}
+
+model WorkFront {
+  id        Int    @id @default(autoincrement())
+  projectId Int
+  name      String
+  chiefId   Int
+
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  chief     Personnel @relation(fields: [chiefId], references: [id], onDelete: Restrict)
+  requests  MaterialRequest[]
+
+  @@index([projectId])
+}
+
+model Partner {
+  id            Int         @id @default(autoincrement())
+  kind          PartnerKind
+  name          String
+  taxId         String      @unique
+  fiscalAddress String?
+  phone         String?
+  email         String?
+  classification String?
+  active        Boolean     @default(true)
+  createdAt     DateTime    @default(now())
+
+  purchaseOrders PurchaseOrder[]
+  subcontracts   SubcontractorContract[]
+  certificaciones Certificacion[]
+  certifications Certification[]
+  invoices       Invoice[]
+}
+
+model Material {
+  id             Int     @id @default(autoincrement())
+  code           String  @unique
+  description    String
+  unit           String
+  category       String
+  estimatedCost  Decimal @default(0) @db.Decimal(18, 4)
+
+  requestDetails  MaterialRequestDetail[]
+  purchaseDetails PurchaseOrderDetail[]
+  warehouseStock  WarehouseStock[]
+  stockMovements  StockMovement[]
+}
+
+model MaterialRequest {
+  id            Int            @id @default(autoincrement())
+  number        String         @unique
+  projectId     Int
+  workFrontId   Int
+  requestedById Int
+  status        DocumentStatus @default(BORRADOR)
+  requestedDate DateTime       @default(now())
+  notes         String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  project       Project        @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  workFront     WorkFront      @relation(fields: [workFrontId], references: [id], onDelete: Restrict)
+  requestedBy   Personnel      @relation(fields: [requestedById], references: [id], onDelete: Restrict)
+  details       MaterialRequestDetail[]
+  purchaseOrders PurchaseOrder[]
+
+  @@index([projectId, status])
+}
+
+model MaterialRequestDetail {
+  id           Int      @id @default(autoincrement())
+  requestId    Int
+  materialId   Int
+  budgetItemId Int
+  quantity     Decimal  @db.Decimal(18, 4)
+
+  request      MaterialRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  material     Material        @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  budgetItem   BudgetItem      @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+  purchaseDetails PurchaseOrderDetail[]
+
+  @@index([requestId])
+}
+
+model PurchaseOrder {
+  id                Int            @id @default(autoincrement())
+  number            String         @unique
+  projectId         Int
+  partnerId         Int
+  materialRequestId Int
+  status            DocumentStatus @default(BORRADOR)
+  issueDate         DateTime?
+  expectedDate      DateTime?
+  totalAmount       Decimal        @default(0) @db.Decimal(18, 2)
+  stockRegistered   Boolean        @default(false)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+
+  project           Project        @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  partner           Partner        @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  materialRequest   MaterialRequest @relation(fields: [materialRequestId], references: [id], onDelete: Restrict)
+  details           PurchaseOrderDetail[]
+  invoices          Invoice[]
+
+  @@index([projectId, status])
+  @@index([materialRequestId])
+}
+
+model PurchaseOrderDetail {
+  id              Int      @id @default(autoincrement())
+  orderId         Int
+  materialId      Int
+  requestDetailId Int
+  budgetItemId    Int
+  quantity        Decimal  @db.Decimal(18, 4)
+  unitPrice       Decimal  @db.Decimal(18, 4)
+  subtotal        Decimal  @db.Decimal(18, 2)
+
+  order           PurchaseOrder          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  material        Material               @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  requestDetail   MaterialRequestDetail  @relation(fields: [requestDetailId], references: [id], onDelete: Restrict)
+  budgetItem      BudgetItem             @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([budgetItemId])
+}
+
+model SubcontractorContract {
+  id              Int                @id @default(autoincrement())
+  number          String             @unique
+  projectId       Int
+  partnerId       Int
+  budgetItemId    Int
+  description     String
+  contractAmount  Decimal            @db.Decimal(18, 2)
+  certifiedAmount Decimal            @default(0) @db.Decimal(18, 2)
+  paidAmount      Decimal            @default(0) @db.Decimal(18, 2)
+  status          SubcontractStatus  @default(BORRADOR)
+  startDate       DateTime?
+  endDate         DateTime?
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  project         Project            @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  partner         Partner            @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  budgetItem      BudgetItem         @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+  certificates    SubcontractorCertificate[]
+
+  @@index([projectId, status])
+}
+
+model SubcontractorCertificate {
+  id                  Int                @id @default(autoincrement())
+  number              String             @unique
+  contractId          Int
+  periodFrom          DateTime
+  periodTo            DateTime
+  physicalProgressPct Decimal            @db.Decimal(7, 4)
+  amount              Decimal            @db.Decimal(18, 2)
+  status              SubcontractStatus  @default(BORRADOR)
+  issuedAt            DateTime?
+  paidAt              DateTime?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
+
+  contract            SubcontractorContract @relation(fields: [contractId], references: [id], onDelete: Restrict)
+
+  @@index([contractId, status])
+}
+
+model Certificacion {
+  id              Int                 @id @default(autoincrement())
+  projectId       Int
+  partnerId       Int?
+  budgetItemId    Int?
+  subcontratista  String?
+  rubro           String
+  unidad          String?
+  cantidad_medida Decimal             @db.Decimal(18, 4)
+  monto_total     Decimal             @db.Decimal(18, 2)
+  estado          CertificacionEstado @default(EN_REVISION)
+  evidencia       String?
+  esAdenda        Boolean             @default(false)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  project         Project             @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  partner         Partner?            @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  budgetItem      BudgetItem?         @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+  invoices        Invoice[]
+
+  @@index([projectId, estado])
+  @@index([partnerId])
+}
+
+model WarehouseStock {
+  id             Int      @id @default(autoincrement())
+  projectId      Int
+  materialId     Int
+  quantityOnHand Decimal  @default(0) @db.Decimal(18, 4)
+
+  project        Project  @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  material       Material @relation(fields: [materialId], references: [id], onDelete: Restrict)
+
+  @@unique([projectId, materialId])
+}
+
+model StockMovement {
+  id         Int               @id @default(autoincrement())
+  projectId  Int
+  materialId Int
+  kind       StockMovementKind
+  quantity   Decimal           @db.Decimal(18, 4)
+  sourceType String
+  sourceId   Int
+  note       String?
+  createdAt  DateTime          @default(now())
+
+  project    Project           @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  material   Material          @relation(fields: [materialId], references: [id], onDelete: Restrict)
+
+  @@index([projectId, materialId])
+}
+
+model DocumentAuditLog {
+  id         Int      @id @default(autoincrement())
+  entity     String
+  entityId   Int
+  action     String
+  fromStatus String?
+  toStatus   String?
+  payload    Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entity, entityId])
+}
+
+model Invoice {
+  id                  Int           @id @default(autoincrement())
+  numeroFactura       String
+  timbrado            String
+  tipo                InvoiceType   @default(RECIBIDA)
+  estado              InvoiceStatus @default(BORRADOR)
+  fechaEmision        DateTime
+  fechaVencimiento    DateTime
+  condicionVenta      String        @default("CREDITO")
+  concepto            String?
+  subtotal            Decimal       @default(0) @db.Decimal(18, 2)
+  montoExento         Decimal       @default(0) @db.Decimal(18, 2)
+  montoIva5           Decimal       @default(0) @db.Decimal(18, 2)
+  montoIva10          Decimal       @default(0) @db.Decimal(18, 2)
+  total               Decimal       @db.Decimal(18, 2)
+
+  // Three-Way Match audit fields
+  threeWayMatchPassed Boolean       @default(false)
+  matchNotes          String?
+  remisionNumber      String?
+  remisionDate        DateTime?
+
+  projectId           Int
+  project             Project       @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  partnerId           Int?
+  partner             Partner?      @relation(fields: [partnerId], references: [id], onDelete: SetNull)
+
+  purchaseOrderId     Int?
+  purchaseOrder       PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+
+  certificacionId     Int?
+  certificacion       Certificacion? @relation(fields: [certificacionId], references: [id], onDelete: SetNull)
+
+  certificationId     Int?
+  certification       Certification? @relation(fields: [certificationId], references: [id], onDelete: SetNull)
+
+  items               InvoiceItem[]
+  payments            Payment[]
+
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  @@index([projectId, tipo, estado])
+  @@index([partnerId])
+  @@index([numeroFactura, timbrado])
+}
+
+model InvoiceItem {
+  id          Int      @id @default(autoincrement())
+  invoiceId   Int
+  description String
+  quantity    Decimal  @db.Decimal(18, 4)
+  unitPrice   Decimal  @db.Decimal(18, 4)
+  vatType     String   @default("IVA10")
+  montoExento Decimal  @default(0) @db.Decimal(18, 2)
+  montoIva5   Decimal  @default(0) @db.Decimal(18, 2)
+  montoIva10  Decimal  @default(0) @db.Decimal(18, 2)
+  subtotal    Decimal  @db.Decimal(18, 2)
+
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([invoiceId])
+}
+
+model Payment {
+  id              Int           @id @default(autoincrement())
+  invoiceId       Int
+  montoPagado     Decimal       @db.Decimal(18, 2)
+  fechaPago       DateTime      @default(now())
+  metodo          PaymentMethod @default(TRANSFERENCIA)
+  referenciaBanco String
+  comprobanteUrl  String?
+  notas           String?
+  createdAt       DateTime      @default(now())
+
+  invoice         Invoice       @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+
+  @@index([invoiceId])
+}
+
+model Certification {
+  id          Int                 @id @default(autoincrement())
+  projectId   Int
+  partnerId   Int?
+  numero      Int
+  fecha       DateTime            @default(now())
+  estado      CertificationStatus @default(MEDICION_BORRADOR)
+  montoTotal  Decimal             @default(0) @db.Decimal(18, 2)
+  notes       String?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  project     Project             @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  partner     Partner?            @relation(fields: [partnerId], references: [id], onDelete: SetNull)
+  items       CertificationItem[]
+  invoices    Invoice[]
+
+  @@index([projectId, estado])
+  @@index([partnerId])
+}
+
+model CertificationItem {
+  id                   Int                   @id @default(autoincrement())
+  certificationId      Int
+  budgetItemId         Int
+  cantidadAnterior     Decimal               @default(0) @db.Decimal(18, 4)
+  cantidadPresente     Decimal               @default(0) @db.Decimal(18, 4)
+  cantidadAcumulada    Decimal               @default(0) @db.Decimal(18, 4)
+  precioUnitario       Decimal               @default(0) @db.Decimal(18, 4)
+  montoTotal           Decimal               @default(0) @db.Decimal(18, 2)
+
+  certification        Certification         @relation(fields: [certificationId], references: [id], onDelete: Cascade)
+  budgetItem           BudgetItem            @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+  auxiliaryCalculations AuxiliaryCalculation[]
+  photos               ItemPhoto[]
+
+  @@index([certificationId])
+  @@index([budgetItemId])
+}
+
+model AuxiliaryCalculation {
+  id                  Int               @id @default(autoincrement())
+  certificationItemId Int
+  descripcion         String
+  largo               Decimal           @default(0) @db.Decimal(18, 4)
+  ancho               Decimal           @default(0) @db.Decimal(18, 4)
+  alto                Decimal           @default(0) @db.Decimal(18, 4)
+  factor_repeticion   Decimal           @default(1) @db.Decimal(18, 4)
+  subtotal            Decimal           @default(0) @db.Decimal(18, 4)
+  createdAt           DateTime          @default(now())
+
+  certificationItem   CertificationItem @relation(fields: [certificationItemId], references: [id], onDelete: Cascade)
+
+  @@index([certificationItemId])
+}
+
+model ItemPhoto {
+  id                  Int               @id @default(autoincrement())
+  certificationItemId Int
+  url                 String
+  comentario          String?
+  fechaCaptura        DateTime          @default(now())
+  createdAt           DateTime          @default(now())
+
+  certificationItem   CertificationItem @relation(fields: [certificationItemId], references: [id], onDelete: Cascade)
+
+  @@index([certificationItemId])
+}
+

@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 160" width="520" height="160" fill="none">
+  <!-- Red Triangular Tessellation Arrow -->
+  <g fill="#E11D24">
+    <!-- Outer apex triangle (leftmost) -->
+    <polygon points="40,80 75,55 75,105" />
+    
+    <!-- Second tier triangles -->
+    <polygon points="80,52 115,28 115,76" />
+    <polygon points="80,108 115,84 115,132" />
+    
+    <!-- Outer column triangles -->
+    <polygon points="120,25 155,0 155,50" />
+    <polygon points="120,80 155,55 155,105" />
+    <polygon points="120,135 155,110 155,160" />
+  </g>
+
+  <!-- CCC S.A. Wordmark -->
+  <!-- First C -->
+  <path d="M 230 42 C 218 34 204 30 188 30 C 152 30 126 58 126 95 C 126 132 152 160 188 160 C 204 160 218 156 230 148 L 222 124 C 213 131 202 134 188 134 C 168 134 153 118 153 95 C 153 72 168 56 188 56 C 202 56 213 60 222 66 Z" fill="#111827" />
+  
+  <!-- The 3 letters CCC rendered with bold font and S.A. -->
+  <text x="175" y="128" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-weight="900" font-size="118" letter-spacing="-4" fill="#000000">CCC</text>
+  <text x="435" y="128" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-weight="900" font-size="52" letter-spacing="-1" fill="#000000">S.A.</text>
+</svg>

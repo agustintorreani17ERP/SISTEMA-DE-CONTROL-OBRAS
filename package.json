@@ -1,0 +1,56 @@
+{
+  "name": "sistema-erp",
+  "version": "1.0.0",
+  "description": "ERP vial — control presupuestario y compras de obra",
+  "main": "src/server.ts",
+  "scripts": {
+    "dev": "vite build && tsx watch src/server.ts",
+    "build:client": "vite build",
+    "build": "prisma generate && vite build && tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "start": "tsx src/server.ts",
+    "postinstall": "prisma generate",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:migrate": "prisma migrate dev",
+    "db:seed": "tsx prisma/seed.ts",
+    "db:studio": "prisma studio"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.2.0",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "tailwindcss": "^4.3.3",
+    "ts-node": "^10.9.2",
+    "vite": "^8.3.0"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "clsx": "^2.1.1",
+    "cors": "^2.8.6",
+    "dotenv": "^16.4.7",
+    "express": "^5.2.1",
+    "lucide-react": "^1.44.0",
+    "multer": "^2.2.0",
+    "prisma": "^5.22.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tailwind-merge": "^3.6.0",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.2",
+    "xlsx": "^0.18.5",
+    "zod": "^3.24.2"
+  }
+}

@@ -1,0 +1,476 @@
+{
+  "project": [
+    {
+      "id": 1,
+      "createdAt": "2026-01-15T08:00:00.000Z",
+      "updatedAt": "2026-03-20T10:00:00.000Z",
+      "deletedAt": null,
+      "code": "OBRA-PY02",
+      "name": "Duplicación Ruta PY02 - Tramo 4 (km 40 al km 65)",
+      "location": "Cordillera / Caacupé - Paraguay",
+      "clientName": "MOPC - Ministerio de Obras Públicas",
+      "contractNumber": "MOPC-LPN-2025/084",
+      "executionMonths": 24,
+      "globalBudget": 45000000000,
+      "montoContractualManual": 45000000000,
+      "montoPresupuestoBase": 45000000000,
+      "montoRealActualizado": 45000000000,
+      "totalGastado": 12850000000
+    }
+  ],
+  "budgetItem": [
+    {
+      "id": 1,
+      "projectId": 1,
+      "code": "01.01",
+      "name": "Movimiento de Suelo y Terraplén",
+      "category": "SUELOS",
+      "unit": "m3",
+      "totalQuantity": 85000,
+      "executedQuantity": 32000,
+      "unitPrice": 28000,
+      "originalAmount": 2380000000,
+      "committedAmount": 950000000,
+      "executedAmount": 896000000
+    },
+    {
+      "id": 2,
+      "projectId": 1,
+      "code": "02.01",
+      "name": "Base Granular Triturada 4ta (Esp. 20 cm)",
+      "category": "PAVIMENTO",
+      "unit": "m3",
+      "totalQuantity": 42000,
+      "executedQuantity": 15000,
+      "unitPrice": 95000,
+      "originalAmount": 3990000000,
+      "committedAmount": 1425000000,
+      "executedAmount": 1425000000
+    },
+    {
+      "id": 3,
+      "projectId": 1,
+      "code": "02.03",
+      "name": "Concreto Asfáltico en Caliente con Polímero",
+      "category": "PAVIMENTO",
+      "unit": "ton",
+      "totalQuantity": 28000,
+      "executedQuantity": 8500,
+      "unitPrice": 480000,
+      "originalAmount": 13440000000,
+      "committedAmount": 4080000000,
+      "executedAmount": 4080000000
+    }
+  ],
+  "personnel": [
+    {
+      "id": 1,
+      "fullName": "Ing. Ana Urbina",
+      "role": "JEFE_OBRA",
+      "email": "ana.urbina@ccc-obras.com.py"
+    },
+    {
+      "id": 2,
+      "fullName": "Ing. Carlos Benítez",
+      "role": "JEFE_FRENTE",
+      "email": "carlos.benitez@ccc-obras.com.py"
+    },
+    {
+      "id": 3,
+      "fullName": "Lic. María Gómez",
+      "role": "COMPRAS",
+      "email": "maria.gomez@ccc-obras.com.py"
+    },
+    {
+      "id": 4,
+      "fullName": "Lic. Fernando Rojas",
+      "role": "GERENCIA",
+      "email": "fernando.rojas@ccc-obras.com.py"
+    },
+    {
+      "id": 5,
+      "fullName": "Sr. Jorge Duarte",
+      "role": "ALMACEN",
+      "email": "jorge.duarte@ccc-obras.com.py"
+    }
+  ],
+  "workFront": [
+    {
+      "id": 1,
+      "projectId": 1,
+      "name": "Frente 1: Progresiva 40+000 a 48+000 (Base y Terraplén)",
+      "chiefId": 2
+    },
+    {
+      "id": 2,
+      "projectId": 1,
+      "name": "Frente 2: Puente sobre Arroyo Ytú (km 53+200)",
+      "chiefId": 2
+    }
+  ],
+  "partner": [
+    {
+      "id": 1,
+      "kind": "SUPPLIER",
+      "name": "Cantera Ypacaraí S.A.",
+      "taxId": "80012345-6",
+      "fiscalAddress": "Ruta D027 km 38, Ypacaraí - Central",
+      "phone": "+595 513 232100",
+      "email": "ventas@canteraypacarai.com.py",
+      "classification": "A",
+      "active": true
+    },
+    {
+      "id": 2,
+      "kind": "SUPPLIER",
+      "name": "Vial Asfaltos del Paraguay S.R.L.",
+      "taxId": "80098765-4",
+      "fiscalAddress": "Av. Artigas 1850, Asunción",
+      "phone": "+595 21 298700",
+      "email": "cobranzas@vialasfaltos.com.py",
+      "classification": "A",
+      "active": true
+    },
+    {
+      "id": 3,
+      "kind": "SUBCONTRACTOR",
+      "name": "Construcciones & Movimiento San Roque S.A.",
+      "taxId": "80045612-3",
+      "fiscalAddress": "Av. Defensores del Chaco 420, San Lorenzo",
+      "phone": "+595 21 582410",
+      "email": "administracion@sanroque-obras.com.py",
+      "classification": "A",
+      "active": true
+    },
+    {
+      "id": 4,
+      "kind": "BOTH",
+      "name": "MOPC - Ministerio de Obras Públicas y Comunicaciones",
+      "taxId": "80024501-1",
+      "fiscalAddress": "Oliva y Alberdi, Asunción - Paraguay",
+      "phone": "+595 21 4149000",
+      "email": "certificaciones@mopc.gov.py",
+      "classification": "CLIENTE_ESTATAL",
+      "active": true
+    }
+  ],
+  "material": [
+    {
+      "id": 1,
+      "code": "MAT-TRIT-4TA",
+      "description": "Piedra Triturada 4ta p/ Base",
+      "unit": "m3",
+      "category": "Áridos",
+      "estimatedCost": 75000
+    },
+    {
+      "id": 2,
+      "code": "MAT-ASF-CSS1H",
+      "description": "Emulsión Asfáltica CSS-1h Imprimación",
+      "unit": "litro",
+      "category": "Asfaltos",
+      "estimatedCost": 4800
+    },
+    {
+      "id": 3,
+      "code": "MAT-ARENA-LAV",
+      "description": "Arena Lavada de Río",
+      "unit": "m3",
+      "category": "Áridos",
+      "estimatedCost": 65000
+    }
+  ],
+  "materialRequest": [],
+  "materialRequestDetail": [],
+  "purchaseOrder": [
+    {
+      "id": 1,
+      "number": "OC-2026-001",
+      "projectId": 1,
+      "partnerId": 1,
+      "materialRequestId": 1,
+      "status": "EMITIDA",
+      "issueDate": "2026-02-28T09:00:00.000Z",
+      "expectedDate": "2026-03-05T09:00:00.000Z",
+      "totalAmount": 48500000,
+      "stockRegistered": true
+    },
+    {
+      "id": 2,
+      "number": "OC-2026-002",
+      "projectId": 1,
+      "partnerId": 2,
+      "materialRequestId": 1,
+      "status": "EMITIDA",
+      "issueDate": "2026-02-12T10:00:00.000Z",
+      "expectedDate": "2026-02-16T10:00:00.000Z",
+      "totalAmount": 92000000,
+      "stockRegistered": true
+    },
+    {
+      "id": 3,
+      "number": "OC-2026-003",
+      "projectId": 1,
+      "partnerId": 1,
+      "materialRequestId": 1,
+      "status": "EMITIDA",
+      "issueDate": "2026-03-14T08:30:00.000Z",
+      "expectedDate": "2026-03-17T08:30:00.000Z",
+      "totalAmount": 14800000,
+      "stockRegistered": false
+    }
+  ],
+  "purchaseOrderDetail": [],
+  "subcontractorContract": [],
+  "subcontractorCertificate": [],
+  "warehouseStock": [],
+  "stockMovement": [],
+  "certificacion": [
+    {
+      "id": 1,
+      "projectId": 1,
+      "partnerId": 3,
+      "budgetItemId": 1,
+      "subcontratista": "Construcciones San Roque S.A.",
+      "rubro": "Movimiento de Suelo y Terraplén (km 42 a 44)",
+      "unidad": "m3",
+      "cantidad_medida": 2232.14,
+      "monto_total": 62500000,
+      "estado": "APROBADA",
+      "esAdenda": false
+    },
+    {
+      "id": 2,
+      "projectId": 1,
+      "partnerId": 4,
+      "budgetItemId": 2,
+      "subcontratista": "MOPC",
+      "rubro": "Certificado Oficial de Obra N° 04 - Calzada y Obras de Arte",
+      "unidad": "GL",
+      "cantidad_medida": 1,
+      "monto_total": 350000000,
+      "estado": "APROBADA",
+      "esAdenda": false
+    }
+  ],
+  "costCenter": [],
+  "budgetCommitment": [],
+  "documentAuditLog": [],
+  "projectBackup": [],
+  "invoice": [
+    {
+      "id": 1,
+      "projectId": 1,
+      "partnerId": 1,
+      "numeroFactura": "001-002-0045210",
+      "timbrado": "15984210",
+      "tipo": "RECIBIDA",
+      "estado": "APROBADA",
+      "fechaEmision": "2026-03-01T08:00:00.000Z",
+      "fechaVencimiento": "2026-04-01T08:00:00.000Z",
+      "condicionVenta": "CREDITO",
+      "concepto": "Provisión de Piedra Triturada 4ta para Base Granular km 45",
+      "subtotal": 44090909,
+      "montoExento": 0,
+      "montoIva5": 0,
+      "montoIva10": 4409091,
+      "total": 48500000,
+      "threeWayMatchPassed": true,
+      "matchNotes": "Validación Tripartita Exitosa (3-Way Match 100%): O.C. OC-2026-001, Remisión de Pañol REM-0442 y Factura coinciden con 0% de tolerancia.",
+      "purchaseOrderId": 1,
+      "certificacionId": null,
+      "remisionNumber": "REM-0442",
+      "remisionDate": "2026-03-01T10:30:00.000Z",
+      "createdAt": "2026-03-01T11:00:00.000Z",
+      "updatedAt": "2026-03-01T11:00:00.000Z"
+    },
+    {
+      "id": 2,
+      "projectId": 1,
+      "partnerId": 2,
+      "numeroFactura": "002-001-0011894",
+      "timbrado": "16320512",
+      "tipo": "RECIBIDA",
+      "estado": "PAGADA",
+      "fechaEmision": "2026-02-15T09:00:00.000Z",
+      "fechaVencimiento": "2026-03-15T09:00:00.000Z",
+      "condicionVenta": "CONTADO",
+      "concepto": "Emulsión Asfáltica de Imprimación CSS-1h (Tanque Cisterna 30.000 L)",
+      "subtotal": 83636364,
+      "montoExento": 0,
+      "montoIva5": 0,
+      "montoIva10": 8363636,
+      "total": 92000000,
+      "threeWayMatchPassed": true,
+      "matchNotes": "Validación Tripartita Exitosa (3-Way Match 100%): O.C. OC-2026-002, Remisión de Pañol REM-0388 y Factura coinciden con 0% de tolerancia.",
+      "purchaseOrderId": 2,
+      "certificacionId": null,
+      "remisionNumber": "REM-0388",
+      "remisionDate": "2026-02-15T11:45:00.000Z",
+      "createdAt": "2026-02-15T12:00:00.000Z",
+      "updatedAt": "2026-03-14T14:00:00.000Z"
+    },
+    {
+      "id": 3,
+      "projectId": 1,
+      "partnerId": 1,
+      "numeroFactura": "001-002-0045899",
+      "timbrado": "15984210",
+      "tipo": "RECIBIDA",
+      "estado": "EN_REVISION",
+      "fechaEmision": "2026-03-18T11:00:00.000Z",
+      "fechaVencimiento": "2026-04-18T11:00:00.000Z",
+      "condicionVenta": "CREDITO",
+      "concepto": "Carga de Arena Lavada para Hormigón de Alcantarillas",
+      "subtotal": 15000000,
+      "montoExento": 0,
+      "montoIva5": 0,
+      "montoIva10": 1500000,
+      "total": 16500000,
+      "threeWayMatchPassed": false,
+      "matchNotes": "Discrepancia detectada (Tolerancia 0%): Monto facturado (₲ 16.500.000) difiere de O.C. OC-2026-003 (₲ 14.800.000). Diferencia: ₲ 1.700.000. Además, falta registrar Nota de Remisión en Pañol.",
+      "purchaseOrderId": 3,
+      "certificacionId": null,
+      "remisionNumber": null,
+      "remisionDate": null,
+      "createdAt": "2026-03-18T11:30:00.000Z",
+      "updatedAt": "2026-03-18T11:30:00.000Z"
+    },
+    {
+      "id": 4,
+      "projectId": 1,
+      "partnerId": 3,
+      "numeroFactura": "001-001-0008541",
+      "timbrado": "14889201",
+      "tipo": "RECIBIDA",
+      "estado": "APROBADA",
+      "fechaEmision": "2026-03-10T10:00:00.000Z",
+      "fechaVencimiento": "2026-04-10T10:00:00.000Z",
+      "condicionVenta": "CREDITO",
+      "concepto": "Liquidación Certificado de Subcontrato N° 01 - Terraplén y Suelo Seleccionado",
+      "subtotal": 56818182,
+      "montoExento": 0,
+      "montoIva5": 0,
+      "montoIva10": 5681818,
+      "total": 62500000,
+      "threeWayMatchPassed": true,
+      "matchNotes": "Validación Tripartita Exitosa (3-Way Match 100%): Contrato Marco, Medición de Campo Aprobada #1 y Factura coinciden con 0% de tolerancia.",
+      "purchaseOrderId": null,
+      "certificacionId": 1,
+      "remisionNumber": "ACTA-MED-01",
+      "remisionDate": "2026-03-09T18:00:00.000Z",
+      "createdAt": "2026-03-10T11:00:00.000Z",
+      "updatedAt": "2026-03-10T11:00:00.000Z"
+    },
+    {
+      "id": 5,
+      "projectId": 1,
+      "partnerId": 4,
+      "numeroFactura": "001-001-0001050",
+      "timbrado": "17254099",
+      "tipo": "EMITIDA",
+      "estado": "APROBADA",
+      "fechaEmision": "2026-03-05T09:00:00.000Z",
+      "fechaVencimiento": "2026-04-20T09:00:00.000Z",
+      "condicionVenta": "CREDITO",
+      "concepto": "Certificado Oficial de Obras N° 04 - Duplicación Calzada y Obras de Arte Especiales",
+      "subtotal": 318181818,
+      "montoExento": 0,
+      "montoIva5": 0,
+      "montoIva10": 31818182,
+      "total": 350000000,
+      "threeWayMatchPassed": true,
+      "matchNotes": "Factura legal CCC S.A. emitida conforme al Certificado Oficial de Obra N° 04 aprobado por MOPC.",
+      "purchaseOrderId": null,
+      "certificacionId": 2,
+      "remisionNumber": null,
+      "remisionDate": null,
+      "createdAt": "2026-03-05T10:00:00.000Z",
+      "updatedAt": "2026-03-05T10:00:00.000Z"
+    }
+  ],
+  "invoiceItem": [
+    {
+      "id": 1,
+      "invoiceId": 1,
+      "description": "Piedra Triturada 4ta para Base Granular (646.66 m3 @ ₲ 75.000)",
+      "quantity": 646.66,
+      "unitPrice": 75000,
+      "vatType": "IVA10",
+      "montoExento": 0,
+      "montoIva5": 0,
+      "montoIva10": 4409091,
+      "subtotal": 48500000
+    },
+    {
+      "id": 2,
+      "invoiceId": 2,
+      "description": "Emulsión Asfáltica CSS-1h para Imprimación (19.166 Litros @ ₲ 4.800)",
+      "quantity": 19166.66,
+      "unitPrice": 4800,
+      "vatType": "IVA10",
+      "montoExento": 0,
+      "montoIva5": 0,
+      "montoIva10": 8363636,
+      "subtotal": 92000000
+    },
+    {
+      "id": 3,
+      "invoiceId": 3,
+      "description": "Arena Lavada de Río (253.84 m3 @ ₲ 65.000)",
+      "quantity": 253.84,
+      "unitPrice": 65000,
+      "vatType": "IVA10",
+      "montoExento": 0,
+      "montoIva5": 0,
+      "montoIva10": 1500000,
+      "subtotal": 16500000
+    },
+    {
+      "id": 4,
+      "invoiceId": 4,
+      "description": "Servicio de Movimiento de Suelos y Terraplén compactado al 95% Proctor",
+      "quantity": 2232.14,
+      "unitPrice": 28000,
+      "vatType": "IVA10",
+      "montoExento": 0,
+      "montoIva5": 0,
+      "montoIva10": 5681818,
+      "subtotal": 62500000
+    },
+    {
+      "id": 5,
+      "invoiceId": 5,
+      "description": "Avance de Obra Período Febrero 2026 conforme a Planilla de Medición Aprobada",
+      "quantity": 1,
+      "unitPrice": 350000000,
+      "vatType": "IVA10",
+      "montoExento": 0,
+      "montoIva5": 0,
+      "montoIva10": 31818182,
+      "subtotal": 350000000
+    }
+  ],
+  "payment": [
+    {
+      "id": 1,
+      "invoiceId": 2,
+      "montoPagado": 92000000,
+      "fechaPago": "2026-03-14T14:00:00.000Z",
+      "metodo": "TRANSFERENCIA",
+      "referenciaBanco": "ITAU-TRANSF-984420",
+      "notas": "Cancelación total O.C. 002 Vepal Asfaltos con respaldo de Pañol",
+      "createdAt": "2026-03-14T14:00:00.000Z"
+    },
+    {
+      "id": 2,
+      "invoiceId": 1,
+      "montoPagado": 20000000,
+      "fechaPago": "2026-03-15T11:30:00.000Z",
+      "metodo": "CHEQUE",
+      "referenciaBanco": "CHQ-BNF-0045812",
+      "notas": "Anticipo de pago parcial pactado con cantera",
+      "createdAt": "2026-03-15T11:30:00.000Z"
+    }
+  ]
+}
