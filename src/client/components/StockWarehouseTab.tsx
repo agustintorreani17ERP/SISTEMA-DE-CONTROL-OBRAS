@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Package,
   ArrowUpRight,
@@ -31,6 +31,8 @@ interface StockWarehouseTabProps {
   workFronts: WorkFront[];
   onRefresh: () => void;
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
+  /** Abre "Salida a obra" o "Ajuste" desde el botón global Crear. */
+  intent?: { action: "out" | "adjust"; nonce: number } | null;
 }
 
 export const StockWarehouseTab: React.FC<StockWarehouseTabProps> = ({
@@ -41,12 +43,18 @@ export const StockWarehouseTab: React.FC<StockWarehouseTabProps> = ({
   workFronts,
   onRefresh,
   showToast,
+  intent,
 }) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [movementFilter, setMovementFilter] = useState<string>("ALL");
   const [showConsumptionModal, setShowConsumptionModal] = useState(false);
   const [showAdjustmentModal, setShowAdjustmentModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  useEffect(() => {
+    if (!intent) return;
+    if (intent.action === "out") setShowConsumptionModal(true);
+    else setShowAdjustmentModal(true);
+  }, [intent?.nonce]);
 
   // Consumption Form state
   const [consumptionForm, setConsumptionForm] = useState({
@@ -148,7 +156,7 @@ export const StockWarehouseTab: React.FC<StockWarehouseTabProps> = ({
   return (
     <div className="space-y-6 pb-12 text-slate-800">
       {/* Header Banner */}
-      <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-end gap-2 [&>div:first-child]:hidden">
         <div>
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600">

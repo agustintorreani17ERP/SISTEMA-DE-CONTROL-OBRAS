@@ -72,6 +72,7 @@ export const SubcontractsTab: React.FC<SubcontractsTabProps> = ({
   const [certForm, setCertForm] = useState({
     amount: 100000000,
     advancePercentage: 10,
+    quantity: "",
     notes: "",
     periodFrom: "",
     periodTo: "",
@@ -139,6 +140,7 @@ export const SubcontractsTab: React.FC<SubcontractsTabProps> = ({
         subcontractId: selectedContractForCert.id,
         amount: Number(certForm.amount),
         advancePercentage: Number(certForm.advancePercentage),
+        quantity: certForm.quantity === "" ? undefined : Number(certForm.quantity),
         notes: certForm.notes,
         periodFrom: certForm.periodFrom || new Date().toISOString(),
         periodTo: certForm.periodTo || new Date().toISOString(),
@@ -187,7 +189,7 @@ export const SubcontractsTab: React.FC<SubcontractsTabProps> = ({
   return (
     <div className="space-y-6 pb-12">
       {/* Top Banner */}
-      <div className="bg-white rounded-xl p-5 border border-stone-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-end gap-2 [&>div:first-child]:hidden">
         <div>
           <div className="flex items-center gap-2">
             <FileCheck className="w-5 h-5 text-purple-600" />
@@ -196,7 +198,7 @@ export const SubcontractsTab: React.FC<SubcontractsTabProps> = ({
             </h1>
           </div>
           <p className="text-xs text-stone-500 mt-1">
-            Gestión de empresas subcontratistas, medición de avances en tramo vial y retenciones de garantía de obra.
+            Gestión de empresas subcontratistas, medición de avances y retenciones de garantía de obra.
           </p>
         </div>
 
@@ -310,7 +312,7 @@ export const SubcontractsTab: React.FC<SubcontractsTabProps> = ({
       <div className="space-y-4">
         {filteredContracts.length === 0 ? (
           <div className="bg-white rounded-xl border border-stone-200 p-8 text-center text-stone-400 text-xs shadow-sm">
-            No hay subcontratos registrados para esta obra vial.
+            No hay subcontratos registrados para esta obra.
           </div>
         ) : (
           filteredContracts.map((sc) => {
@@ -376,13 +378,14 @@ export const SubcontractsTab: React.FC<SubcontractsTabProps> = ({
                           setCertForm({
                             amount: Math.min(rem, 50000000),
                             advancePercentage: 15,
+                            quantity: "",
                             notes: "",
                             periodFrom: new Date().toISOString().slice(0, 10),
                             periodTo: new Date().toISOString().slice(0, 10),
                           });
                           setShowCertModal(true);
                         }}
-                        className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-semibold shadow-xs transition flex items-center gap-1"
+                        className="hidden px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-semibold shadow-xs transition flex items-center gap-1"
                       >
                         <Plus className="w-3.5 h-3.5" />
                         <span>Emitir Certificado</span>
@@ -668,6 +671,21 @@ export const SubcontractsTab: React.FC<SubcontractsTabProps> = ({
                 </div>
               </div>
 
+              <div>
+                <label className="block text-xs font-semibold text-stone-700 mb-1">
+                  Cantidad ejecutada ({selectedContractForCert?.budgetItem?.unit || "unidad de la partida"})
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="any"
+                  value={certForm.quantity}
+                  onChange={(e) => setCertForm({ ...certForm, quantity: e.target.value })}
+                  placeholder="Ej. 80 (se suma a lo ejecutado por subcontratistas)"
+                  className="w-full border border-stone-300 rounded-lg p-2 text-xs font-mono"
+                />
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-xs font-semibold text-stone-700 mb-1">
@@ -735,7 +753,7 @@ export const SubcontractsTab: React.FC<SubcontractsTabProps> = ({
                   rows={2}
                   value={certForm.notes}
                   onChange={(e) => setCertForm({ ...certForm, notes: e.target.value })}
-                  placeholder="Medición conjunta con supervisión MOPC..."
+                  placeholder="Medición conjunta con la supervisión..."
                   className="w-full border border-stone-300 rounded-lg p-2 text-xs"
                 />
               </div>

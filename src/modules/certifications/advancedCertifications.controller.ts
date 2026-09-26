@@ -1,716 +1,600 @@
 import { Router, Request, Response } from "express";
 import { z } from "zod";
+import { CertificationStatus, Prisma } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 import { asyncHandler } from "../../middleware/asyncHandler";
 import { ok } from "../../http/respond";
 import { DomainError, NotFoundError } from "../../errors/domain";
 import { recalculateProjectFinancials } from "../../domain/projectFinancials";
-import { CertificationStatus } from "@prisma/client";
+import { assertImputableItem, postCost, postMovement, type BudgetWarning } from "../../domain/budget";
+import { moneyNumber } from "../../lib/money";
+import { auxSubtotal, buildCertificate, measuredQuantity } from "./certMath";
 
+/**
+ * Mediciones y certificados.
+ * Flujo: Medición (MEDICION_BORRADOR) → borrador de certificado (CERTIFICADO_BORRADOR) → APROBADO.
+ * Destino: avance de obra al cliente (sin partner, precio de venta) o subcontratista
+ * (partner, precio de la lista de mano de obra).
+ */
 export const advancedCertificationsRouter = Router();
 
-// ----------------------------------------------------
-// Validation Schemas
-// ----------------------------------------------------
 const auxiliaryCalculationSchema = z.object({
-  id: z.number().optional(),
-  descripcion: z.string().trim().min(1, "La descripción del cómputo es obligatoria"),
+  descripcion: z.string().trim().default(""),
+  location: z.string().trim().max(200).optional().nullable(),
   largo: z.coerce.number().min(0).default(0),
   ancho: z.coerce.number().min(0).default(0),
   alto: z.coerce.number().min(0).default(0),
   factor_repeticion: z.coerce.number().min(0).default(1),
-  subtotal: z.coerce.number().min(0).optional(),
+  isDeduction: z.coerce.boolean().default(false),
+  needsReview: z.coerce.boolean().default(false),
 });
 
 const itemPhotoSchema = z.object({
-  id: z.number().optional(),
-  url: z.string().url("URL de imagen inválida"),
+  url: z.string().min(1),
   comentario: z.string().optional().nullable(),
   fechaCaptura: z.string().optional().nullable(),
 });
 
-const certificationItemInputSchema = z.object({
-  budgetItemId: z.coerce.number().int().positive("El rubro presupuestario es obligatorio"),
-  cantidadAnterior: z.coerce.number().min(0).default(0),
+const itemInputSchema = z.object({
+  budgetItemId: z.coerce.number().int().positive("El rubro es obligatorio"),
   cantidadPresente: z.coerce.number().min(0).default(0),
   precioUnitario: z.coerce.number().min(0).optional(),
-  auxiliaryCalculations: z.array(auxiliaryCalculationSchema).optional().default([]),
-  photos: z.array(itemPhotoSchema).optional().default([]),
+  priceSource: z.enum(["VENTA", "MANO_DE_OBRA"]).optional(),
+  auxiliaryCalculations: z.array(auxiliaryCalculationSchema).default([]),
+  photos: z.array(itemPhotoSchema).default([]),
 });
 
-const createCertificationSchema = z.object({
+const measurementSchema = z.object({
   projectId: z.coerce.number().int().positive("La obra es obligatoria"),
   partnerId: z.coerce.number().int().positive().optional().nullable(),
+  contractId: z.coerce.number().int().positive().optional().nullable(),
   fecha: z.string().optional(),
+  periodFrom: z.string().optional().nullable(),
+  periodTo: z.string().optional().nullable(),
   notes: z.string().optional().nullable(),
-  items: z.array(certificationItemInputSchema).min(1, "Debe incluir al menos un rubro para medir"),
+  items: z.array(itemInputSchema).min(1, "Agregá al menos un rubro a la medición"),
 });
 
 const certificationInclude = {
   project: true,
   partner: true,
+  contract: true,
   items: {
-    include: {
-      budgetItem: true,
-      auxiliaryCalculations: true,
-      photos: true,
-    },
+    include: { budgetItem: true, auxiliaryCalculations: true, photos: true },
     orderBy: { id: "asc" as const },
   },
-  invoices: {
-    include: {
-      payments: true,
-    },
-  },
-};
+  invoices: { include: { payments: true } },
+} satisfies Prisma.CertificationInclude;
 
-// ----------------------------------------------------
-// Helper: Autonumeración Inteligente
-// ----------------------------------------------------
-async function getNextCertificationNumber(projectId: number, partnerId?: number | null): Promise<number> {
-  const whereClause: any = { projectId };
-  if (partnerId && partnerId > 0) {
-    whereClause.partnerId = partnerId;
-  } else {
-    whereClause.partnerId = null;
-  }
+const parseOptionalId = (raw: unknown) => (raw && raw !== "null" && raw !== "undefined" ? Number(raw) : null);
 
+async function nextNumber(projectId: number, partnerId: number | null) {
   const latest = await prisma.certification.findFirst({
-    where: whereClause,
+    where: { projectId, partnerId },
     orderBy: { numero: "desc" },
   });
-
   return (latest?.numero || 0) + 1;
 }
 
-// ----------------------------------------------------
-// GET /api/certifications/next-number (Consulta previa de autonumeración)
-// ----------------------------------------------------
+/** Acumulado anterior por rubro: solo certificados APROBADOS del mismo destino. */
+async function approvedHistory(projectId: number, partnerId: number | null, excludeId?: number) {
+  const certs = await prisma.certification.findMany({
+    where: { projectId, partnerId, estado: CertificationStatus.APROBADO },
+    include: { items: true },
+  });
+  const map = new Map<number, number>();
+  for (const c of certs) {
+    if (c.id === excludeId) continue;
+    for (const i of c.items) map.set(i.budgetItemId, (map.get(i.budgetItemId) ?? 0) + moneyNumber(i.cantidadPresente));
+  }
+  return map;
+}
+
+/** Precio de mano de obra por rubro (lista de precios de la obra). */
+async function laborPriceMap(projectId: number) {
+  const prices = await prisma.laborPrice.findMany({ where: { projectId, budgetItemId: { not: null } } });
+  return new Map(prices.map((p) => [p.budgetItemId as number, moneyNumber(p.unitPrice)]));
+}
+
 advancedCertificationsRouter.get(
   "/next-number",
   asyncHandler(async (req: Request, res: Response) => {
     const projectId = Number(req.query.projectId);
-    if (!Number.isInteger(projectId) || projectId <= 0) {
-      throw new DomainError("INVALID_PROJECT", "El identificador de obra es requerido");
-    }
-
-    const rawPartnerId = req.query.partnerId;
-    const partnerId = rawPartnerId && rawPartnerId !== "null" && rawPartnerId !== "undefined"
-      ? Number(rawPartnerId)
-      : null;
-
-    const nextNumber = await getNextCertificationNumber(projectId, partnerId);
+    if (!Number.isInteger(projectId) || projectId <= 0) throw new DomainError("INVALID_PROJECT", "La obra es obligatoria");
+    const partnerId = parseOptionalId(req.query.partnerId);
+    const n = await nextNumber(projectId, partnerId);
     ok(res, {
       projectId,
       partnerId,
       tipo: partnerId ? "SUBCONTRATISTA" : "OBRA_CLIENTE",
-      nextNumber,
-      displayLabel: `Medición N° ${String(nextNumber).padStart(2, "0")}`,
+      nextNumber: n,
+      displayLabel: `Medición N° ${String(n).padStart(2, "0")}`,
     });
   })
 );
 
-// ----------------------------------------------------
-// GET /api/certifications/rubros-disponibles
-// Retorna rubros con sus cantidades anteriores acumuladas automáticamente
-// ----------------------------------------------------
+/**
+ * GET /api/certifications/rubros-disponibles?projectId&partnerId
+ * Rubros medibles con cantidad contratada, acumulado aprobado del destino y precio:
+ * venta (avance de obra) o mano de obra (subcontratista).
+ */
 advancedCertificationsRouter.get(
   "/rubros-disponibles",
   asyncHandler(async (req: Request, res: Response) => {
     const projectId = Number(req.query.projectId);
-    if (!Number.isInteger(projectId) || projectId <= 0) {
-      throw new DomainError("INVALID_PROJECT", "El identificador de obra es requerido");
-    }
+    if (!Number.isInteger(projectId) || projectId <= 0) throw new DomainError("INVALID_PROJECT", "La obra es obligatoria");
+    const partnerId = parseOptionalId(req.query.partnerId);
 
-    const rawPartnerId = req.query.partnerId;
-    const partnerId = rawPartnerId && rawPartnerId !== "null" && rawPartnerId !== "undefined"
-      ? Number(rawPartnerId)
-      : null;
+    const [items, history, labor] = await Promise.all([
+      prisma.budgetItem.findMany({ where: { projectId, nodeKind: "ITEM", isSystem: false }, orderBy: { sortOrder: "asc" } }),
+      approvedHistory(projectId, partnerId),
+      partnerId ? laborPriceMap(projectId) : Promise.resolve(new Map<number, number>()),
+    ]);
 
-    // Obtener rubros de la obra
-    const budgetItems = await prisma.budgetItem.findMany({
-      where: { projectId },
-      orderBy: [{ hierarchyLevel: "asc" }, { code: "asc" }],
-    });
-
-    // Obtener certificaciones previas para calcular el acumulado anterior
-    const prevWhere: any = { projectId };
-    if (partnerId && partnerId > 0) {
-      prevWhere.partnerId = partnerId;
-    } else {
-      prevWhere.partnerId = null;
-    }
-
-    const previousCerts = await prisma.certification.findMany({
-      where: prevWhere,
-      include: {
-        items: true,
-      },
-      orderBy: { numero: "asc" },
-    });
-
-    // Sumar cantidad acumulada histórica por budgetItemId
-    const historyMap = new Map<number, number>();
-    for (const cert of previousCerts) {
-      for (const item of cert.items) {
-        const prev = historyMap.get(item.budgetItemId) || 0;
-        historyMap.set(item.budgetItemId, prev + Number(item.cantidadPresente || 0));
-      }
-    }
-
-    const enrichedRubros = budgetItems.map((bi) => {
-      const cantidadAnterior = historyMap.get(bi.id) || 0;
-      return {
-        id: bi.id,
-        code: bi.code,
-        name: bi.name,
-        category: bi.category,
-        unit: bi.unit || "un",
-        unitPrice: Number(bi.unitPrice || 0),
-        totalContractQuantity: Number(bi.totalQuantity || 0),
-        cantidadAnterior,
-        montoAnterior: Math.round(cantidadAnterior * Number(bi.unitPrice || 0)),
-      };
-    });
-
-    ok(res, enrichedRubros);
+    ok(
+      res,
+      items.map((bi) => {
+        const salePrice = moneyNumber(bi.unitPrice);
+        const laborPrice = labor.get(bi.id) ?? null;
+        const unitPrice = partnerId ? laborPrice ?? 0 : salePrice;
+        const cantidadAnterior = history.get(bi.id) ?? 0;
+        return {
+          id: bi.id,
+          code: bi.code,
+          name: bi.name,
+          category: bi.category,
+          unit: bi.unit || "un",
+          unitPrice,
+          salePrice,
+          laborPrice,
+          priceSource: partnerId ? "MANO_DE_OBRA" : "VENTA",
+          missingPrice: partnerId ? laborPrice === null : false,
+          totalContractQuantity: moneyNumber(bi.totalQuantity),
+          cantidadAnterior,
+          montoAnterior: Math.round(cantidadAnterior * unitPrice),
+        };
+      })
+    );
   })
 );
 
-// ----------------------------------------------------
-// GET /api/certifications (Listar Mediciones y Certificados)
-// ----------------------------------------------------
 advancedCertificationsRouter.get(
   "/",
   asyncHandler(async (req: Request, res: Response) => {
     const { projectId, partnerId, estado } = req.query;
-    const where: any = {};
-
-    if (projectId) {
-      where.projectId = Number(projectId);
-    }
+    const where: Prisma.CertificationWhereInput = {};
+    if (projectId) where.projectId = Number(projectId);
     if (partnerId !== undefined && partnerId !== "") {
-      if (partnerId === "null" || partnerId === "0") {
-        where.partnerId = null;
-      } else {
-        where.partnerId = Number(partnerId);
-      }
+      where.partnerId = partnerId === "null" || partnerId === "0" ? null : Number(partnerId);
     }
-    if (estado) {
-      where.estado = String(estado);
-    }
-
-    const certifications = await prisma.certification.findMany({
-      where,
-      include: certificationInclude,
-      orderBy: [{ fecha: "desc" }, { numero: "desc" }],
-    });
-
-    ok(res, certifications);
+    if (estado) where.estado = String(estado) as CertificationStatus;
+    ok(
+      res,
+      await prisma.certification.findMany({
+        where,
+        include: certificationInclude,
+        orderBy: [{ fecha: "desc" }, { numero: "desc" }],
+      })
+    );
   })
 );
 
-// ----------------------------------------------------
-// GET /api/certifications/:id (Detalle Completo)
-// ----------------------------------------------------
+/**
+ * GET /api/certifications/:id/summary
+ * Medición N y Cert N con acumulados, % de avance, saldo, fondo de reparo, neto y
+ * verificaciones finales (formato de certificados de subcontratistas).
+ */
+advancedCertificationsRouter.get(
+  "/:id/summary",
+  asyncHandler(async (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const cert = await prisma.certification.findUnique({ where: { id }, include: certificationInclude });
+    if (!cert) throw new NotFoundError("Certificación", id);
+    const history = await approvedHistory(cert.projectId, cert.partnerId, cert.id);
+
+    const rows = cert.items.map((i) => ({
+      code: i.budgetItem.code,
+      name: i.budgetItem.name,
+      unit: i.budgetItem.unit || "un",
+      contractedQuantity: moneyNumber(i.budgetItem.totalQuantity),
+      previousQuantity: cert.estado === CertificationStatus.APROBADO ? moneyNumber(i.cantidadAnterior) : history.get(i.budgetItemId) ?? 0,
+      periodQuantity: moneyNumber(i.cantidadPresente),
+      unitPrice: moneyNumber(i.precioUnitario),
+    }));
+    const summary = buildCertificate(rows, moneyNumber(cert.retentionPct));
+    const pendingReview = cert.items.flatMap((i) => i.auxiliaryCalculations.filter((a) => a.needsReview)).length;
+    const itemsTotal = cert.items.reduce((acc, i) => acc + moneyNumber(i.montoTotal), 0);
+
+    ok(res, {
+      certification: cert,
+      summary,
+      checks: {
+        measurementMatchesCertificate: Math.abs(itemsTotal - summary.periodAmount) < 1,
+        previousMatchesHistory: rows.every((r, idx) => Math.abs(r.previousQuantity - moneyNumber(cert.items[idx].cantidadAnterior)) < 1e-6),
+        noPendingReview: pendingReview === 0,
+        pendingReview,
+        overContract: summary.rows.filter((r) => r.overContract).map((r) => r.code),
+      },
+    });
+  })
+);
+
 advancedCertificationsRouter.get(
   "/:id",
   asyncHandler(async (req: Request, res: Response) => {
     const id = Number(req.params.id);
-    const cert = await prisma.certification.findUnique({
-      where: { id },
-      include: certificationInclude,
-    });
-
+    const cert = await prisma.certification.findUnique({ where: { id }, include: certificationInclude });
     if (!cert) throw new NotFoundError("Certificación", id);
     ok(res, cert);
   })
 );
 
-// ----------------------------------------------------
-// POST /api/certifications (Creación con Autonumeración Inteligente)
-// ----------------------------------------------------
+/** Guarda los ítems de una medición (con cálculo auxiliar y fotos) y devuelve el total. */
+async function writeItems(
+  tx: Prisma.TransactionClient,
+  certificationId: number,
+  projectId: number,
+  partnerId: number | null,
+  items: z.infer<typeof itemInputSchema>[]
+) {
+  const history = new Map<number, number>();
+  for (const c of await tx.certification.findMany({
+    where: { projectId, partnerId, estado: CertificationStatus.APROBADO },
+    include: { items: true },
+  })) {
+    for (const i of c.items) history.set(i.budgetItemId, (history.get(i.budgetItemId) ?? 0) + moneyNumber(i.cantidadPresente));
+  }
+  const labor = partnerId
+    ? new Map(
+        (await tx.laborPrice.findMany({ where: { projectId, budgetItemId: { not: null } } })).map((p) => [
+          p.budgetItemId as number,
+          moneyNumber(p.unitPrice),
+        ])
+      )
+    : new Map<number, number>();
+
+  let total = 0;
+  for (const input of items) {
+    const budgetItem = await assertImputableItem(tx, projectId, input.budgetItemId);
+    const priceSource = input.priceSource ?? (partnerId ? "MANO_DE_OBRA" : "VENTA");
+    const unitPrice =
+      input.precioUnitario !== undefined
+        ? input.precioUnitario
+        : priceSource === "MANO_DE_OBRA"
+        ? labor.get(budgetItem.id) ?? 0
+        : moneyNumber(budgetItem.unitPrice);
+    const presentQty = input.auxiliaryCalculations.length ? measuredQuantity(input.auxiliaryCalculations) : input.cantidadPresente;
+    const previous = history.get(budgetItem.id) ?? 0;
+    const amount = Math.round(presentQty * unitPrice);
+    total += amount;
+
+    const created = await tx.certificationItem.create({
+      data: {
+        certificationId,
+        budgetItemId: budgetItem.id,
+        cantidadAnterior: previous,
+        cantidadPresente: presentQty,
+        cantidadAcumulada: previous + presentQty,
+        precioUnitario: unitPrice,
+        montoTotal: amount,
+        priceSource,
+      },
+    });
+    for (const ac of input.auxiliaryCalculations) {
+      await tx.auxiliaryCalculation.create({
+        data: {
+          certificationItemId: created.id,
+          descripcion: ac.descripcion || ac.location || "Medición",
+          location: ac.location ?? null,
+          largo: ac.largo,
+          ancho: ac.ancho,
+          alto: ac.alto,
+          factor_repeticion: ac.factor_repeticion,
+          isDeduction: ac.isDeduction,
+          needsReview: ac.needsReview,
+          subtotal: auxSubtotal(ac),
+        },
+      });
+    }
+    for (const photo of input.photos) {
+      await tx.itemPhoto.create({
+        data: {
+          certificationItemId: created.id,
+          url: photo.url,
+          comentario: photo.comentario ?? null,
+          fechaCaptura: photo.fechaCaptura ? new Date(photo.fechaCaptura) : new Date(),
+        },
+      });
+    }
+  }
+  return total;
+}
+
+/** POST /api/certifications — crea la medición (borrador) con su planilla. */
 advancedCertificationsRouter.post(
   "/",
   asyncHandler(async (req: Request, res: Response) => {
-    const body = createCertificationSchema.parse(req.body);
-
+    const body = measurementSchema.parse(req.body);
     const project = await prisma.project.findUnique({ where: { id: body.projectId } });
     if (!project) throw new NotFoundError("Obra", body.projectId);
+    const partnerId = body.partnerId ?? null;
 
-    if (body.partnerId) {
-      const partner = await prisma.partner.findUnique({ where: { id: body.partnerId } });
-      if (!partner) throw new NotFoundError("Subcontratista", body.partnerId);
+    let retentionPct = 0;
+    if (partnerId) {
+      const partner = await prisma.partner.findUnique({ where: { id: partnerId } });
+      if (!partner) throw new NotFoundError("Subcontratista", partnerId);
+      if (partner.kind === "SUPPLIER") throw new DomainError("INVALID_PARTNER", "Elegí un subcontratista", 422);
+    }
+    if (body.contractId) {
+      const contract = await prisma.subcontractorContract.findUnique({ where: { id: body.contractId } });
+      if (!contract || contract.partnerId !== partnerId) throw new NotFoundError("Contrato del subcontratista", body.contractId);
+      retentionPct = moneyNumber(contract.retentionPct);
     }
 
-    // Regla de Negocio: Autonumeración inteligente
-    const nextNumero = await getNextCertificationNumber(body.projectId, body.partnerId);
-    const fecha = body.fecha ? new Date(body.fecha) : new Date();
-
-    const created = await prisma.$transaction(async (tx) => {
-      // 1. Crear encabezado de Certificación en estado MEDICION_BORRADOR
-      const cert = await tx.certification.create({
-        data: {
-          projectId: body.projectId,
-          partnerId: body.partnerId || null,
-          numero: nextNumero,
-          fecha,
-          estado: CertificationStatus.MEDICION_BORRADOR,
-          montoTotal: 0,
-          notes: body.notes || null,
-        },
-      });
-
-      let certTotal = 0;
-
-      // 2. Procesar cada rubro e insertar items, cómputos auxiliares y fotos
-      for (const itemInput of body.items) {
-        const budgetItem = await tx.budgetItem.findUnique({ where: { id: itemInput.budgetItemId } });
-        if (!budgetItem) throw new NotFoundError("Rubro presupuestario", itemInput.budgetItemId);
-
-        const unitPrice = itemInput.precioUnitario !== undefined && itemInput.precioUnitario >= 0
-          ? Number(itemInput.precioUnitario)
-          : Number(budgetItem.unitPrice || 0);
-
-        // Si tiene cómputos auxiliares, la cantidad presente es la suma exacta de sus subtotales
-        let presentQty = Number(itemInput.cantidadPresente || 0);
-        const auxCalcs = itemInput.auxiliaryCalculations || [];
-
-        if (auxCalcs.length > 0) {
-          presentQty = auxCalcs.reduce((sum, ac) => {
-            const l = Number(ac.largo || 0);
-            const a = Number(ac.ancho || 0);
-            const h = Number(ac.alto || 0);
-            const f = Number(ac.factor_repeticion || 1);
-            const sub = l * a * h * f;
-            return sum + sub;
-          }, 0);
-        }
-
-        const prevQty = Number(itemInput.cantidadAnterior || 0);
-        const accumQty = prevQty + presentQty;
-        const itemMonto = Math.round(presentQty * unitPrice);
-        certTotal += itemMonto;
-
-        const createdItem = await tx.certificationItem.create({
+    const numero = await nextNumber(body.projectId, partnerId);
+    const created = await prisma.$transaction(
+      async (tx) => {
+        const cert = await tx.certification.create({
           data: {
-            certificationId: cert.id,
-            budgetItemId: itemInput.budgetItemId,
-            cantidadAnterior: prevQty,
-            cantidadPresente: presentQty,
-            cantidadAcumulada: accumQty,
-            precioUnitario: unitPrice,
-            montoTotal: itemMonto,
+            projectId: body.projectId,
+            partnerId,
+            contractId: body.contractId ?? null,
+            numero,
+            fecha: body.fecha ? new Date(body.fecha) : new Date(),
+            periodFrom: body.periodFrom ? new Date(body.periodFrom) : null,
+            periodTo: body.periodTo ? new Date(body.periodTo) : null,
+            estado: CertificationStatus.MEDICION_BORRADOR,
+            retentionPct,
+            notes: body.notes ?? null,
           },
         });
-
-        // Insertar cómputos auxiliares tipo "Google Sheets"
-        if (auxCalcs.length > 0) {
-          for (const ac of auxCalcs) {
-            const l = Number(ac.largo || 0);
-            const a = Number(ac.ancho || 0);
-            const h = Number(ac.alto || 0);
-            const f = Number(ac.factor_repeticion || 1);
-            const sub = ac.subtotal !== undefined ? Number(ac.subtotal) : l * a * h * f;
-
-            await tx.auxiliaryCalculation.create({
-              data: {
-                certificationItemId: createdItem.id,
-                descripcion: ac.descripcion,
-                largo: l,
-                ancho: a,
-                alto: h,
-                factor_repeticion: f,
-                subtotal: sub,
-              },
-            });
-          }
-        }
-
-        // Insertar fotos de evidencia
-        if (itemInput.photos && itemInput.photos.length > 0) {
-          for (const photo of itemInput.photos) {
-            await tx.itemPhoto.create({
-              data: {
-                certificationItemId: createdItem.id,
-                url: photo.url,
-                comentario: photo.comentario || null,
-                fechaCaptura: photo.fechaCaptura ? new Date(photo.fechaCaptura) : new Date(),
-              },
-            });
-          }
-        }
-      }
-
-      // Actualizar monto total en la cabecera
-      const updatedCert = await tx.certification.update({
-        where: { id: cert.id },
-        data: { montoTotal: certTotal },
-        include: certificationInclude,
-      });
-
-      return updatedCert;
-    });
-
+        const total = await writeItems(tx, cert.id, body.projectId, partnerId, body.items);
+        return tx.certification.update({
+          where: { id: cert.id },
+          data: { montoTotal: total, netAmount: total },
+          include: certificationInclude,
+        });
+      },
+      { timeout: 60_000 }
+    );
     ok(res, created, 201);
   })
 );
 
-// ----------------------------------------------------
-// PUT /api/certifications/:id (Actualizar Borrador de Medición)
-// ----------------------------------------------------
+/** PUT /api/certifications/:id — edita la medición mientras está en borrador. */
 advancedCertificationsRouter.put(
   "/:id",
   asyncHandler(async (req: Request, res: Response) => {
     const id = Number(req.params.id);
     const cert = await prisma.certification.findUnique({ where: { id } });
     if (!cert) throw new NotFoundError("Certificación", id);
-
-    if (cert.estado !== CertificationStatus.MEDICION_BORRADOR) {
-      throw new DomainError(
-        "MEASUREMENT_LOCKED",
-        "La medición ya ha sido cerrada o aprobada y no puede ser modificada.",
-        400
-      );
+    if (cert.estado === CertificationStatus.APROBADO) {
+      throw new DomainError("MEASUREMENT_LOCKED", "El certificado ya está aprobado y no se puede modificar", 409);
     }
-
-    const body = createCertificationSchema.partial().parse(req.body);
-
-    const updated = await prisma.$transaction(async (tx) => {
-      if (body.items && body.items.length > 0) {
-        // Eliminar items previos y volver a crearlos
-        await tx.certificationItem.deleteMany({ where: { certificationId: id } });
-
-        let certTotal = 0;
-        for (const itemInput of body.items) {
-          const budgetItem = await tx.budgetItem.findUnique({ where: { id: itemInput.budgetItemId } });
-          if (!budgetItem) throw new NotFoundError("Rubro presupuestario", itemInput.budgetItemId);
-
-          const unitPrice = itemInput.precioUnitario !== undefined
-            ? Number(itemInput.precioUnitario)
-            : Number(budgetItem.unitPrice || 0);
-
-          let presentQty = Number(itemInput.cantidadPresente || 0);
-          const auxCalcs = itemInput.auxiliaryCalculations || [];
-          if (auxCalcs.length > 0) {
-            presentQty = auxCalcs.reduce((sum, ac) => {
-              const l = Number(ac.largo || 0);
-              const a = Number(ac.ancho || 0);
-              const h = Number(ac.alto || 0);
-              const f = Number(ac.factor_repeticion || 1);
-              return sum + l * a * h * f;
-            }, 0);
-          }
-
-          const prevQty = Number(itemInput.cantidadAnterior || 0);
-          const accumQty = prevQty + presentQty;
-          const itemMonto = Math.round(presentQty * unitPrice);
-          certTotal += itemMonto;
-
-          const createdItem = await tx.certificationItem.create({
-            data: {
-              certificationId: id,
-              budgetItemId: itemInput.budgetItemId,
-              cantidadAnterior: prevQty,
-              cantidadPresente: presentQty,
-              cantidadAcumulada: accumQty,
-              precioUnitario: unitPrice,
-              montoTotal: itemMonto,
-            },
-          });
-
-          for (const ac of auxCalcs) {
-            const l = Number(ac.largo || 0);
-            const a = Number(ac.ancho || 0);
-            const h = Number(ac.alto || 0);
-            const f = Number(ac.factor_repeticion || 1);
-            await tx.auxiliaryCalculation.create({
-              data: {
-                certificationItemId: createdItem.id,
-                descripcion: ac.descripcion,
-                largo: l,
-                ancho: a,
-                alto: h,
-                factor_repeticion: f,
-                subtotal: l * a * h * f,
-              },
-            });
-          }
-
-          if (itemInput.photos) {
-            for (const photo of itemInput.photos) {
-              await tx.itemPhoto.create({
-                data: {
-                  certificationItemId: createdItem.id,
-                  url: photo.url,
-                  comentario: photo.comentario || null,
-                  fechaCaptura: photo.fechaCaptura ? new Date(photo.fechaCaptura) : new Date(),
-                },
-              });
-            }
-          }
+    const body = measurementSchema.partial().parse(req.body);
+    const updated = await prisma.$transaction(
+      async (tx) => {
+        const data: Prisma.CertificationUpdateInput = {
+          ...(body.notes !== undefined ? { notes: body.notes } : {}),
+          ...(body.periodFrom !== undefined ? { periodFrom: body.periodFrom ? new Date(body.periodFrom) : null } : {}),
+          ...(body.periodTo !== undefined ? { periodTo: body.periodTo ? new Date(body.periodTo) : null } : {}),
+        };
+        if (body.items?.length) {
+          await tx.certificationItem.deleteMany({ where: { certificationId: id } });
+          const total = await writeItems(tx, id, cert.projectId, cert.partnerId, body.items);
+          const retention = Math.round((total * moneyNumber(cert.retentionPct)) / 100);
+          Object.assign(data, { montoTotal: total, retentionAmount: retention, netAmount: total - retention });
         }
-
-        await tx.certification.update({
-          where: { id },
-          data: {
-            montoTotal: certTotal,
-            notes: body.notes !== undefined ? body.notes : cert.notes,
-          },
-        });
-      }
-
-      return tx.certification.findUnique({
-        where: { id },
-        include: certificationInclude,
-      });
-    });
-
+        return tx.certification.update({ where: { id }, data, include: certificationInclude });
+      },
+      { timeout: 60_000 }
+    );
     ok(res, updated);
   })
 );
 
-// ----------------------------------------------------
-// POST /api/certifications/:id/close-measurement
-// Cierra la medición, bloquea edición física y genera CERTIFICADO_BORRADOR
-// ----------------------------------------------------
+/** Fondo de reparo del certificado (solo en borrador; lo confirma el usuario). */
+advancedCertificationsRouter.patch(
+  "/:id/retention",
+  asyncHandler(async (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const { retentionPct } = z.object({ retentionPct: z.coerce.number().min(0).max(30) }).parse(req.body);
+    const cert = await prisma.certification.findUnique({ where: { id } });
+    if (!cert) throw new NotFoundError("Certificación", id);
+    if (cert.estado === CertificationStatus.APROBADO) {
+      throw new DomainError("CERT_LOCKED", "El certificado ya está aprobado", 409);
+    }
+    const total = moneyNumber(cert.montoTotal);
+    const retentionAmount = Math.round((total * retentionPct) / 100);
+    ok(
+      res,
+      await prisma.certification.update({
+        where: { id },
+        data: { retentionPct, retentionAmount, netAmount: total - retentionAmount },
+        include: certificationInclude,
+      })
+    );
+  })
+);
+
+/** POST /api/certifications/:id/close-measurement — cierra la medición y crea el borrador del certificado. */
 advancedCertificationsRouter.post(
   "/:id/close-measurement",
   asyncHandler(async (req: Request, res: Response) => {
     const id = Number(req.params.id);
     const existing = await prisma.certification.findUnique({
       where: { id },
-      include: {
-        items: {
-          include: {
-            auxiliaryCalculations: true,
-          },
-        },
-      },
+      include: { items: { include: { auxiliaryCalculations: true } } },
     });
-
     if (!existing) throw new NotFoundError("Certificación", id);
-
     if (existing.estado === CertificationStatus.APROBADO) {
-      throw new DomainError("ALREADY_APPROVED", "La certificación ya se encuentra aprobada.");
+      throw new DomainError("ALREADY_APPROVED", "El certificado ya está aprobado", 409);
     }
-
     const updated = await prisma.$transaction(async (tx) => {
-      let grandTotal = 0;
-
-      // Recalcular con precisión estricta todos los montos de cada rubro
+      let total = 0;
       for (const item of existing.items) {
-        let presentQty = Number(item.cantidadPresente || 0);
-
-        if (item.auxiliaryCalculations && item.auxiliaryCalculations.length > 0) {
-          presentQty = item.auxiliaryCalculations.reduce((sum, ac) => {
-            const sub = Number(ac.largo) * Number(ac.ancho) * Number(ac.alto) * Number(ac.factor_repeticion);
-            return sum + sub;
-          }, 0);
-        }
-
-        const prevQty = Number(item.cantidadAnterior || 0);
-        const accumQty = prevQty + presentQty;
-        const unitPrice = Number(item.precioUnitario || 0);
-        const itemMonto = Math.round(presentQty * unitPrice);
-        grandTotal += itemMonto;
-
+        const qty = item.auxiliaryCalculations.length
+          ? measuredQuantity(
+              item.auxiliaryCalculations.map((a) => ({
+                largo: moneyNumber(a.largo),
+                ancho: moneyNumber(a.ancho),
+                alto: moneyNumber(a.alto),
+                factor_repeticion: moneyNumber(a.factor_repeticion),
+                isDeduction: a.isDeduction,
+              }))
+            )
+          : moneyNumber(item.cantidadPresente);
+        const amount = Math.round(qty * moneyNumber(item.precioUnitario));
+        total += amount;
         await tx.certificationItem.update({
           where: { id: item.id },
           data: {
-            cantidadPresente: presentQty,
-            cantidadAcumulada: accumQty,
-            montoTotal: itemMonto,
+            cantidadPresente: qty,
+            cantidadAcumulada: moneyNumber(item.cantidadAnterior) + qty,
+            montoTotal: amount,
           },
         });
       }
-
-      const cert = await tx.certification.update({
+      const retentionAmount = Math.round((total * moneyNumber(existing.retentionPct)) / 100);
+      return tx.certification.update({
         where: { id },
         data: {
           estado: CertificationStatus.CERTIFICADO_BORRADOR,
-          montoTotal: grandTotal,
+          montoTotal: total,
+          retentionAmount,
+          netAmount: total - retentionAmount,
         },
         include: certificationInclude,
       });
-
-      return cert;
     });
-
     ok(res, updated);
   })
 );
 
-// ----------------------------------------------------
-// POST /api/certifications/:id/approve
-// Aprueba el Certificado y ejecuta la Integración Contable Automática (Facturación Three-Way Match)
-// ----------------------------------------------------
+/**
+ * POST /api/certifications/:id/approve
+ * Aprueba el certificado: descuenta del presupuesto (libro mayor), actualiza el contrato del
+ * subcontratista y genera la factura.
+ */
 advancedCertificationsRouter.post(
   "/:id/approve",
   asyncHandler(async (req: Request, res: Response) => {
     const id = Number(req.params.id);
     const cert = await prisma.certification.findUnique({
       where: { id },
-      include: {
-        project: true,
-        partner: true,
-        items: {
-          include: {
-            budgetItem: true,
-          },
-        },
-        invoices: true,
-      },
+      include: { project: true, partner: true, items: { include: { budgetItem: true } }, invoices: true },
     });
-
     if (!cert) throw new NotFoundError("Certificación", id);
 
-    if (cert.estado === CertificationStatus.APROBADO && cert.invoices.length > 0) {
-      ok(res, {
-        certification: cert,
-        invoice: cert.invoices[0],
-        message: "El certificado ya se encontraba aprobado y facturado.",
-      });
+    // Ya aprobado: no se vuelve a descontar del presupuesto ni a facturar.
+    if (cert.estado === CertificationStatus.APROBADO) {
+      ok(res, { certification: cert, invoice: cert.invoices[0] ?? null, budgetWarnings: [], message: "El certificado ya se encontraba aprobado." });
       return;
     }
 
     const result = await prisma.$transaction(async (tx) => {
-      // 1. Transicionar estado a APROBADO
+      const total = moneyNumber(cert.montoTotal);
+      const retentionAmount = Math.round((total * moneyNumber(cert.retentionPct)) / 100);
       const approvedCert = await tx.certification.update({
         where: { id },
-        data: { estado: CertificationStatus.APROBADO },
+        data: { estado: CertificationStatus.APROBADO, retentionAmount, netAmount: total - retentionAmount },
         include: certificationInclude,
       });
 
-      // 2. Impactar avance físico y financiero en los rubros presupuestarios
+      // Presupuesto: al cliente = avance real; de subcontratista = costo interno
+      const budgetWarnings: BudgetWarning[] = [];
       for (const item of cert.items) {
-        if (item.budgetItemId) {
-          await tx.budgetItem.update({
-            where: { id: item.budgetItemId },
-            data: {
-              executedQuantity: { increment: Number(item.cantidadPresente || 0) },
-              executedAmount: { increment: Number(item.montoTotal || 0) },
-            },
-          });
+        const base = {
+          projectId: cert.projectId,
+          budgetItemId: item.budgetItemId,
+          amount: item.montoTotal,
+          quantity: item.cantidadPresente,
+          sourceType: "Certification",
+          sourceId: cert.id,
+          sourceNumber: `CERT-${String(cert.numero).padStart(2, "0")}${cert.partner ? ` ${cert.partner.name}` : ""}`,
+        };
+        if (cert.partnerId) {
+          budgetWarnings.push(...(await postCost(tx, { ...base, source: "SUBCONTRACT" })));
+        } else {
+          const { warnings } = await postMovement(tx, { ...base, source: "CLIENT_CERTIFICATE", stage: "ACTUAL" });
+          budgetWarnings.push(...warnings);
         }
       }
-
-      // Recalcular métricas consolidadas de la obra
+      if (cert.contractId) {
+        await tx.subcontractorContract.update({
+          where: { id: cert.contractId },
+          data: { certifiedAmount: { increment: total } },
+        });
+      }
       await recalculateProjectFinancials(tx, cert.projectId);
 
-      // 3. INTEGRACIÓN CONTABLE (Generación Automática de Factura Fiscal)
-      const certTotal = Number(cert.montoTotal || 0);
+      // Factura (recibida del subcontratista o emitida al cliente)
       const isSubcontractor = Boolean(cert.partnerId);
-      const invoiceType = isSubcontractor ? "RECIBIDA" : "EMITIDA";
-
-      // Parámetros fiscales paraguayos (DNIT)
       const now = new Date();
-      const dueDate = new Date();
-      dueDate.setDate(dueDate.getDate() + 30); // 30 días de crédito estándar
-
-      const legalInvoiceNumber = isSubcontractor
-        ? `001-002-${String(cert.numero).padStart(7, "0")}`
-        : `001-001-${String(cert.numero).padStart(7, "0")}`;
-
-      const timbrado = isSubcontractor ? "15894320" : "16240980";
-      const iva10 = Math.round(certTotal / 11);
-      const subtotalNeto = certTotal - iva10;
-
-      const concepto = isSubcontractor
-        ? `Certificado N° ${cert.numero} de Subcontratista ${cert.partner?.name || ""} en Obra ${cert.project.name}`
-        : `Certificado N° ${cert.numero} de Avance de Obra al Cliente ${cert.project.clientName || cert.project.name}`;
-
-      const matchNotes = isSubcontractor
-        ? `Integración Tripartita Aprobada (Three-Way Match 100%): Medición de campo cerrada N° ${cert.numero} con cómputos auxiliares validados y certificación fiscalizada sin objeción.`
-        : `Certificación de Obra al Cliente N° ${cert.numero} aprobada por Fiscalización. Cuenta por Cobrar generada automáticamente.`;
-
-      // Crear o vincular Factura
-      let invoice = cert.invoices.length > 0 ? cert.invoices[0] : null;
-
+      const dueDate = new Date(now.getTime() + 30 * 86400000);
+      const iva10 = Math.round(total / 11);
+      let invoice = cert.invoices[0] ?? null;
       if (!invoice) {
         invoice = await tx.invoice.create({
           data: {
             projectId: cert.projectId,
             partnerId: cert.partnerId || null,
             certificationId: cert.id,
-            numeroFactura: legalInvoiceNumber,
-            timbrado,
-            tipo: invoiceType,
+            numeroFactura: `${isSubcontractor ? "001-002" : "001-001"}-${String(cert.numero).padStart(7, "0")}`,
+            timbrado: "PENDIENTE",
+            tipo: isSubcontractor ? "RECIBIDA" : "EMITIDA",
             estado: "APROBADA",
             fechaEmision: now,
             fechaVencimiento: dueDate,
             condicionVenta: "CREDITO",
-            concepto,
-            subtotal: subtotalNeto,
+            concepto: isSubcontractor
+              ? `Cert. N° ${cert.numero} — ${cert.partner?.name ?? ""} — ${cert.project.name}`
+              : `Certificado N° ${cert.numero} de avance de obra — ${cert.project.name}`,
+            subtotal: total - iva10,
             montoExento: 0,
             montoIva5: 0,
             montoIva10: iva10,
-            total: certTotal,
+            total,
             threeWayMatchPassed: true,
-            matchNotes,
-            remisionNumber: `REM-CERT-${cert.numero}`,
-            remisionDate: now,
+            matchNotes: retentionAmount
+              ? `Fondo de reparo ${moneyNumber(cert.retentionPct)}%: ${retentionAmount.toLocaleString("es-PY")} Gs. Neto a pagar ${(total - retentionAmount).toLocaleString("es-PY")} Gs.`
+              : "Certificado aprobado desde la medición.",
           },
         });
-
-        // Insertar items de la factura correspondiente a los rubros certificados
         for (const item of cert.items) {
-          const itemMonto = Number(item.montoTotal || 0);
-          const itemIva10 = Math.round(itemMonto / 11);
-          const itemSubtotal = itemMonto - itemIva10;
-
+          const amount = moneyNumber(item.montoTotal);
+          const itemIva = Math.round(amount / 11);
           await tx.invoiceItem.create({
             data: {
               invoiceId: invoice.id,
-              description: `${item.budgetItem.code} - ${item.budgetItem.name} (Cant: ${Number(item.cantidadPresente).toLocaleString("es-PY")} ${item.budgetItem.unit || "un"})`,
-              quantity: Number(item.cantidadPresente || 1),
-              unitPrice: Number(item.precioUnitario || 0),
+              description: `${item.budgetItem.code} - ${item.budgetItem.name}`,
+              quantity: moneyNumber(item.cantidadPresente) || 1,
+              unitPrice: moneyNumber(item.precioUnitario),
               vatType: "IVA10",
               montoExento: 0,
               montoIva5: 0,
-              montoIva10: itemIva10,
-              subtotal: itemSubtotal,
+              montoIva10: itemIva,
+              subtotal: amount - itemIva,
             },
           });
         }
       }
-
-      return {
-        certification: approvedCert,
-        invoice,
-      };
+      return { certification: approvedCert, invoice, budgetWarnings };
     });
-
     ok(res, result, 201);
   })
 );
 
-// ----------------------------------------------------
-// DELETE /api/certifications/:id
-// ----------------------------------------------------
 advancedCertificationsRouter.delete(
   "/:id",
   asyncHandler(async (req: Request, res: Response) => {
     const id = Number(req.params.id);
-    const existing = await prisma.certification.findUnique({
-      where: { id },
-      include: { items: true, invoices: true },
-    });
-
+    const existing = await prisma.certification.findUnique({ where: { id } });
     if (!existing) throw new NotFoundError("Certificación", id);
-
     if (existing.estado === CertificationStatus.APROBADO) {
-      throw new DomainError(
-        "CANNOT_DELETE_APPROVED",
-        "No se puede eliminar una certificación aprobada con factura contable vinculada.",
-        400
-      );
+      throw new DomainError("CANNOT_DELETE_APPROVED", "No se puede borrar un certificado aprobado", 409);
     }
-
-    await prisma.$transaction(async (tx) => {
-      await tx.certification.delete({ where: { id } });
-    });
-
+    await prisma.certification.delete({ where: { id } });
     ok(res, { deleted: true, id });
   })
 );

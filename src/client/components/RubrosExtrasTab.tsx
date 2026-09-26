@@ -22,6 +22,7 @@ import { Project, BudgetItem } from "../types";
 import { api } from "../api";
 import { formatMoney } from "../utils/format";
 
+import { formatQty } from "../utils/numbers";
 export interface AdendaItem {
   id: string;
   adendaNumber: string;
@@ -50,57 +51,7 @@ interface RubrosExtrasTabProps {
   onOpenCertifyExtra?: (item: { code: string; name: string; unit: string; unitPrice: number; quantity: number }) => void;
 }
 
-const INITIAL_ADENDAS: AdendaItem[] = [
-  {
-    id: "AD-01",
-    adendaNumber: "Convenio Modificatorio N° 1",
-    title: "Ampliación de zapatas y fundaciones por nivel freático alto",
-    justification: "Estudio geotécnico complementario indicó necesidad de profundización de cimientos en Bloque B.",
-    approvalDate: "15/01/2026",
-    status: "APROBADA",
-    resolutionNumber: "RES-MOPC-2026/89",
-    items: [
-      {
-        code: "EXT-01",
-        name: "Excavación adicional en suelo con presencia de agua",
-        unit: "m³",
-        quantity: 180,
-        unitPrice: 75000,
-        totalAmount: 13500000,
-        executedQuantity: 120,
-      },
-      {
-        code: "EXT-02",
-        name: "Hormigón armado para zapatas de mayor cota H-30",
-        unit: "m³",
-        quantity: 45,
-        unitPrice: 920000,
-        totalAmount: 41400000,
-        executedQuantity: 30,
-      },
-    ],
-  },
-  {
-    id: "AD-02",
-    adendaNumber: "Adenda N° 2",
-    title: "Incorporación de grupo electrógeno y tablero de transferencia automática",
-    justification: "Requerimiento de respaldo para quirófanos y banco de sangre.",
-    approvalDate: "02/02/2026",
-    status: "APROBADA",
-    resolutionNumber: "RES-INT-2026/14",
-    items: [
-      {
-        code: "EXT-03",
-        name: "Grupo electrógeno diesel insonorizado 150 kVA",
-        unit: "gl",
-        quantity: 1,
-        unitPrice: 145000000,
-        totalAmount: 145000000,
-        executedQuantity: 0,
-      },
-    ],
-  },
-];
+const INITIAL_ADENDAS: AdendaItem[] = [];
 
 export const RubrosExtrasTab: React.FC<RubrosExtrasTabProps> = ({
   project,
@@ -261,7 +212,7 @@ export const RubrosExtrasTab: React.FC<RubrosExtrasTabProps> = ({
   return (
     <div className="space-y-4 max-w-7xl mx-auto pb-12 animate-in fade-in duration-150">
       {/* Header Banner */}
-      <div className="bg-white border border-slate-200 p-4 rounded-2xl shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-end gap-2 [&>div:first-child]:hidden">
         <div>
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-xl bg-blue-50 text-blue-600 border border-blue-100 flex items-center justify-center">
@@ -438,13 +389,13 @@ export const RubrosExtrasTab: React.FC<RubrosExtrasTabProps> = ({
                             <td className="p-3 font-bold text-slate-900">{it.name}</td>
                             <td className="p-3 text-center font-mono text-slate-500">{it.unit}</td>
                             <td className="p-3 text-right font-mono text-slate-900">
-                              {it.quantity.toLocaleString("es-PY")}
+                              {formatQty(it.quantity)}
                             </td>
                             <td className="p-3 text-right font-mono text-emerald-700 font-bold">
-                              {it.executedQuantity.toLocaleString("es-PY")}
+                              {formatQty(it.executedQuantity)}
                             </td>
                             <td className="p-3 text-right font-mono text-amber-700">
-                              {remaining.toLocaleString("es-PY")}
+                              {formatQty(remaining)}
                             </td>
                             <td className="p-3 text-right font-mono text-slate-600">
                               {formatMoney(it.unitPrice, currency)}
@@ -550,7 +501,7 @@ export const RubrosExtrasTab: React.FC<RubrosExtrasTabProps> = ({
                 </label>
                 <textarea
                   rows={2}
-                  placeholder="Ej. Solicitado por fiscalización debido a modificaciones en el trazado vial..."
+                  placeholder="Ej. Solicitado por fiscalización debido a modificaciones de proyecto..."
                   value={justification}
                   onChange={(e) => setJustification(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:border-blue-500 outline-none"
@@ -711,13 +662,13 @@ export const RubrosExtrasTab: React.FC<RubrosExtrasTabProps> = ({
               <div className="flex justify-between text-slate-600">
                 <span>Cantidad Aprobada en Adenda:</span>
                 <span className="font-mono text-slate-900">
-                  {selectedExtraItemForCert.maxQty.toLocaleString("es-PY")} {selectedExtraItemForCert.unit}
+                  {formatQty(selectedExtraItemForCert.maxQty)} {selectedExtraItemForCert.unit}
                 </span>
               </div>
               <div className="flex justify-between text-slate-600">
                 <span>Ya Ejecutada Anteriormente:</span>
                 <span className="font-mono text-emerald-700">
-                  {selectedExtraItemForCert.currentExec.toLocaleString("es-PY")} {selectedExtraItemForCert.unit}
+                  {formatQty(selectedExtraItemForCert.currentExec)} {selectedExtraItemForCert.unit}
                 </span>
               </div>
               <div className="flex justify-between text-slate-600 pt-1 border-t border-slate-200">

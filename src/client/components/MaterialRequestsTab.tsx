@@ -30,6 +30,7 @@ import {
 import { formatDate, formatDateTime } from "../utils/format";
 import { getStatusBadge } from "../utils/statusBadges";
 import { api } from "../api";
+import { BudgetItemSelect } from "./BudgetItemSelect";
 
 interface MaterialRequestsTabProps {
   project?: Project | null;
@@ -82,6 +83,7 @@ export const MaterialRequestsTab: React.FC<MaterialRequestsTabProps> = ({
     materialId: materials[0]?.id || 1,
     quantity: 10,
     notes: "",
+    budgetItemId: "" as number | "",
   });
 
   // Filtered materials by search query
@@ -182,6 +184,7 @@ export const MaterialRequestsTab: React.FC<MaterialRequestsTabProps> = ({
         details: [
           {
             materialId: Number(formData.materialId),
+            budgetItemId: formData.budgetItemId ? Number(formData.budgetItemId) : undefined,
             quantity: Number(formData.quantity),
           },
         ],
@@ -203,7 +206,7 @@ export const MaterialRequestsTab: React.FC<MaterialRequestsTabProps> = ({
   return (
     <div className="space-y-6 pb-12 text-slate-800">
       {/* Top Banner with White & Blue Aesthetic */}
-      <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-end gap-2 [&>div:first-child]:hidden">
         <div>
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600">
@@ -229,6 +232,7 @@ export const MaterialRequestsTab: React.FC<MaterialRequestsTabProps> = ({
               materialId: materials[0]?.id || 1,
               quantity: 10,
               notes: "",
+              budgetItemId: "",
             });
             setShowNewModal(true);
           }}
@@ -546,6 +550,19 @@ export const MaterialRequestsTab: React.FC<MaterialRequestsTabProps> = ({
                     required
                   />
                 </div>
+              </div>
+
+              {/* Rubro de destino (opcional: si falta, se elige al armar la OC) */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  Rubro de destino (opcional)
+                </label>
+                <BudgetItemSelect
+                  projectId={project?.id}
+                  value={formData.budgetItemId}
+                  onChange={(budgetItemId) => setFormData({ ...formData, budgetItemId })}
+                  placeholder="Se define al armar la orden de compra"
+                />
               </div>
 
               {/* Observaciones / Notas */}

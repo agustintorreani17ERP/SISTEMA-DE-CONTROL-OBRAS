@@ -1,39 +1,34 @@
-import React, { useState, useRef, useMemo } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import {
-  FileSpreadsheet,
-  Upload,
-  CheckCircle2,
   AlertCircle,
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
-  RefreshCw,
-  Sparkles,
-  Layers,
-  HelpCircle,
-  Clipboard,
-  Link2,
-  Table,
-  Sliders,
-  Percent,
-  Check,
-  X,
-  FileCheck,
-  ChevronDown,
+  CheckCircle2,
+  ChevronLeft,
   ChevronRight,
-  Filter,
-  Eye,
-  EyeOff,
-  Search,
+  Clipboard,
+  FileSpreadsheet,
+  Info,
+  Link2,
+  Lock,
+  RefreshCw,
+  Scale,
+  Upload,
 } from "lucide-react";
 import { api } from "../api";
 import { Project } from "../types";
 import { formatMoney } from "../utils/format";
-import {
+import { buildBudgetTree } from "../../modules/budgets/engine/budgetTree";
+import type {
+  ArithmeticStrategy,
   BudgetImportPreview,
   CanonicalColumnRole,
-  ParsedItemRow,
-  SheetStructure,
+  CommitBudgetResult,
+  ImportRow,
+  NumberFormat,
+  RowKind,
+  SurchargeTreatment,
   ValidationIssue,
 } from "../../modules/budgets/engine/types";
 
@@ -45,45 +40,67 @@ interface ExcelBudgetImporterProps {
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
 }
 
-type WizardStep = 1 | 2 | 3 | 4;
+type Step = 1 | 2 | 3 | 4;
+type Preview = BudgetImportPreview & { projectLocked: boolean };
 
-const ROLE_LABELS: Record<CanonicalColumnRole, { label: string; color: string; desc: string }> = {
-  code: {
-    label: "Código / Ítem",
-    color: "bg-indigo-50 text-indigo-700 border-indigo-200",
-    desc: "Identificador jerárquico (ej. 1.1, EST-01)",
-  },
-  description: {
-    label: "Descripción / Rubro",
-    color: "bg-emerald-50 text-emerald-700 border-emerald-200",
-    desc: "Nombre o descripción de los trabajos",
-  },
-  unit: {
-    label: "Unidad",
-    color: "bg-amber-50 text-amber-700 border-amber-200",
-    desc: "Unidad de medida (m², m³, un, kg, etc.)",
-  },
-  quantity: {
-    label: "Cantidad / Metrado",
-    color: "bg-blue-50 text-blue-700 border-blue-200",
-    desc: "Volumen o cómputo métrico",
-  },
-  unitPrice: {
-    label: "Precio Unitario",
-    color: "bg-purple-50 text-purple-700 border-purple-200",
-    desc: "Costo unitario sin impuestos o contractual",
-  },
-  totalPrice: {
-    label: "Precio Total",
-    color: "bg-rose-50 text-rose-700 border-rose-200",
-    desc: "Monto total del ítem (Cantidad × P.U.)",
-  },
-  ignore: {
-    label: "Ignorar Columna",
-    color: "bg-stone-50 text-stone-500 border-stone-200",
-    desc: "No procesar esta columna",
-  },
+const ROLE_OPTIONS: { value: CanonicalColumnRole; label: string }[] = [
+  { value: "code", label: "Código / Ítem" },
+  { value: "description", label: "Descripción" },
+  { value: "unit", label: "Unidad" },
+  { value: "quantity", label: "Cantidad" },
+  { value: "unitPrice", label: "Precio unitario" },
+  { value: "totalPrice", label: "Precio total" },
+  { value: "ignore", label: "Ignorar" },
+];
+
+const KIND_OPTIONS: { value: RowKind; label: string; style: string }[] = [
+  { value: "RUBRO", label: "Rubro", style: "bg-indigo-50 text-indigo-800 border-indigo-200" },
+  { value: "SUBRUBRO", label: "Subrubro", style: "bg-sky-50 text-sky-800 border-sky-200" },
+  { value: "ITEM", label: "Ítem", style: "bg-white text-stone-800 border-stone-200" },
+  { value: "SUBTOTAL", label: "Subtotal", style: "bg-stone-100 text-stone-600 border-stone-200" },
+  { value: "RECARGO", label: "Recargo", style: "bg-amber-50 text-amber-800 border-amber-200" },
+  { value: "IGNORAR", label: "Ignorar", style: "bg-stone-50 text-stone-400 border-stone-200" },
+];
+
+const TREATMENT_LABEL: Record<SurchargeTreatment, string> = {
+  DISTRIBUTE: "Prorratear en los PU",
+  AS_ITEM: "Partida propia",
+  IGNORE: "No cargar",
 };
+
+const PAGE_SIZE = 100;
+
+/** Las celdas editables se muestran y se leen en formato paraguayo: 1.234.567,89 */
+function formatCell(value: number | null): string {
+  return value === null ? "" : value.toLocaleString("es-PY", { maximumFractionDigits: 4 });
+}
+
+function parseCell(text: string): number | null {
+  const t = text.trim();
+  if (!t) return null;
+  const n = Number(t.replace(/\./g, "").replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+}
+
+function StepBadge({ step, current, label }: { step: Step; current: Step; label: string }) {
+  const done = current > step;
+  return (
+    <div
+      className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 ${
+        current === step ? "bg-white font-bold text-stone-900 shadow-xs" : done ? "text-emerald-700" : "text-stone-400"
+      }`}
+    >
+      {done ? (
+        <CheckCircle2 className="h-3.5 w-3.5" />
+      ) : (
+        <span className="flex h-4 w-4 items-center justify-center rounded-full bg-stone-200 font-mono text-[10px] text-stone-700">
+          {step}
+        </span>
+      )}
+      <span>{label}</span>
+    </div>
+  );
+}
 
 export const ExcelBudgetImporter: React.FC<ExcelBudgetImporterProps> = ({
   project,
@@ -92,984 +109,794 @@ export const ExcelBudgetImporter: React.FC<ExcelBudgetImporterProps> = ({
   onImportComplete,
   showToast,
 }) => {
-  const [currentStep, setCurrentStep] = useState<WizardStep>(1);
-  const [loading, setLoading] = useState<boolean>(false);
+  const [step, setStep] = useState<Step>(1);
+  const [loading, setLoading] = useState(false);
 
-  // Input States
-  const [uploadSource, setUploadSource] = useState<"file" | "paste" | "google">("file");
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [pastedText, setPastedText] = useState<string>("");
-  const [googleUrl, setGoogleUrl] = useState<string>("");
-
-  // Preview State
-  const [previewData, setPreviewData] = useState<BudgetImportPreview | null>(null);
-  const [activeSheetName, setActiveSheetName] = useState<string>("");
-
-  // Step 2 Mapping custom overrides
-  const [customHeaderRows, setCustomHeaderRows] = useState<Record<string, number>>({});
-  const [customColumnMappings, setCustomColumnMappings] = useState<Record<string, Record<number, CanonicalColumnRole>>>({});
-
-  // Step 3 Filtering and resolution
-  const [filterMode, setFilterMode] = useState<"ALL" | "ISSUES" | "EXCLUDED">("ALL");
-  const [searchQuery, setSearchQuery] = useState<string>("");
-  const [showExcludedAggregates, setShowExcludedAggregates] = useState<boolean>(true);
-  const [markupPercent, setMarkupPercent] = useState<number>(0);
-  const [resolutionStrategy, setResolutionStrategy] = useState<"KEEP_ORIGINAL" | "RECALCULATE_TOTAL" | "RECALCULATE_PU">("KEEP_ORIGINAL");
-
-  // Step 4 Commit Result
-  const [commitResult, setCommitResult] = useState<any | null>(null);
-
+  // Paso 1
+  const [source, setSource] = useState<"file" | "paste" | "google">("file");
+  const [file, setFile] = useState<File | null>(null);
+  const [pastedText, setPastedText] = useState("");
+  const [googleUrl, setGoogleUrl] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const activeSheetStructure: SheetStructure | undefined = useMemo(() => {
-    if (!previewData) return undefined;
-    return previewData.sheets.find((s) => s.sheetName === activeSheetName) || previewData.sheets[0];
-  }, [previewData, activeSheetName]);
+  // Paso 2
+  const [preview, setPreview] = useState<Preview | null>(null);
+  const [selectedSheets, setSelectedSheets] = useState<string[]>([]);
+  const [activeSheet, setActiveSheet] = useState("");
+  const [numberFormat, setNumberFormat] = useState<NumberFormat | undefined>();
+  const [includeHidden, setIncludeHidden] = useState(false);
+  const [headerRows, setHeaderRows] = useState<Record<string, number>>({});
+  const [columnMappings, setColumnMappings] = useState<Record<string, Record<number, CanonicalColumnRole>>>({});
 
-  // Handle Step 1: Submit to generate Preview
-  const handleGeneratePreview = async (
-    fileToUse?: File | null,
-    sheetNameToUse?: string,
-    headerRowsToUse?: Record<string, number>,
-    columnMappingsToUse?: Record<string, Record<number, CanonicalColumnRole>>
-  ) => {
+  // Paso 3
+  const [rows, setRows] = useState<ImportRow[]>([]);
+  const [treatments, setTreatments] = useState<Record<string, SurchargeTreatment>>({});
+  const [strategy, setStrategy] = useState<ArithmeticStrategy>("KEEP_ORIGINAL");
+  const [filter, setFilter] = useState<"ALL" | "ISSUES" | "STRUCTURE" | "IGNORED">("ALL");
+  const [search, setSearch] = useState("");
+  const [page, setPage] = useState(0);
+
+  // Paso 4
+  const [acceptDifference, setAcceptDifference] = useState(false);
+  const [result, setResult] = useState<CommitBudgetResult | null>(null);
+
+  const decimals = (project?.currency ?? currency) === "PYG" ? 0 : 2;
+  const contractAmount = Number(project?.montoContractualManual || 0) || null;
+
+  // El árbol y el cuadre se recalculan en vivo con cada corrección.
+  const build = useMemo(
+    () =>
+      rows.length
+        ? buildBudgetTree(rows, {
+            surchargeTreatments: treatments,
+            arithmeticStrategy: strategy,
+            currencyDecimals: decimals,
+            contractAmount,
+          })
+        : null,
+    [rows, treatments, strategy, decimals, contractAmount]
+  );
+  const rec = build?.reconciliation;
+  const amountByRow = useMemo(() => new Map(build?.nodes.map((n) => [n.rowId, n.amount]) ?? []), [build]);
+  const issuesByRow = useMemo(() => {
+    const map = new Map<string, ValidationIssue[]>();
+    for (const issue of [...(build?.issues ?? []), ...(preview?.readIssues ?? [])]) {
+      if (!issue.rowId && !issue.rowNumber) continue;
+      const key = issue.rowId ?? `${issue.sheet}!${issue.rowNumber}`;
+      map.set(key, [...(map.get(key) ?? []), issue]);
+    }
+    return map;
+  }, [build, preview]);
+  const critical = build?.issues.filter((i) => i.type === "CRITICAL") ?? [];
+  const globalIssues = [...(build?.issues ?? []), ...(preview?.readIssues ?? [])].filter((i) => !i.rowNumber);
+
+  const runPreview = async (overrides: Partial<{
+    selectedSheets: string[];
+    numberFormat: NumberFormat;
+    includeHidden: boolean;
+    headerRows: Record<string, number>;
+    columnMappings: Record<string, Record<number, CanonicalColumnRole>>;
+  }> = {}) => {
     if (!project?.id) {
-      showToast("No hay una obra seleccionada para asociar el presupuesto", "error");
-      return;
+      showToast("Seleccioná una obra antes de importar", "error");
+      return null;
     }
-
-    const file = fileToUse !== undefined ? fileToUse : selectedFile;
-    if (uploadSource === "file" && !file) {
-      showToast("Por favor seleccioná un archivo Excel (.xlsx, .xls o .csv)", "error");
-      return;
-    }
-    if (uploadSource === "paste" && !pastedText.trim()) {
-      showToast("Por favor pegá datos de planilla en el área de texto", "error");
-      return;
-    }
-    if (uploadSource === "google" && !googleUrl.trim()) {
-      showToast("Por favor ingresá un enlace válido de Google Sheets", "error");
-      return;
-    }
+    if (source === "file" && !file) return showToast("Elegí un archivo Excel o CSV", "error"), null;
+    if (source === "paste" && !pastedText.trim()) return showToast("Pegá las celdas de la planilla", "error"), null;
+    if (source === "google" && !googleUrl.trim()) return showToast("Ingresá el enlace de Google Sheets", "error"), null;
 
     setLoading(true);
     try {
       const data = await api.previewBudgetImport(project.id, {
-        file: uploadSource === "file" ? file : null,
-        pastedText: uploadSource === "paste" ? pastedText : undefined,
-        googleSheetsUrl: uploadSource === "google" ? googleUrl : undefined,
-        activeSheetName: sheetNameToUse || activeSheetName || undefined,
-        customHeaderRows: headerRowsToUse || customHeaderRows,
-        customColumnMappings: columnMappingsToUse || (customColumnMappings as any),
+        file: source === "file" ? file : null,
+        pastedText: source === "paste" ? pastedText : undefined,
+        googleSheetsUrl: source === "google" ? googleUrl : undefined,
+        selectedSheets: overrides.selectedSheets ?? (selectedSheets.length ? selectedSheets : undefined),
+        numberFormat: overrides.numberFormat ?? numberFormat,
+        includeHidden: overrides.includeHidden ?? includeHidden,
+        headerRows: overrides.headerRows ?? headerRows,
+        columnMappings: overrides.columnMappings ?? columnMappings,
       });
-
-      setPreviewData(data);
-      setActiveSheetName(data.activeSheetName);
-      if (currentStep === 1) {
-        setCurrentStep(2);
-      }
-      showToast(
-        `Planilla analizada: ${data.summary.totalRowsRead} filas encontradas (${data.summary.aggregatesExcludedCount} subtotales excluidos de duplicación).`
-      );
+      setPreview(data);
+      setSelectedSheets(data.selectedSheets);
+      setActiveSheet((prev) => (data.selectedSheets.includes(prev) ? prev : data.selectedSheets[0] ?? ""));
+      setNumberFormat(data.numberFormat);
+      setRows(data.rows);
+      setTreatments(data.surchargeTreatments);
+      setPage(0);
+      setAcceptDifference(false);
+      return data;
     } catch (err: any) {
-      showToast(err.message || "Error al analizar la planilla", "error");
+      showToast(err.message || "No se pudo analizar la planilla", "error");
+      return null;
     } finally {
       setLoading(false);
     }
   };
 
-  // Switch Sheet in Step 2 or 3
-  const handleSwitchSheet = (newSheetName: string) => {
-    setActiveSheetName(newSheetName);
-    handleGeneratePreview(selectedFile, newSheetName);
+  const updateRow = (id: string, patch: Partial<ImportRow>) =>
+    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ...patch, edited: true } : r)));
+
+  const changeKind = (row: ImportRow, kind: RowKind) => {
+    const patch: Partial<ImportRow> = { kind };
+    if (kind === "RUBRO") patch.level = 0;
+    if (kind === "SUBRUBRO" && row.level === 0) patch.level = 1;
+    updateRow(row.id, patch);
   };
 
-  // Change Header Row in Step 2
-  const handleChangeHeaderRow = (newRow0Indexed: number) => {
-    if (!activeSheetStructure) return;
-    const updated = {
-      ...customHeaderRows,
-      [activeSheetStructure.sheetName]: newRow0Indexed,
-    };
-    setCustomHeaderRows(updated);
-    handleGeneratePreview(selectedFile, activeSheetStructure.sheetName, updated);
-  };
-
-  // Change Column Role in Step 2
-  const handleChangeColumnRole = (colIdx: number, newRole: CanonicalColumnRole) => {
-    if (!activeSheetStructure) return;
-    const currentSheetMap = { ...(customColumnMappings[activeSheetStructure.sheetName] || {}) };
-
-    // Si el rol no es ignore, evitar duplicar el rol en otra columna
-    if (newRole !== "ignore") {
-      Object.keys(currentSheetMap).forEach((k) => {
-        if (currentSheetMap[Number(k)] === newRole && Number(k) !== colIdx) {
-          currentSheetMap[Number(k)] = "ignore";
-        }
-      });
-      activeSheetStructure.columns.forEach((c) => {
-        if (c.detectedRole === newRole && c.index !== colIdx) {
-          currentSheetMap[c.index] = "ignore";
-        }
-      });
-    }
-
-    currentSheetMap[colIdx] = newRole;
-    const updatedMappings = {
-      ...customColumnMappings,
-      [activeSheetStructure.sheetName]: currentSheetMap,
-    };
-    setCustomColumnMappings(updatedMappings);
-  };
-
-  // Apply updated column mappings and move to step 3
-  const handleApplyMappingsAndProceed = () => {
-    if (!activeSheetStructure) return;
-    handleGeneratePreview(selectedFile, activeSheetStructure.sheetName, customHeaderRows, customColumnMappings).then(
-      () => {
-        setCurrentStep(3);
-      }
-    );
-  };
-
-  // Step 4: Final Transactional Commit
-  const handleCommitBudget = async () => {
-    if (!project?.id || !previewData) return;
-
-    const validItems = previewData.detectedItems
-      .filter((i) => !i.isExcludedAggregate && i.nodeKind !== "AGREGADO")
-      .map((i) => ({
-        code: i.code,
-        description: i.description,
-        unit: i.unit,
-        quantity: i.quantity,
-        unitPrice: i.unitPrice,
-        totalPrice: i.totalPrice,
-        nodeKind: i.nodeKind as "RUBRO" | "SUBRUBRO" | "ITEM",
-        hierarchyLevel: i.hierarchyLevel,
-        path: i.path,
-        parentPath: i.parentPath,
-        category: i.sheet,
-        noCotiza: i.noCotiza,
-        unitReview: i.unitReview,
-        unitSuggestion: i.unitSuggestion,
-        sourceSheet: i.sheet,
-        sourceRow: i.rowNumber,
-      }));
-
-    if (validItems.length === 0) {
-      showToast("No hay ítems válidos para importar en la planilla", "error");
-      return;
-    }
-
-    setLoading(true);
-    try {
-      const result = await api.commitBudgetImport(project.id, {
-        activeSheetName,
-        markupPercent,
-        resolutionStrategy,
-        items: validItems,
-      });
-
-      setCommitResult(result);
-      setCurrentStep(4);
-      showToast(`¡Presupuesto importado con éxito! ${result.importedItemsCount} partidas sincronizadas.`);
-    } catch (err: any) {
-      showToast(err.message || "Error al persistir el presupuesto", "error");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Filtered rows for Step 3
-  const displayedItems = useMemo(() => {
-    if (!previewData) return [];
-    return previewData.detectedItems.filter((item) => {
-      // Excluded filter
-      if (!showExcludedAggregates && item.isExcludedAggregate) return false;
-
-      // Filter Mode
-      if (filterMode === "ISSUES" && item.issues.length === 0) return false;
-      if (filterMode === "EXCLUDED" && !item.isExcludedAggregate) return false;
-
-      // Search Query
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        return (
-          item.code.toLowerCase().includes(q) ||
-          item.description.toLowerCase().includes(q) ||
-          item.unit.toLowerCase().includes(q)
-        );
-      }
+  const visibleRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return rows.filter((r) => {
+      if (filter === "ISSUES" && !issuesByRow.has(r.id)) return false;
+      if (filter === "STRUCTURE" && !["RUBRO", "SUBRUBRO", "SUBTOTAL", "RECARGO"].includes(r.kind)) return false;
+      if (filter === "IGNORED" && r.kind !== "IGNORAR") return false;
+      if (q && !`${r.code} ${r.description}`.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [previewData, filterMode, searchQuery, showExcludedAggregates]);
+  }, [rows, filter, search, issuesByRow]);
+  const pageCount = Math.max(1, Math.ceil(visibleRows.length / PAGE_SIZE));
+  const pageRows = visibleRows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+
+  const activeStructure = preview?.sheets.find((s) => s.sheetName === activeSheet);
+
+  const commit = async () => {
+    if (!project?.id || !preview) return;
+    setLoading(true);
+    try {
+      const res = await api.commitBudgetImport(project.id, {
+        rows,
+        surchargeTreatments: treatments,
+        arithmeticStrategy: strategy,
+        acceptDifference,
+        metadata: {
+          fileName: preview.metadata.fileName,
+          sourceType: preview.metadata.sourceType,
+          sheets: selectedSheets,
+          numberFormat: preview.numberFormat,
+          columnMappings,
+        },
+      });
+      setResult(res);
+      showToast(res.message);
+      onImportComplete();
+    } catch (err: any) {
+      showToast(err.message || "Error al importar el presupuesto", "error");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const money = (v: number | null | undefined) => (v === null || v === undefined ? "—" : formatMoney(v, currency));
+  const diffClass = (v: number | null | undefined) =>
+    v === null || v === undefined ? "text-stone-400" : Math.abs(v) <= (rec?.tolerance ?? 1) ? "text-emerald-700" : "text-rose-700";
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto pb-16 animate-in fade-in duration-200">
-      {/* Top Banner & Header */}
-      <div className="bg-white rounded-2xl p-5 border border-stone-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+    <div className="mx-auto max-w-7xl space-y-6 pb-16">
+      {/* Encabezado */}
+      <div className="flex flex-col justify-between gap-4 rounded-2xl border border-stone-200 bg-white p-5 shadow-xs md:flex-row md:items-center">
         <div className="flex items-center gap-3">
           <button
             onClick={onBack}
-            className="p-2 rounded-xl bg-stone-50 border border-stone-200 text-stone-600 hover:text-stone-900 hover:bg-stone-100 transition"
+            className="rounded-xl border border-stone-200 bg-stone-50 p-2 text-stone-600 transition hover:bg-stone-100"
+            aria-label="Volver"
           >
-            <ArrowLeft className="w-4 h-4" />
+            <ArrowLeft className="h-4 w-4" />
           </button>
           <div>
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-xl bg-amber-50 text-amber-700 flex items-center justify-center font-bold">
-                <FileSpreadsheet className="w-4 h-4" />
-              </div>
-              <h1 className="text-lg font-bold text-stone-900 font-display">
-                Motor de Ingesta & Normalización de Presupuestos
-              </h1>
-              <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100/80 text-amber-800 border border-amber-200 font-mono">
+            <h1 className="flex items-center gap-2 text-lg font-bold text-stone-900">
+              <FileSpreadsheet className="h-5 w-5 text-amber-600" />
+              Importar presupuesto
+              <span className="rounded-full border border-amber-200 bg-amber-100/80 px-2 py-0.5 font-mono text-xs text-amber-800">
                 {project?.code || "Obra"}
               </span>
-            </div>
-            <p className="text-xs text-stone-500 mt-0.5">
-              Ingesta sin límites de filas, validación aritmética cruzada y exclusión garantizada de subtotales.
+            </h1>
+            <p className="mt-0.5 text-xs text-stone-500">
+              El presupuesto importado es la base de la que se descuentan OC, certificados y caja chica.
             </p>
           </div>
         </div>
-
-        {/* Wizard Stepper Tabs */}
-        <div className="flex items-center gap-1 bg-stone-100/80 p-1.5 rounded-xl border border-stone-200 self-start md:self-auto text-xs font-semibold">
-          {[
-            { step: 1, label: "1. Carga" },
-            { step: 2, label: "2. Mapeo" },
-            { step: 3, label: "3. Validación" },
-            { step: 4, label: "4. Confirmación" },
-          ].map((s) => (
-            <div
-              key={s.step}
-              className={`px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition ${
-                currentStep === s.step
-                  ? "bg-white text-stone-900 shadow-xs font-bold"
-                  : currentStep > s.step
-                  ? "text-emerald-700"
-                  : "text-stone-400"
-              }`}
-            >
-              {currentStep > s.step ? (
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-              ) : (
-                <span className="w-4 h-4 rounded-full bg-stone-200 text-stone-700 text-[10px] flex items-center justify-center font-mono">
-                  {s.step}
-                </span>
-              )}
-              <span>{s.label}</span>
-            </div>
-          ))}
+        <div className="flex items-center gap-1 self-start rounded-xl border border-stone-200 bg-stone-100/80 p-1.5 text-xs font-semibold">
+          <StepBadge step={1} current={step} label="Carga" />
+          <StepBadge step={2} current={step} label="Estructura" />
+          <StepBadge step={3} current={step} label="Revisión y cuadre" />
+          <StepBadge step={4} current={step} label="Confirmar" />
         </div>
       </div>
 
-      {/* ========================================================================= */}
-      {/* PASO 1: CARGA Y DETECCIÓN                                                 */}
-      {/* ========================================================================= */}
-      {currentStep === 1 && (
-        <div className="bg-white rounded-2xl border border-stone-200 p-6 shadow-xs space-y-6">
-          <div>
-            <h2 className="text-base font-bold text-stone-900">Paso 1: Seleccioná la fuente de tu presupuesto</h2>
-            <p className="text-xs text-stone-500 mt-1">
-              Admite planillas de cualquier tamaño (sin límite de filas). Reconoce libros con múltiples hojas, formatos MOPC, privados y licitaciones.
-            </p>
+      {preview?.projectLocked && (
+        <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs text-rose-800">
+          <Lock className="mt-0.5 h-4 w-4 shrink-0" />
+          <p>
+            Esta obra ya tiene OC, certificados o gastos imputados al presupuesto: no se puede reemplazar. Podés revisar la
+            planilla, pero los cambios posteriores tienen que cargarse como adenda.
+          </p>
+        </div>
+      )}
+
+      {/* PASO 1: CARGA */}
+      {step === 1 && (
+        <div className="space-y-6 rounded-2xl border border-stone-200 bg-white p-6 shadow-xs">
+          <div className="grid max-w-xl grid-cols-3 gap-3">
+            {[
+              { key: "file" as const, icon: Upload, title: "Archivo", sub: ".xlsx, .xls, .csv" },
+              { key: "paste" as const, icon: Clipboard, title: "Pegar tabla", sub: "Copiado de Excel" },
+              { key: "google" as const, icon: Link2, title: "Google Sheets", sub: "Enlace compartido" },
+            ].map(({ key, icon: Icon, title, sub }) => (
+              <button
+                key={key}
+                onClick={() => setSource(key)}
+                className={`flex items-center gap-3 rounded-xl border p-3 text-left transition ${
+                  source === key ? "border-amber-500 bg-amber-50/50 font-bold text-amber-900" : "border-stone-200 text-stone-600 hover:border-stone-300"
+                }`}
+              >
+                <Icon className="h-5 w-5 text-amber-600" />
+                <div>
+                  <span className="block text-xs">{title}</span>
+                  <span className="text-[10px] font-normal text-stone-400">{sub}</span>
+                </div>
+              </button>
+            ))}
           </div>
 
-          {/* Source Tabs */}
-          <div className="grid grid-cols-3 gap-3 max-w-md">
-            <button
-              onClick={() => setUploadSource("file")}
-              className={`p-3 rounded-xl border text-left transition flex items-center gap-3 cursor-pointer ${
-                uploadSource === "file"
-                  ? "border-amber-500 bg-amber-50/50 text-amber-900 font-bold"
-                  : "border-stone-200 hover:border-stone-300 text-stone-600"
-              }`}
-            >
-              <Upload className="w-5 h-5 text-amber-600" />
-              <div>
-                <span className="text-xs block">Archivo Excel / CSV</span>
-                <span className="text-[10px] text-stone-400 font-normal">.xlsx, .xls o .csv</span>
-              </div>
-            </button>
-
-            <button
-              onClick={() => setUploadSource("paste")}
-              className={`p-3 rounded-xl border text-left transition flex items-center gap-3 cursor-pointer ${
-                uploadSource === "paste"
-                  ? "border-amber-500 bg-amber-50/50 text-amber-900 font-bold"
-                  : "border-stone-200 hover:border-stone-300 text-stone-600"
-              }`}
-            >
-              <Clipboard className="w-5 h-5 text-amber-600" />
-              <div>
-                <span className="text-xs block">Pegar Tabla</span>
-                <span className="text-[10px] text-stone-400 font-normal">Copiar desde Excel</span>
-              </div>
-            </button>
-
-            <button
-              onClick={() => setUploadSource("google")}
-              className={`p-3 rounded-xl border text-left transition flex items-center gap-3 cursor-pointer ${
-                uploadSource === "google"
-                  ? "border-amber-500 bg-amber-50/50 text-amber-900 font-bold"
-                  : "border-stone-200 hover:border-stone-300 text-stone-600"
-              }`}
-            >
-              <Link2 className="w-5 h-5 text-amber-600" />
-              <div>
-                <span className="text-xs block">Google Sheets</span>
-                <span className="text-[10px] text-stone-400 font-normal">Enlace público</span>
-              </div>
-            </button>
-          </div>
-
-          {/* Source 1: File Dropzone */}
-          {uploadSource === "file" && (
+          {source === "file" && (
             <div
               onClick={() => fileInputRef.current?.click()}
-              className="border-2 border-dashed border-stone-300 hover:border-amber-500 rounded-2xl p-10 text-center transition cursor-pointer bg-stone-50/40 flex flex-col items-center justify-center space-y-3"
+              className="flex cursor-pointer flex-col items-center justify-center space-y-3 rounded-2xl border-2 border-dashed border-stone-300 bg-stone-50/40 p-10 text-center transition hover:border-amber-500"
             >
               <input
                 ref={fileInputRef}
                 type="file"
                 accept=".xlsx,.xls,.csv"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) setSelectedFile(f);
-                }}
                 className="hidden"
+                onChange={(e) => setFile(e.target.files?.[0] ?? null)}
               />
-              <div className="w-12 h-12 rounded-2xl bg-amber-100/70 text-amber-700 flex items-center justify-center">
-                <Upload className="w-6 h-6" />
-              </div>
-              <div>
-                <p className="text-sm font-bold text-stone-800">
-                  {selectedFile ? selectedFile.name : "Hacé clic o arrastrá tu planilla Excel aquí"}
-                </p>
-                <p className="text-xs text-stone-500 mt-1">
-                  Soporta formatos .xlsx, .xls y .csv con decenas de miles de filas sin truncamiento.
-                </p>
-              </div>
-              {selectedFile && (
-                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs font-semibold">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>Listo para analizar: {(selectedFile.size / 1024).toFixed(1)} KB</span>
-                </div>
-              )}
+              <Upload className="h-8 w-8 text-amber-600" />
+              <p className="text-sm font-bold text-stone-800">{file ? file.name : "Hacé clic para elegir la planilla del presupuesto"}</p>
+              <p className="text-xs text-stone-500">Se leen todas las hojas; en el paso siguiente elegís cuáles importar.</p>
             </div>
           )}
-
-          {/* Source 2: Pasted Text */}
-          {uploadSource === "paste" && (
-            <div className="space-y-2">
-              <label className="text-xs font-bold text-stone-700 block">
-                Pegá las celdas copiadas directamente de Excel o Google Sheets (Ctrl + V):
-              </label>
-              <textarea
-                value={pastedText}
-                onChange={(e) => setPastedText(e.target.value)}
-                placeholder="Ítem	Descripción	Unidad	Cantidad	P.U.	Total..."
-                rows={8}
-                className="w-full bg-stone-50 border border-stone-200 rounded-xl p-3 font-mono text-xs text-stone-800 focus:border-amber-500 focus:outline-none transition"
-              />
-            </div>
+          {source === "paste" && (
+            <textarea
+              value={pastedText}
+              onChange={(e) => setPastedText(e.target.value)}
+              rows={8}
+              placeholder={"Ítem\tDescripción\tUnidad\tCantidad\tP.U.\tTotal"}
+              className="w-full rounded-xl border border-stone-200 bg-stone-50 p-3 font-mono text-xs focus:border-amber-500 focus:outline-none"
+            />
           )}
-
-          {/* Source 3: Google Sheets URL */}
-          {uploadSource === "google" && (
-            <div className="space-y-2 max-w-xl">
-              <label className="text-xs font-bold text-stone-700 block">
-                Enlace a la hoja de cálculo de Google Sheets:
-              </label>
+          {source === "google" && (
+            <div className="max-w-xl space-y-2">
               <input
                 type="url"
                 value={googleUrl}
                 onChange={(e) => setGoogleUrl(e.target.value)}
-                placeholder="https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgvE2upms/edit"
-                className="w-full bg-stone-50 border border-stone-200 rounded-xl px-3 py-2 text-xs text-stone-800 focus:border-amber-500 focus:outline-none transition"
+                placeholder="https://docs.google.com/spreadsheets/d/…/edit"
+                className="w-full rounded-xl border border-stone-200 bg-stone-50 px-3 py-2 text-xs focus:border-amber-500 focus:outline-none"
               />
-              <p className="text-[11px] text-stone-500">
-                Asegurate de que el documento tenga permisos de lectura pública ("Cualquier persona con el enlace puede ver").
-              </p>
+              <p className="text-[11px] text-stone-500">La planilla tiene que estar compartida como "Cualquier persona con el enlace".</p>
             </div>
           )}
 
-          {/* Action Footer */}
-          <div className="flex items-center justify-end gap-3 pt-4 border-t border-stone-100">
+          <div className="flex justify-end border-t border-stone-100 pt-4">
             <button
-              onClick={() => handleGeneratePreview()}
-              disabled={loading || (uploadSource === "file" && !selectedFile)}
-              className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 active:scale-95 text-white text-xs font-bold shadow-sm transition disabled:opacity-50 cursor-pointer"
+              onClick={async () => (await runPreview()) && setStep(2)}
+              disabled={loading}
+              className="flex items-center gap-2 rounded-xl bg-amber-600 px-6 py-2.5 text-xs font-bold text-white shadow-sm transition hover:bg-amber-700 disabled:opacity-50"
             >
-              {loading ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Procesando archivo...</span>
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-4 h-4" />
-                  <span>Analizar Estructura y Mapeo</span>
-                  <ArrowRight className="w-4 h-4" />
-                </>
-              )}
+              {loading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
+              Analizar planilla
             </button>
           </div>
         </div>
       )}
 
-      {/* ========================================================================= */}
-      {/* PASO 2: VALIDACIÓN Y CORRECCIÓN DE MAPEO                                   */}
-      {/* ========================================================================= */}
-      {currentStep === 2 && previewData && activeSheetStructure && (
-        <div className="bg-white rounded-2xl border border-stone-200 p-6 shadow-xs space-y-6">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-stone-100">
-            <div>
-              <h2 className="text-base font-bold text-stone-900">Paso 2: Validación de Columnas y Encabezados</h2>
-              <p className="text-xs text-stone-500 mt-0.5">
-                Verificá que cada columna coincida con su rol correspondiente. Podés cambiar cualquier mapeo antes de avanzar.
+      {/* PASO 2: ESTRUCTURA */}
+      {step === 2 && preview && (
+        <div className="space-y-6 rounded-2xl border border-stone-200 bg-white p-6 shadow-xs">
+          <div className="grid gap-4 lg:grid-cols-3">
+            <div className="space-y-2 lg:col-span-2">
+              <h2 className="text-sm font-bold text-stone-900">Hojas a importar</h2>
+              <p className="text-[11px] text-stone-500">
+                Por defecto se elige la hoja con más ítems. Si marcás varias, cada hoja se carga como un rubro propio.
               </p>
+              <div className="flex flex-wrap gap-2">
+                {preview.sheets.map((s) => {
+                  const checked = selectedSheets.includes(s.sheetName);
+                  return (
+                    <label
+                      key={s.sheetName}
+                      className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-1.5 text-xs ${
+                        checked ? "border-amber-400 bg-amber-50 font-bold text-amber-900" : "border-stone-200 text-stone-600"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() =>
+                          setSelectedSheets((prev) =>
+                            checked ? prev.filter((x) => x !== s.sheetName) : [...prev, s.sheetName]
+                          )
+                        }
+                      />
+                      {s.sheetName}
+                      <span className="font-normal text-stone-400">~{s.detectedItemRows} ítems</span>
+                      {s.likelySummary && <span className="rounded bg-stone-200 px-1 text-[10px] text-stone-600">resumen</span>}
+                    </label>
+                  );
+                })}
+              </div>
             </div>
+            <div className="space-y-3 text-xs">
+              <label className="block">
+                <span className="font-bold text-stone-700">Formato de números</span>
+                <select
+                  value={numberFormat}
+                  onChange={(e) => setNumberFormat(e.target.value as NumberFormat)}
+                  className="mt-1 w-full rounded-lg border border-stone-300 bg-white px-2 py-1.5"
+                >
+                  <option value="PY">1.234.567,89 (coma decimal)</option>
+                  <option value="EN">1,234,567.89 (punto decimal)</option>
+                </select>
+                <span className="text-[10px] text-stone-400">
+                  Detectado: {preview.detectedNumberFormat === "PY" ? "coma decimal" : "punto decimal"}. Las celdas numéricas de Excel no se ven afectadas.
+                </span>
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={includeHidden} onChange={(e) => setIncludeHidden(e.target.checked)} />
+                Incluir filas ocultas de Excel
+              </label>
+            </div>
+          </div>
 
-            {/* Sheet Tabs if multiple sheets */}
-            {previewData.sheets.length > 1 && (
-              <div className="flex items-center gap-1 bg-stone-100 p-1 rounded-xl border border-stone-200">
-                <span className="text-[11px] font-bold text-stone-500 px-2">Hojas:</span>
-                {previewData.sheets.map((s) => (
-                  <button
-                    key={s.sheetName}
-                    onClick={() => handleSwitchSheet(s.sheetName)}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-bold transition ${
-                      s.sheetName === activeSheetName
-                        ? "bg-white text-stone-900 shadow-xs"
-                        : "text-stone-600 hover:text-stone-900"
-                    }`}
+          {activeStructure && (
+            <div className="space-y-3 border-t border-stone-100 pt-4">
+              <div className="flex flex-wrap items-center gap-3 text-xs">
+                <span className="font-bold text-stone-800">Columnas de la hoja</span>
+                <select
+                  value={activeSheet}
+                  onChange={(e) => setActiveSheet(e.target.value)}
+                  className="rounded-lg border border-stone-300 bg-white px-2 py-1"
+                >
+                  {preview.sheets
+                    .filter((s) => selectedSheets.includes(s.sheetName))
+                    .map((s) => (
+                      <option key={s.sheetName}>{s.sheetName}</option>
+                    ))}
+                </select>
+                <span className="text-stone-500">Encabezado en la fila</span>
+                <select
+                  value={headerRows[activeSheet] ?? activeStructure.headerRowIndex}
+                  onChange={(e) => setHeaderRows((prev) => ({ ...prev, [activeSheet]: Number(e.target.value) }))}
+                  className="rounded-lg border border-stone-300 bg-white px-2 py-1 font-mono"
+                >
+                  {Array.from({ length: Math.min(40, activeStructure.totalRows) }, (_, i) => (
+                    <option key={i} value={i}>
+                      {i + 1}
+                    </option>
+                  ))}
+                </select>
+                {activeStructure.headerRowCount === 2 && (
+                  <span className="rounded bg-sky-50 px-2 py-0.5 text-sky-700">Encabezado en dos filas combinado</span>
+                )}
+                {activeStructure.hiddenRowsCount > 0 && (
+                  <span className="rounded bg-stone-100 px-2 py-0.5 text-stone-600">{activeStructure.hiddenRowsCount} filas ocultas</span>
+                )}
+              </div>
+              <div className="grid gap-3 md:grid-cols-3 lg:grid-cols-4">
+                {activeStructure.columns
+                  .filter((c) => c.sampleValues.length || c.detectedRole !== "ignore")
+                  .map((col) => {
+                    const role = columnMappings[activeSheet]?.[col.index] ?? col.detectedRole;
+                    return (
+                      <div
+                        key={col.index}
+                        className={`space-y-2 rounded-xl border p-3 ${role === "ignore" ? "border-stone-200 bg-stone-50/60 opacity-75" : "border-stone-200 bg-white"}`}
+                      >
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="rounded bg-stone-200 px-1.5 font-mono font-bold">{col.letter}</span>
+                          <span className="truncate font-bold text-stone-900" title={col.originalHeader}>
+                            {col.originalHeader}
+                          </span>
+                        </div>
+                        <select
+                          value={role}
+                          onChange={(e) =>
+                            setColumnMappings((prev) => ({
+                              ...prev,
+                              [activeSheet]: { ...(prev[activeSheet] ?? {}), [col.index]: e.target.value as CanonicalColumnRole },
+                            }))
+                          }
+                          className="w-full rounded-lg border border-stone-300 bg-white px-2 py-1 text-xs font-semibold"
+                        >
+                          {ROLE_OPTIONS.map((o) => (
+                            <option key={o.value} value={o.value}>
+                              {o.label}
+                            </option>
+                          ))}
+                        </select>
+                        <p className="truncate font-mono text-[10px] text-stone-400">{col.sampleValues.slice(0, 3).join(" · ") || "sin datos"}</p>
+                      </div>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+
+          <div className="flex justify-between border-t border-stone-100 pt-4">
+            <button onClick={() => setStep(1)} className="text-xs font-semibold text-stone-500 hover:text-stone-800">
+              Volver
+            </button>
+            <button
+              onClick={async () => (await runPreview({ selectedSheets })) && setStep(3)}
+              disabled={loading || selectedSheets.length === 0}
+              className="flex items-center gap-2 rounded-xl bg-amber-600 px-6 py-2.5 text-xs font-bold text-white hover:bg-amber-700 disabled:opacity-50"
+            >
+              {loading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <ArrowRight className="h-4 w-4" />}
+              Leer filas y revisar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* PASO 3: REVISIÓN Y CUADRE */}
+      {step === 3 && preview && build && rec && (
+        <div className="space-y-4">
+          {/* Cuadre */}
+          <div className={`rounded-2xl border p-5 shadow-xs ${rec.balanced ? "border-emerald-200 bg-emerald-50/40" : "border-rose-200 bg-rose-50/40"}`}>
+            <div className="mb-3 flex items-center gap-2">
+              <Scale className={`h-5 w-5 ${rec.balanced ? "text-emerald-600" : "text-rose-600"}`} />
+              <h2 className="text-sm font-bold text-stone-900">Cuadre del presupuesto</h2>
+              <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${rec.balanced ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"}`}>
+                {rec.balanced ? "Cuadra" : "No cuadra"}
+              </span>
+            </div>
+            <div className="grid gap-4 text-xs md:grid-cols-2">
+              <table className="w-full">
+                <tbody className="divide-y divide-stone-200/70">
+                  <tr>
+                    <td className="py-1.5 text-stone-600">Suma de ítems ({build.counts.items})</td>
+                    <td className="py-1.5 text-right font-mono font-bold">{money(rec.itemsTotal)}</td>
+                  </tr>
+                  {rec.surcharges.map((s) => (
+                    <tr key={s.rowId}>
+                      <td className="py-1.5 text-stone-600">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span>
+                            {s.description}
+                            {s.percent !== null && ` (${s.percent}%)`}
+                          </span>
+                          <select
+                            value={s.treatment}
+                            onChange={(e) => setTreatments((prev) => ({ ...prev, [s.rowId]: e.target.value as SurchargeTreatment }))}
+                            className="rounded border border-amber-300 bg-amber-50 px-1 py-0.5 text-[11px] font-semibold text-amber-900"
+                          >
+                            {(Object.keys(TREATMENT_LABEL) as SurchargeTreatment[]).map((t) => (
+                              <option key={t} value={t}>
+                                {TREATMENT_LABEL[t]}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </td>
+                      <td className="py-1.5 text-right font-mono">{money(s.amount)}</td>
+                    </tr>
+                  ))}
+                  <tr>
+                    <td className="py-1.5 font-bold text-stone-800">Total según ítems + recargos</td>
+                    <td className="py-1.5 text-right font-mono font-bold">{money(rec.sheetComputedTotal)}</td>
+                  </tr>
+                  <tr>
+                    <td className="py-1.5 text-stone-600">Total que declara la planilla</td>
+                    <td className="py-1.5 text-right font-mono">
+                      {money(rec.declaredGrandTotal)}{" "}
+                      <span className={diffClass(rec.declaredDifference)}>
+                        {rec.declaredDifference !== null && `(dif. ${money(rec.declaredDifference)})`}
+                      </span>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="py-1.5 text-stone-600">Monto contractual que se fija para la obra</td>
+                    <td className="py-1.5 text-right font-mono font-semibold">{money(rec.sheetComputedTotal)}</td>
+                  </tr>
+                  <tr>
+                    <td className="py-1.5 font-bold text-amber-900">Presupuesto que se carga para control</td>
+                    <td className="py-1.5 text-right font-mono font-bold text-amber-900">{money(rec.budgetTotal)}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <div className="space-y-2">
+                <p className="font-bold text-stone-700">Subtotales por rubro</p>
+                {rec.rubroChecks.length === 0 && (
+                  <p className="text-stone-400">La planilla no trae subtotales cargados (se calculan sumando ítems).</p>
+                )}
+                <div className="max-h-44 space-y-1 overflow-auto">
+                  {rec.rubroChecks.map((c) => (
+                    <div key={c.path} className="flex justify-between gap-2 rounded bg-white/70 px-2 py-1">
+                      <span className="truncate">
+                        {c.code} {c.name}
+                      </span>
+                      <span className={`shrink-0 font-mono ${diffClass(c.difference)}`}>
+                        {Math.abs(c.difference) <= rec.tolerance ? "OK" : `dif. ${money(c.difference)}`}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <label className="block pt-2">
+                  <span className="font-bold text-stone-700">Si Cantidad × PU no coincide con el total</span>
+                  <select
+                    value={strategy}
+                    onChange={(e) => setStrategy(e.target.value as ArithmeticStrategy)}
+                    className="mt-1 w-full rounded-lg border border-stone-300 bg-white px-2 py-1"
                   >
-                    {s.sheetName} ({s.totalRows} filas)
+                    <option value="KEEP_ORIGINAL">Respetar el total de la planilla</option>
+                    <option value="RECALCULATE_TOTAL">Recalcular el total (Cantidad × PU)</option>
+                    <option value="RECALCULATE_PU">Recalcular el PU (Total ÷ Cantidad)</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          {(critical.length > 0 || globalIssues.length > 0) && (
+            <div className="space-y-1 rounded-xl border border-stone-200 bg-white p-4 text-xs">
+              {critical.length > 0 && (
+                <p className="flex items-center gap-2 font-bold text-rose-700">
+                  <AlertCircle className="h-4 w-4" /> {critical.length} error(es) a corregir antes de importar (filtrá por "Con problemas").
+                </p>
+              )}
+              {globalIssues.map((i) => (
+                <p key={i.id} className="flex items-center gap-2 text-stone-600">
+                  <AlertTriangle className="h-3.5 w-3.5 text-amber-500" /> {i.message}
+                </p>
+              ))}
+            </div>
+          )}
+
+          {/* Filas */}
+          <div className="space-y-3 rounded-2xl border border-stone-200 bg-white p-4 shadow-xs">
+            <div className="flex flex-wrap items-center justify-between gap-3 text-xs">
+              <div className="flex gap-1 rounded-lg bg-stone-100 p-1 font-semibold">
+                {[
+                  ["ALL", `Todas (${rows.length})`],
+                  ["ISSUES", `Con problemas (${issuesByRow.size})`],
+                  ["STRUCTURE", "Rubros, subtotales y recargos"],
+                  ["IGNORED", "Ignoradas"],
+                ].map(([key, label]) => (
+                  <button
+                    key={key}
+                    onClick={() => {
+                      setFilter(key as typeof filter);
+                      setPage(0);
+                    }}
+                    className={`rounded-md px-2.5 py-1 ${filter === key ? "bg-white text-stone-900 shadow-xs" : "text-stone-500"}`}
+                  >
+                    {label}
                   </button>
                 ))}
+              </div>
+              <input
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setPage(0);
+                }}
+                placeholder="Buscar código o descripción…"
+                className="w-56 rounded-lg border border-stone-300 px-2 py-1"
+              />
+            </div>
+            <p className="text-[11px] text-stone-500">
+              Cambiá el tipo o el nivel de cualquier fila y el cuadre se recalcula al instante. El padre de cada fila es el rubro anterior más cercano con un nivel menos.
+            </p>
+
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[1000px] text-xs">
+                <thead className="bg-stone-50 text-[10px] uppercase tracking-wider text-stone-500">
+                  <tr>
+                    <th className="px-2 py-2 text-left">Fila</th>
+                    <th className="px-2 py-2 text-left">Tipo</th>
+                    <th className="px-2 py-2 text-left">Nivel</th>
+                    <th className="px-2 py-2 text-left">Código</th>
+                    <th className="px-2 py-2 text-left">Descripción</th>
+                    <th className="px-2 py-2 text-left">Un.</th>
+                    <th className="px-2 py-2 text-right">Cantidad</th>
+                    <th className="px-2 py-2 text-right">P. unitario</th>
+                    <th className="px-2 py-2 text-right">Total planilla</th>
+                    <th className="px-2 py-2 text-right">Monto a cargar</th>
+                    <th className="px-2 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-stone-100">
+                  {pageRows.map((row) => {
+                    const kindMeta = KIND_OPTIONS.find((k) => k.value === row.kind)!;
+                    const rowIssues = issuesByRow.get(row.id) ?? [];
+                    const isNode = row.kind === "RUBRO" || row.kind === "SUBRUBRO" || row.kind === "ITEM";
+                    const worst = rowIssues.find((i) => i.type === "CRITICAL") ?? rowIssues.find((i) => i.type === "WARNING") ?? rowIssues[0];
+                    return (
+                      <tr key={row.id} className={`${row.kind === "IGNORAR" ? "opacity-50" : ""} ${row.kind === "RUBRO" ? "bg-indigo-50/30 font-semibold" : ""}`}>
+                        <td className="px-2 py-1 font-mono text-[10px] text-stone-400" title={row.sheet}>
+                          {row.rowNumber || "—"}
+                        </td>
+                        <td className="px-2 py-1">
+                          <select
+                            value={row.kind}
+                            onChange={(e) => changeKind(row, e.target.value as RowKind)}
+                            className={`rounded border px-1 py-0.5 text-[11px] font-semibold ${kindMeta.style}`}
+                          >
+                            {KIND_OPTIONS.map((k) => (
+                              <option key={k.value} value={k.value}>
+                                {k.label}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="px-2 py-1">
+                          {isNode && (
+                            <div className="flex items-center gap-1">
+                              <button
+                                className="rounded border border-stone-200 px-1 disabled:opacity-30"
+                                disabled={row.level === 0}
+                                onClick={() => updateRow(row.id, { level: row.level - 1 })}
+                                aria-label="Subir de nivel"
+                              >
+                                <ChevronLeft className="h-3 w-3" />
+                              </button>
+                              <span className="w-3 text-center font-mono">{row.level}</span>
+                              <button
+                                className="rounded border border-stone-200 px-1"
+                                onClick={() => updateRow(row.id, { level: row.level + 1 })}
+                                aria-label="Bajar de nivel"
+                              >
+                                <ChevronRight className="h-3 w-3" />
+                              </button>
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-2 py-1">
+                          <input
+                            value={row.code}
+                            onChange={(e) => updateRow(row.id, { code: e.target.value })}
+                            className="w-16 rounded border border-transparent px-1 font-mono hover:border-stone-200 focus:border-amber-400 focus:outline-none"
+                          />
+                        </td>
+                        <td className="px-2 py-1">
+                          <input
+                            value={row.description}
+                            onChange={(e) => updateRow(row.id, { description: e.target.value })}
+                            style={{ paddingLeft: isNode ? row.level * 14 + 4 : 4 }}
+                            className="w-full min-w-[220px] rounded border border-transparent hover:border-stone-200 focus:border-amber-400 focus:outline-none"
+                          />
+                        </td>
+                        <td className="px-2 py-1">
+                          <input
+                            value={row.unit}
+                            onChange={(e) => updateRow(row.id, { unit: e.target.value })}
+                            className="w-12 rounded border border-transparent px-1 hover:border-stone-200 focus:border-amber-400 focus:outline-none"
+                          />
+                        </td>
+                        {(["quantity", "unitPrice", "totalPrice"] as const).map((field) => (
+                          <td key={field} className="px-2 py-1 text-right">
+                            <input
+                              defaultValue={formatCell(row[field])}
+                              key={`${row.id}-${field}-${row[field]}`}
+                              onBlur={(e) => {
+                                const next = parseCell(e.target.value);
+                                if (next !== row[field]) updateRow(row.id, { [field]: next });
+                              }}
+                              className="w-24 rounded border border-transparent px-1 text-right font-mono hover:border-stone-200 focus:border-amber-400 focus:outline-none"
+                            />
+                          </td>
+                        ))}
+                        <td className="px-2 py-1 text-right font-mono font-semibold text-stone-800">
+                          {amountByRow.has(row.id) ? money(amountByRow.get(row.id)) : ""}
+                        </td>
+                        <td className="px-2 py-1">
+                          {worst && (
+                            <span title={rowIssues.map((i) => i.message).join("\n")}>
+                              {worst.type === "CRITICAL" ? (
+                                <AlertCircle className="h-4 w-4 text-rose-600" />
+                              ) : worst.type === "WARNING" ? (
+                                <AlertTriangle className="h-4 w-4 text-amber-500" />
+                              ) : (
+                                <Info className="h-4 w-4 text-sky-500" />
+                              )}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {pageCount > 1 && (
+              <div className="flex items-center justify-end gap-2 text-xs">
+                <button disabled={page === 0} onClick={() => setPage(page - 1)} className="rounded border px-2 py-1 disabled:opacity-40">
+                  Anterior
+                </button>
+                <span>
+                  Página {page + 1} de {pageCount}
+                </span>
+                <button disabled={page >= pageCount - 1} onClick={() => setPage(page + 1)} className="rounded border px-2 py-1 disabled:opacity-40">
+                  Siguiente
+                </button>
               </div>
             )}
           </div>
 
-          {/* Header Row Selector Bar */}
-          <div className="bg-stone-50 border border-stone-200 rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-3 text-xs">
-            <div className="flex items-center gap-2">
-              <span className="font-bold text-stone-700">Fila detectada de encabezados:</span>
-              <select
-                value={activeSheetStructure.headerRowIndex}
-                onChange={(e) => handleChangeHeaderRow(Number(e.target.value))}
-                className="bg-white border border-stone-300 rounded-lg px-2.5 py-1 font-mono font-bold text-stone-800"
-              >
-                {Array.from({ length: Math.min(30, activeSheetStructure.totalRows) }, (_, i) => (
-                  <option key={i} value={i}>
-                    Fila {i + 1}
-                  </option>
-                ))}
-              </select>
-              <span className="text-[11px] text-stone-500">
-                (Las filas de datos comienzan en la fila {activeSheetStructure.headerRowIndex + 2})
-              </span>
-            </div>
-
-            <div className="text-xs text-stone-500 font-mono">
-              Total columnas: {activeSheetStructure.totalCols} | Total filas: {activeSheetStructure.totalRows}
-            </div>
-          </div>
-
-          {/* Columns Grid with Roles and Samples */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {activeSheetStructure.columns.map((col) => {
-              const currentRole =
-                customColumnMappings[activeSheetStructure.sheetName]?.[col.index] || col.detectedRole;
-              const roleMeta = ROLE_LABELS[currentRole];
-
-              return (
-                <div
-                  key={col.index}
-                  className={`rounded-xl border p-4 transition space-y-3 ${
-                    currentRole !== "ignore"
-                      ? "bg-white border-stone-200 shadow-xs"
-                      : "bg-stone-50/60 border-stone-200/80 opacity-75"
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-xs font-extrabold px-2 py-0.5 rounded bg-stone-200 text-stone-800">
-                        {col.letter}
-                      </span>
-                      <span className="text-xs font-bold text-stone-900 truncate max-w-[150px]" title={col.originalHeader}>
-                        {col.originalHeader || `(Sin título)`}
-                      </span>
-                    </div>
-
-                    <span
-                      className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
-                        col.confidence >= 0.8
-                          ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                          : col.confidence >= 0.5
-                          ? "bg-amber-50 text-amber-700 border-amber-200"
-                          : "bg-stone-100 text-stone-600 border-stone-200"
-                      }`}
-                    >
-                      {Math.round(col.confidence * 100)}% conf.
-                    </span>
-                  </div>
-
-                  {/* Role Selector Dropdown */}
-                  <div>
-                    <label className="text-[10px] font-bold uppercase tracking-wider text-stone-500 block mb-1">
-                      Rol Asignado
-                    </label>
-                    <select
-                      value={currentRole}
-                      onChange={(e) => handleChangeColumnRole(col.index, e.target.value as CanonicalColumnRole)}
-                      className={`w-full text-xs font-bold py-1.5 px-2 rounded-lg border outline-none transition cursor-pointer ${roleMeta.color}`}
-                    >
-                      <option value="code">Código / Ítem</option>
-                      <option value="description">Descripción / Rubro</option>
-                      <option value="unit">Unidad</option>
-                      <option value="quantity">Cantidad / Metrado</option>
-                      <option value="unitPrice">Precio Unitario</option>
-                      <option value="totalPrice">Precio Total</option>
-                      <option value="ignore">Ignorar Columna</option>
-                    </select>
-                  </div>
-
-                  {/* Sample Values in this Column */}
-                  <div className="bg-stone-50 rounded-lg p-2 border border-stone-100">
-                    <span className="text-[9px] uppercase tracking-wider font-bold text-stone-400 block mb-1">
-                      Muestra primeras filas:
-                    </span>
-                    <div className="space-y-0.5">
-                      {col.sampleValues.length > 0 ? (
-                        col.sampleValues.slice(0, 3).map((val, idx) => (
-                          <div key={idx} className="text-[11px] font-mono text-stone-700 truncate" title={val}>
-                            {val}
-                          </div>
-                        ))
-                      ) : (
-                        <span className="text-[10px] text-stone-400 italic">Celdas vacías</span>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Navigation Footer */}
-          <div className="flex items-center justify-between pt-4 border-t border-stone-100">
-            <button
-              onClick={() => setCurrentStep(1)}
-              className="px-4 py-2 rounded-xl border border-stone-300 text-stone-700 text-xs font-semibold hover:bg-stone-50 transition"
-            >
-              Volver a Carga
+          <div className="flex justify-between">
+            <button onClick={() => setStep(2)} className="text-xs font-semibold text-stone-500 hover:text-stone-800">
+              Volver a la estructura
             </button>
-
             <button
-              onClick={handleApplyMappingsAndProceed}
-              disabled={loading}
-              className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-700 active:scale-95 text-white text-xs font-bold shadow-sm transition disabled:opacity-50 cursor-pointer"
+              onClick={() => setStep(4)}
+              disabled={critical.length > 0}
+              className="flex items-center gap-2 rounded-xl bg-amber-600 px-6 py-2.5 text-xs font-bold text-white hover:bg-amber-700 disabled:opacity-50"
             >
-              {loading ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Procesando filas...</span>
-                </>
-              ) : (
-                <>
-                  <span>Continuar a Vista Previa & Validación</span>
-                  <ArrowRight className="w-4 h-4" />
-                </>
-              )}
+              Continuar <ArrowRight className="h-4 w-4" />
             </button>
           </div>
         </div>
       )}
 
-      {/* ========================================================================= */}
-      {/* PASO 3: VISTA PREVIA JERÁRQUICA & RESOLUCIÓN DE CONFLICTOS               */}
-      {/* ========================================================================= */}
-      {currentStep === 3 && previewData && (
-        <div className="space-y-4">
-          {/* Summary KPI Cards */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <div className="bg-white border border-stone-200 p-4 rounded-2xl shadow-xs">
-              <span className="text-[10px] font-bold text-stone-500 uppercase tracking-wider block">
-                Total Partidas a Importar
-              </span>
-              <p className="text-xl font-mono font-extrabold text-stone-900 mt-1">
-                {previewData.summary.rubrosCount + previewData.summary.subrubrosCount + previewData.summary.itemsCount}
+      {/* PASO 4: CONFIRMAR */}
+      {step === 4 && preview && build && rec && (
+        <div className="space-y-5 rounded-2xl border border-stone-200 bg-white p-6 shadow-xs">
+          {result ? (
+            <div className="space-y-3 text-center">
+              <CheckCircle2 className="mx-auto h-10 w-10 text-emerald-600" />
+              <h2 className="text-base font-bold text-stone-900">{result.message}</h2>
+              <p className="text-xs text-stone-500">
+                Presupuesto de control: {money(result.totalBudgetAmount)}. Se creó también el rubro "Gastos Generales / No imputados" para gastos sin partida.
               </p>
-              <div className="flex items-center gap-2 text-[10px] text-stone-500 mt-1">
-                <span>{previewData.summary.rubrosCount} Rubros</span>
-                <span>•</span>
-                <span>{previewData.summary.subrubrosCount} Subrubros</span>
-                <span>•</span>
-                <span>{previewData.summary.itemsCount} Ítems</span>
-              </div>
-            </div>
-
-            <div className="bg-white border border-stone-200 p-4 rounded-2xl shadow-xs">
-              <span className="text-[10px] font-bold text-stone-500 uppercase tracking-wider block">
-                Monto Total Presupuestado
-              </span>
-              <p className="text-lg font-mono font-extrabold text-stone-900 mt-1">
-                {formatMoney(
-                  previewData.summary.totalAmount * (1 + markupPercent / 100),
-                  currency
-                )}
-              </p>
-              <span className="text-[10px] text-emerald-700 font-semibold">
-                Suma exacta de ítems (sin duplicación)
-              </span>
-            </div>
-
-            <div className="bg-white border border-stone-200 p-4 rounded-2xl shadow-xs">
-              <span className="text-[10px] font-bold text-stone-500 uppercase tracking-wider block">
-                Subtotales Excluidos
-              </span>
-              <p className="text-xl font-mono font-extrabold text-amber-700 mt-1">
-                {previewData.summary.aggregatesExcludedCount}
-              </p>
-              <span className="text-[10px] text-stone-400">
-                Detectados y no persistidos
-              </span>
-            </div>
-
-            <div className="bg-white border border-stone-200 p-4 rounded-2xl shadow-xs">
-              <span className="text-[10px] font-bold text-stone-500 uppercase tracking-wider block">
-                Alertas Aritméticas / Unidades
-              </span>
-              <div className="flex items-center gap-2 mt-1">
-                <span className="text-lg font-mono font-extrabold text-amber-600">
-                  {previewData.summary.arithmeticMismatchCount}
-                </span>
-                <span className="text-xs text-stone-400 font-mono">/</span>
-                <span className="text-sm font-mono font-bold text-blue-600">
-                  {previewData.summary.unitReviewCount} unid.
-                </span>
-              </div>
-              <span className="text-[10px] text-stone-400">
-                {previewData.summary.criticalIssuesCount} críticas
-              </span>
-            </div>
-          </div>
-
-          {/* Controls Bar: Search, Filters, Markup, Strategy */}
-          <div className="bg-white border border-stone-200 rounded-2xl p-4 shadow-xs flex flex-wrap items-center justify-between gap-4">
-            {/* Search and Filters */}
-            <div className="flex items-center flex-wrap gap-2">
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 text-stone-400 absolute left-2.5 top-2.5" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Buscar por código o descripción..."
-                  className="bg-stone-50 border border-stone-200 rounded-xl pl-8 pr-3 py-1.5 text-xs text-stone-800 placeholder-stone-400 focus:outline-none focus:border-amber-500"
-                />
-              </div>
-
-              <div className="flex items-center gap-1 bg-stone-100 p-1 rounded-xl border border-stone-200 text-xs">
-                <button
-                  onClick={() => setFilterMode("ALL")}
-                  className={`px-2.5 py-1 rounded-lg font-bold transition cursor-pointer ${
-                    filterMode === "ALL" ? "bg-white text-stone-900 shadow-xs" : "text-stone-600"
-                  }`}
-                >
-                  Todas ({previewData.detectedItems.length})
-                </button>
-                <button
-                  onClick={() => setFilterMode("ISSUES")}
-                  className={`px-2.5 py-1 rounded-lg font-bold transition flex items-center gap-1 cursor-pointer ${
-                    filterMode === "ISSUES" ? "bg-white text-amber-800 shadow-xs" : "text-stone-600"
-                  }`}
-                >
-                  <AlertTriangle className="w-3 h-3 text-amber-600" />
-                  <span>Con Observaciones ({previewData.summary.arithmeticMismatchCount})</span>
-                </button>
-                <button
-                  onClick={() => setFilterMode("EXCLUDED")}
-                  className={`px-2.5 py-1 rounded-lg font-bold transition flex items-center gap-1 cursor-pointer ${
-                    filterMode === "EXCLUDED" ? "bg-white text-stone-700 shadow-xs" : "text-stone-500"
-                  }`}
-                >
-                  <span>Excluidos ({previewData.summary.aggregatesExcludedCount})</span>
-                </button>
-              </div>
-
-              <button
-                onClick={() => setShowExcludedAggregates(!showExcludedAggregates)}
-                className={`flex items-center gap-1 px-2.5 py-1.5 rounded-xl border text-xs font-semibold transition cursor-pointer ${
-                  showExcludedAggregates
-                    ? "bg-stone-100 text-stone-800 border-stone-300"
-                    : "bg-white text-stone-500 border-stone-200"
-                }`}
-              >
-                {showExcludedAggregates ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
-                <span>{showExcludedAggregates ? "Ocultar Subtotales" : "Ver Subtotales"}</span>
+              <button onClick={onBack} className="rounded-xl bg-stone-900 px-5 py-2 text-xs font-bold text-white">
+                Ir al Centro de Costos
               </button>
             </div>
-
-            {/* Arithmetic Strategy & Markup */}
-            <div className="flex items-center flex-wrap gap-3">
-              <div className="flex items-center gap-2 bg-stone-50 px-3 py-1.5 rounded-xl border border-stone-200 text-xs">
-                <span className="font-bold text-stone-600">Resolución Aritmética:</span>
-                <select
-                  value={resolutionStrategy}
-                  onChange={(e) => setResolutionStrategy(e.target.value as any)}
-                  className="bg-white border border-stone-300 rounded-lg px-2 py-1 text-xs font-bold text-stone-800"
-                >
-                  <option value="KEEP_ORIGINAL">Mantener planilla original</option>
-                  <option value="RECALCULATE_TOTAL">Recalcular Total = Cantidad × P.U.</option>
-                  <option value="RECALCULATE_PU">Recalcular P.U. = Total / Cantidad</option>
-                </select>
+          ) : (
+            <>
+              <h2 className="text-sm font-bold text-stone-900">Confirmar importación</h2>
+              <div className="grid gap-3 text-xs sm:grid-cols-4">
+                {[
+                  ["Rubros", build.counts.rubros],
+                  ["Subrubros", build.counts.subrubros],
+                  ["Ítems", build.counts.items],
+                  ["Presupuesto de control", money(rec.budgetTotal)],
+                ].map(([label, value]) => (
+                  <div key={label as string} className="rounded-xl border border-stone-200 bg-stone-50 p-3">
+                    <p className="text-stone-500">{label}</p>
+                    <p className="font-mono text-base font-bold text-stone-900">{value}</p>
+                  </div>
+                ))}
               </div>
-
-              <div className="flex items-center gap-2 bg-stone-50 px-3 py-1.5 rounded-xl border border-stone-200 text-xs">
-                <span className="font-bold text-stone-600">Markup %:</span>
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  value={markupPercent}
-                  onChange={(e) => setMarkupPercent(Number(e.target.value))}
-                  className="w-14 bg-white border border-stone-300 rounded-lg px-2 py-1 font-mono font-bold text-xs"
-                />
-                <span className="text-[10px] text-stone-400">%</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Hierarchical Table with Indentation and Badges */}
-          <div className="bg-white rounded-2xl border border-stone-200 overflow-hidden shadow-xs">
-            <div className="overflow-x-auto max-h-[600px] overflow-y-auto scrollbar-thin">
-              <table className="w-full text-left text-xs border-collapse">
-                <thead className="bg-stone-100 text-stone-600 font-bold sticky top-0 z-20 shadow-xs border-b border-stone-200">
-                  <tr>
-                    <th className="p-3 w-12 text-center text-stone-400 font-mono">Fila</th>
-                    <th className="p-3 w-32">Código</th>
-                    <th className="p-3">Descripción de la Partida</th>
-                    <th className="p-3 w-28 text-center">Tipo Nodo</th>
-                    <th className="p-3 w-20 text-center">Unidad</th>
-                    <th className="p-3 w-28 text-right">Cantidad</th>
-                    <th className="p-3 w-32 text-right">Precio Unitario</th>
-                    <th className="p-3 w-36 text-right">Monto Total</th>
-                    <th className="p-3 w-40 text-center">Diagnóstico</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-stone-100">
-                  {displayedItems.length === 0 ? (
-                    <tr>
-                      <td colSpan={9} className="p-8 text-center text-stone-400">
-                        No se encontraron partidas con los filtros seleccionados
-                      </td>
-                    </tr>
-                  ) : (
-                    displayedItems.map((row) => {
-                      const isExcluded = row.isExcludedAggregate;
-                      const indentPx = row.hierarchyLevel * 20;
-
-                      return (
-                        <tr
-                          key={row.id}
-                          className={`transition ${
-                            isExcluded
-                              ? "bg-amber-50/40 opacity-70"
-                              : row.hasArithmeticMismatch
-                              ? "bg-rose-50/30 hover:bg-rose-50/50"
-                              : "hover:bg-stone-50/80"
-                          }`}
-                        >
-                          <td className="p-3 text-center font-mono text-[10px] text-stone-400">
-                            {row.rowNumber}
-                          </td>
-
-                          <td className="p-3 font-mono font-bold text-stone-900">
-                            <span className="px-1.5 py-0.5 rounded bg-stone-100 border border-stone-200">
-                              {row.code}
-                            </span>
-                          </td>
-
-                          <td className="p-3">
-                            <div className="flex items-center gap-1.5" style={{ paddingLeft: `${indentPx}px` }}>
-                              {row.hierarchyLevel > 0 && (
-                                <span className="text-stone-300 select-none">↳</span>
-                              )}
-                              <span
-                                className={`font-medium ${
-                                  row.nodeKind === "RUBRO"
-                                    ? "font-bold text-stone-900"
-                                    : row.nodeKind === "SUBRUBRO"
-                                    ? "font-semibold text-stone-800"
-                                    : "text-stone-700"
-                                }`}
-                              >
-                                {row.description}
-                              </span>
-                            </div>
-                          </td>
-
-                          <td className="p-3 text-center">
-                            {isExcluded ? (
-                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
-                                EXCLUIDO: SUB-TOTAL
-                              </span>
-                            ) : row.nodeKind === "RUBRO" ? (
-                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-800 border border-purple-200">
-                                RUBRO
-                              </span>
-                            ) : row.nodeKind === "SUBRUBRO" ? (
-                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800 border border-blue-200">
-                                SUBRUBRO
-                              </span>
-                            ) : (
-                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                                ÍTEM
-                              </span>
-                            )}
-                          </td>
-
-                          <td className="p-3 text-center font-mono text-stone-600">
-                            {row.unitReview ? (
-                              <span
-                                className="px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200"
-                                title={`Sugerencia: ${row.unitSuggestion}`}
-                              >
-                                {row.unit}*
-                              </span>
-                            ) : (
-                              row.unit || "-"
-                            )}
-                          </td>
-
-                          <td className="p-3 text-right font-mono text-stone-800">
-                            {row.quantity > 0 ? row.quantity.toLocaleString() : "-"}
-                          </td>
-
-                          <td className="p-3 text-right font-mono text-stone-800">
-                            {row.unitPrice > 0
-                              ? formatMoney(row.unitPrice * (1 + markupPercent / 100), currency)
-                              : "-"}
-                          </td>
-
-                          <td className="p-3 text-right font-mono font-bold text-stone-900">
-                            {formatMoney(row.totalPrice * (1 + markupPercent / 100), currency)}
-                          </td>
-
-                          <td className="p-3 text-center">
-                            {isExcluded ? (
-                              <span className="text-[10px] text-amber-700 font-semibold">
-                                No se sumará al presupuesto
-                              </span>
-                            ) : row.hasArithmeticMismatch ? (
-                              <div
-                                className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200"
-                                title={`Esperado: ${row.calculatedTotal.toLocaleString()}`}
-                              >
-                                <AlertTriangle className="w-3 h-3" />
-                                <span>Dif. Aritmética</span>
-                              </div>
-                            ) : (
-                              <div className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                                <Check className="w-3 h-3" />
-                                <span>Válido</span>
-                              </div>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          {/* Navigation & Commit Buttons */}
-          <div className="bg-white rounded-2xl border border-stone-200 p-4 shadow-xs flex items-center justify-between">
-            <button
-              onClick={() => setCurrentStep(2)}
-              className="px-4 py-2 rounded-xl border border-stone-300 text-stone-700 text-xs font-semibold hover:bg-stone-50 transition"
-            >
-              Volver a Mapeo
-            </button>
-
-            <button
-              onClick={handleCommitBudget}
-              disabled={loading}
-              className="flex items-center gap-2 px-8 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white text-xs font-extrabold shadow-sm transition disabled:opacity-50 cursor-pointer"
-            >
-              {loading ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>Sincronizando con la obra...</span>
-                </>
-              ) : (
-                <>
-                  <CheckCircle2 className="w-4 h-4" />
+              <p className="text-xs text-stone-600">
+                Se reemplaza el presupuesto actual de la obra (salvo Gastos Generales). Solo es posible mientras no haya OC, certificados ni gastos imputados.
+              </p>
+              {!rec.balanced && (
+                <label className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-800">
+                  <input type="checkbox" checked={acceptDifference} onChange={(e) => setAcceptDifference(e.target.checked)} className="mt-0.5" />
                   <span>
-                    Aprobar y Sincronizar Presupuesto ({previewData.summary.itemsCount} Ítems)
+                    El presupuesto no cuadra con la planilla
+                    {rec.declaredDifference !== null && ` (dif. ${money(rec.declaredDifference)})`}
+                    {rec.declaredDifference === null && " (hay subtotales de rubro que no coinciden)"}. Confirmo importarlo igual; la
+                    diferencia queda registrada.
                   </span>
-                </>
+                </label>
               )}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ========================================================================= */}
-      {/* PASO 4: CONFIRMACIÓN Y REPORTE DE IMPORTACIÓN                              */}
-      {/* ========================================================================= */}
-      {currentStep === 4 && commitResult && (
-        <div className="bg-white rounded-2xl border border-stone-200 p-8 shadow-xs max-w-2xl mx-auto text-center space-y-6 animate-in zoom-in-95 duration-200">
-          <div className="w-16 h-16 rounded-3xl bg-emerald-100 text-emerald-700 mx-auto flex items-center justify-center">
-            <FileCheck className="w-8 h-8" />
-          </div>
-
-          <div>
-            <h2 className="text-xl font-bold text-stone-900 font-display">
-              ¡Presupuesto Sincronizado Exitosamente!
-            </h2>
-            <p className="text-xs text-stone-500 mt-1">
-              Las partidas y límites presupuestarios han sido guardados en la base de datos de la obra.
-            </p>
-          </div>
-
-          {/* Stats Box */}
-          <div className="grid grid-cols-3 gap-3 bg-stone-50 rounded-2xl p-4 border border-stone-200 text-left">
-            <div>
-              <span className="text-[10px] font-bold uppercase text-stone-400 block">Partidas Creadas</span>
-              <span className="text-lg font-mono font-extrabold text-stone-900">
-                {commitResult.importedItemsCount}
-              </span>
-            </div>
-            <div>
-              <span className="text-[10px] font-bold uppercase text-stone-400 block">Estructura WBS</span>
-              <span className="text-xs font-semibold text-stone-700 block mt-1">
-                {commitResult.rubrosCount} Rubros • {commitResult.itemsCount} Ítems
-              </span>
-            </div>
-            <div>
-              <span className="text-[10px] font-bold uppercase text-stone-400 block">Monto Contratado</span>
-              <span className="text-sm font-mono font-bold text-emerald-700 block mt-1">
-                {formatMoney(commitResult.totalBudgetAmount, currency)}
-              </span>
-            </div>
-          </div>
-
-          <div className="pt-2 flex items-center justify-center gap-3">
-            <button
-              onClick={onImportComplete}
-              className="px-6 py-2.5 rounded-xl bg-stone-900 hover:bg-stone-800 text-white text-xs font-bold transition shadow-sm cursor-pointer"
-            >
-              Ver Partidas de la Obra
-            </button>
-          </div>
+              <div className="flex justify-between border-t border-stone-100 pt-4">
+                <button onClick={() => setStep(3)} className="text-xs font-semibold text-stone-500 hover:text-stone-800">
+                  Volver a revisar
+                </button>
+                <button
+                  onClick={commit}
+                  disabled={loading || preview.projectLocked || (!rec.balanced && !acceptDifference)}
+                  className="flex items-center gap-2 rounded-xl bg-emerald-600 px-6 py-2.5 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {loading ? <RefreshCw className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+                  Importar presupuesto
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

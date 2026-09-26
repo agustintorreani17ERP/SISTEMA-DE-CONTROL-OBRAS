@@ -1,202 +1,145 @@
-import { DocumentStatus, PrismaClient, SubcontractStatus } from "@prisma/client";
-import { Prisma } from "@prisma/client";
+import { DocumentStatus, Prisma, PrismaClient } from "@prisma/client";
+import { ensureGeneralExpenses } from "../src/domain/generalExpenses";
+import { postMovement } from "../src/domain/budget";
+import { recalculateProjectFinancials } from "../src/domain/projectFinancials";
 
+/**
+ * Datos de ejemplo para desarrollo: una obra genérica con presupuesto en árbol, un pedido
+ * y una OC emitida (ya descontada del presupuesto vía libro mayor).
+ *
+ * No borra nada salvo que se ejecute con SEED_RESET=true, y aun así se niega si la base
+ * ya tiene obras que no son de ejemplo.
+ */
 const prisma = new PrismaClient();
 const D = (v: string | number) => new Prisma.Decimal(v);
+const DEMO_CODE = "OBRA-DEMO";
 
-async function main() {
+async function reset() {
+  const real = await prisma.project.count({ where: { code: { not: DEMO_CODE } } });
+  if (real > 0) {
+    throw new Error("La base tiene obras reales: SEED_RESET no se aplica. Usá una base de desarrollo.");
+  }
+  await prisma.budgetMovement.deleteMany();
   await prisma.stockMovement.deleteMany();
   await prisma.warehouseStock.deleteMany();
   await prisma.documentAuditLog.deleteMany();
-  await prisma.budgetCommitment.deleteMany();
   await prisma.purchaseOrderDetail.deleteMany();
   await prisma.purchaseOrder.deleteMany();
   await prisma.materialRequestDetail.deleteMany();
   await prisma.materialRequest.deleteMany();
-  await prisma.subcontractorCertificate.deleteMany();
-  await prisma.subcontractorContract.deleteMany();
   await prisma.workFront.deleteMany();
+  await prisma.budgetItem.updateMany({ data: { parentId: null } });
   await prisma.budgetItem.deleteMany();
+  await prisma.budgetImport.deleteMany();
   await prisma.project.deleteMany();
-  await prisma.personnel.deleteMany();
-  await prisma.partner.deleteMany();
-  await prisma.material.deleteMany();
+}
 
-  const chief = await prisma.personnel.create({
-    data: {
-      fullName: "Ing. Carlos Benítez",
-      role: "JEFE_FRENTE",
-      email: "cbenitez@obra.local",
-    },
-  });
+async function main() {
+  if (process.env.SEED_RESET === "true") await reset();
+  if (await prisma.project.findUnique({ where: { code: DEMO_CODE } })) {
+    console.log(`La obra ${DEMO_CODE} ya existe; no se vuelve a crear.`);
+    return;
+  }
+
+  const chief =
+    (await prisma.personnel.findFirst({ where: { role: "JEFE_FRENTE" } })) ??
+    (await prisma.personnel.create({ data: { fullName: "Jefe de frente (ejemplo)", role: "JEFE_FRENTE" } }));
 
   const project = await prisma.project.create({
     data: {
-      code: "PY02-T3",
-      name: "Ruta Nacional PY02 — Tramo Caaguazú–Coronel Oviedo",
-      location: "Caaguazú, Paraguay",
-      roadSection: "Km 132 – Km 168",
-      contractNumber: "MOPC-2024-VIAL-041",
-      globalBudget: D("18500000000"),
-      startDate: new Date("2025-03-01"),
-      endDate: new Date("2027-08-31"),
+      code: DEMO_CODE,
+      name: "Obra de ejemplo",
+      location: "Asunción, Paraguay",
+      clientName: "Comitente de ejemplo",
+      currency: "PYG",
+      globalBudget: D("1950000000"),
+      montoContractualManual: D("1950000000"),
     },
   });
 
-  const [movimiento, estructuras, pavimento] = await Promise.all([
+  // Árbol: 2 rubros con sus ítems (los rubros no llevan monto propio).
+  const rubro = (code: string, name: string, sortOrder: number) =>
+    prisma.budgetItem.create({
+      data: { projectId: project.id, code, name, category: name, path: code, nodeKind: "RUBRO", sortOrder },
+    });
+  const item = (
+    parent: { id: number; path: string; name: string },
+    code: string,
+    name: string,
+    unit: string,
+    qty: number,
+    pu: number,
+    sortOrder: number
+  ) =>
     prisma.budgetItem.create({
       data: {
         projectId: project.id,
-        code: "01-MS",
-        name: "Movimiento de suelo",
-        category: "TERRAPLEN",
-        originalAmount: D("4200000000"),
+        parentId: parent.id,
+        code,
+        name,
+        category: parent.name,
+        unit,
+        totalQuantity: D(qty),
+        unitPrice: D(pu),
+        originalAmount: D(qty * pu),
+        path: `${parent.path}/${code}`,
+        hierarchyLevel: 1,
+        nodeKind: "ITEM",
+        sortOrder,
       },
-    }),
-    prisma.budgetItem.create({
-      data: {
-        projectId: project.id,
-        code: "02-EST",
-        name: "Estructuras (alcantarillas y puentes menores)",
-        category: "ESTRUCTURAS",
-        originalAmount: D("5100000000"),
-      },
-    }),
-    prisma.budgetItem.create({
-      data: {
-        projectId: project.id,
-        code: "03-PAV",
-        name: "Pavimento asfáltico",
-        category: "PAVIMENTO",
-        originalAmount: D("9200000000"),
-      },
-    }),
-  ]);
+    });
+
+  const fundaciones = await rubro("1", "FUNDACIONES", 1);
+  const zapatas = await item(fundaciones, "1.1", "Zapatas de hormigón armado", "m3", 120, 3_500_000, 2);
+  await item(fundaciones, "1.2", "Vigas de fundación", "m3", 60, 3_800_000, 3);
+  const albanileria = await rubro("2", "ALBAÑILERÍA", 4);
+  await item(albanileria, "2.1", "Muro de ladrillo común 0,15", "m2", 2500, 180_000, 5);
+  await item(albanileria, "2.2", "Revoque interior", "m2", 4000, 45_000, 6);
+  await prisma.$transaction((tx) => ensureGeneralExpenses(tx, project.id));
 
   const frente = await prisma.workFront.create({
-    data: {
-      projectId: project.id,
-      name: "Frente 1 — Calzada Este",
-      chiefId: chief.id,
-    },
+    data: { projectId: project.id, name: "Frente 1", chiefId: chief.id },
   });
 
-  const [asfaltos, aceros, subPav] = await Promise.all([
-    prisma.partner.create({
-      data: {
-        kind: "SUPPLIER",
-        name: "Asfaltos del Este S.A.",
-        taxId: "80012345-6",
-        fiscalAddress: "Ruta 2 km 14, Ciudad del Este",
-        phone: "+595 21 555-010",
-        classification: "EMULSION_ASFALTICA",
-      },
-    }),
-    prisma.partner.create({
-      data: {
-        kind: "SUPPLIER",
-        name: "Aceros Guaraní S.A.",
-        taxId: "80098765-1",
-        fiscalAddress: "Av. Artigas 2450, Asunción",
-        phone: "+595 21 555-220",
-        classification: "ACERO_CORUGADO",
-      },
-    }),
-    prisma.partner.create({
-      data: {
-        kind: "SUBCONTRACTOR",
-        name: "Pavimentadora del Sur Ltda.",
-        taxId: "80112233-4",
-        fiscalAddress: "Encarnación",
-        classification: "PAVIMENTO_FLEXIBLE",
-      },
-    }),
-  ]);
-
-  const [cemento, emulsion, acero, aridos] = await Promise.all([
-    prisma.material.create({
-      data: {
-        code: "CEM-CPC40",
-        description: "Cemento Portland CPC-40",
-        unit: "ton",
-        category: "CONGLOMERANTES",
-        estimatedCost: D("1850000"),
-      },
-    }),
-    prisma.material.create({
-      data: {
-        code: "EMU-CRS1",
-        description: "Emulsión asfáltica CRS-1",
-        unit: "ton",
-        category: "LIGANTES",
-        estimatedCost: D("6200000"),
-      },
-    }),
-    prisma.material.create({
-      data: {
-        code: "ACE-12",
-        description: "Acero corrugado Ø12 mm",
-        unit: "kg",
-        category: "ACERO",
-        estimatedCost: D("8500"),
-      },
-    }),
-    prisma.material.create({
-      data: {
-        code: "ARI-3/4",
-        description: "Árido triturado 3/4\"",
-        unit: "m3",
-        category: "AGREGADOS",
-        estimatedCost: D("210000"),
-      },
-    }),
-  ]);
+  const proveedor =
+    (await prisma.partner.findFirst({ where: { kind: { in: ["SUPPLIER", "BOTH"] } } })) ??
+    (await prisma.partner.create({ data: { kind: "SUPPLIER", name: "Proveedor de ejemplo S.A.", taxId: "80000001-0" } }));
+  const cemento =
+    (await prisma.material.findUnique({ where: { code: "CEM-DEMO" } })) ??
+    (await prisma.material.create({
+      data: { code: "CEM-DEMO", description: "Cemento Portland (bolsa 50 kg)", unit: "bolsa", category: "CONGLOMERANTES", estimatedCost: D(65_000) },
+    }));
 
   const request = await prisma.materialRequest.create({
     data: {
-      number: "PM-000001",
+      number: "PM-DEMO-1",
       projectId: project.id,
       workFrontId: frente.id,
       requestedById: chief.id,
-      status: DocumentStatus.APROBADO_PARA_COMPRA,
-      notes: "Riego de liga tramo km 140-142",
-      details: {
-        create: [
-          {
-            materialId: emulsion.id,
-            budgetItemId: pavimento.id,
-            quantity: D("18"),
-          },
-          {
-            materialId: aridos.id,
-            budgetItemId: pavimento.id,
-            quantity: D("120"),
-          },
-        ],
-      },
+      status: DocumentStatus.EMITIDA,
+      notes: "Cemento para zapatas",
+      details: { create: [{ materialId: cemento.id, budgetItemId: zapatas.id, quantity: D(400) }] },
     },
     include: { details: true },
   });
 
-  const emuLine = request.details.find((d) => d.materialId === emulsion.id)!;
-  const qty = D("12");
-  const price = D("6150000");
-  const subtotal = qty.times(price).toDecimalPlaces(2);
-
+  const qty = D(400);
+  const price = D(65_000);
+  const subtotal = qty.times(price);
   const po = await prisma.purchaseOrder.create({
     data: {
-      number: "OC-000001",
+      number: "OC-DEMO-1",
       projectId: project.id,
-      partnerId: asfaltos.id,
+      partnerId: proveedor.id,
       materialRequestId: request.id,
       status: DocumentStatus.EMITIDA,
       issueDate: new Date(),
       totalAmount: subtotal,
       details: {
         create: {
-          materialId: emulsion.id,
-          requestDetailId: emuLine.id,
-          budgetItemId: pavimento.id,
+          materialId: cemento.id,
+          requestDetailId: request.details[0].id,
+          budgetItemId: zapatas.id,
           quantity: qty,
           unitPrice: price,
           subtotal,
@@ -205,61 +148,22 @@ async function main() {
     },
   });
 
-  await prisma.budgetItem.update({
-    where: { id: pavimento.id },
-    data: { committedAmount: { increment: subtotal } },
-  });
-  await prisma.budgetCommitment.create({
-    data: {
-      budgetItemId: pavimento.id,
-      kind: "PURCHASE_ORDER",
+  await prisma.$transaction(async (tx) => {
+    await postMovement(tx, {
+      projectId: project.id,
+      budgetItemId: zapatas.id,
       amount: subtotal,
+      source: "PURCHASE_ORDER",
+      stage: "COMMITTED",
       sourceType: "PurchaseOrder",
       sourceId: po.id,
-      note: "Seed OC-000001",
-    },
-  });
-  await prisma.materialRequest.update({
-    where: { id: request.id },
-    data: { status: DocumentStatus.EMITIDA },
+      sourceNumber: po.number,
+      note: "Datos de ejemplo",
+    });
+    await recalculateProjectFinancials(tx, project.id);
   });
 
-  const contract = await prisma.subcontractorContract.create({
-    data: {
-      number: "SC-000001",
-      projectId: project.id,
-      partnerId: subPav.id,
-      budgetItemId: pavimento.id,
-      description: "Colocación de carpeta asfáltica 5 cm — km 132 a 145",
-      contractAmount: D("1800000000"),
-      status: SubcontractStatus.BORRADOR,
-    },
-  });
-
-  await prisma.documentAuditLog.createMany({
-    data: [
-      {
-        entity: "PurchaseOrder",
-        entityId: po.id,
-        action: "SEED_ISSUE",
-        toStatus: DocumentStatus.EMITIDA,
-      },
-      {
-        entity: "SubcontractorContract",
-        entityId: contract.id,
-        action: "SEED_CREATE",
-        toStatus: SubcontractStatus.BORRADOR,
-      },
-    ],
-  });
-
-  console.log("Seed vial listo:", {
-    project: project.code,
-    po: po.number,
-    request: request.number,
-    suppliers: [asfaltos.name, aceros.name],
-    unused: { cemento: cemento.code, estructuras: estructuras.code, movimiento: movimiento.code },
-  });
+  console.log("Seed listo:", { obra: project.code, oc: po.number, pedido: request.number });
 }
 
 main()

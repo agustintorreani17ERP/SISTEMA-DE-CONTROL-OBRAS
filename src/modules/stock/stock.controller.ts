@@ -14,14 +14,13 @@ stockRouter.get(
   "/",
   asyncHandler(async (req, res) => {
     const projectId = req.query.projectId ? Number(req.query.projectId) : undefined;
-    ok(
-      res,
-      await prisma.warehouseStock.findMany({
-        where: projectId ? { projectId } : undefined,
-        include: { project: true, material: true },
-        orderBy: [{ projectId: "asc" }, { materialId: "asc" }],
-      })
-    );
+    const rows = await prisma.warehouseStock.findMany({
+      where: projectId ? { projectId } : undefined,
+      include: { project: true, material: true },
+      orderBy: [{ projectId: "asc" }, { materialId: "asc" }],
+    });
+    // La pantalla usa currentStock/reservedStock; el modelo guarda quantityOnHand.
+    ok(res, rows.map((r) => ({ ...r, currentStock: r.quantityOnHand, reservedStock: 0 })));
   })
 );
 
@@ -121,12 +120,14 @@ stockRouter.get(
     }
     ok(
       res,
-      await prisma.stockMovement.findMany({
-        where: projectId ? { projectId } : undefined,
-        include: { project: true, material: true },
-        orderBy: { createdAt: "desc" },
-        take: 100,
-      })
+      (
+        await prisma.stockMovement.findMany({
+          where: projectId ? { projectId } : undefined,
+          include: { project: true, material: true },
+          orderBy: { createdAt: "desc" },
+          take: 200,
+        })
+      ).map((m) => ({ ...m, movementType: m.kind === "REVERSAL" ? "ADJUSTMENT" : m.kind }))
     );
   })
 );

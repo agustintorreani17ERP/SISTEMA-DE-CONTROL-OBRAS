@@ -5,6 +5,7 @@ import fs from "fs";
 import { env } from "./config/env";
 import { apiRouter } from "./routes";
 import { errorHandler } from "./middleware/errorHandler";
+import { UPLOADS_DIR } from "./modules/uploads/uploads.controller";
 
 export function createApp() {
   const app = express();
@@ -14,6 +15,9 @@ export function createApp() {
   app.get("/health", (_req, res) => {
     res.json({ success: true, data: { status: "ok", service: "infra-erp" } });
   });
+
+  // Fotos de mediciones
+  app.use("/uploads", express.static(UPLOADS_DIR));
 
   // API router mounted under /api
   app.use("/api", apiRouter);

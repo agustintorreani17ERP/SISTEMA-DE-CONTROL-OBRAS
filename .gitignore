@@ -1,4 +1,8 @@
 node_modules
 dist
+dist-client
+generated
 .env
 *.log
+mock-db-store.json
+uploads

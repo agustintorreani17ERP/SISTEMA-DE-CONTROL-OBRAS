@@ -21,6 +21,7 @@ import { api } from "../../api";
 import { MeasurementForm } from "./MeasurementForm";
 import { CertificateExcelPreview } from "./CertificateExcelPreview";
 
+import { formatGs } from "../../utils/numbers";
 interface AdvancedCertificationsViewProps {
   projects: Project[];
   partners: Partner[];
@@ -172,7 +173,7 @@ export const AdvancedCertificationsView: React.FC<AdvancedCertificationsViewProp
             Certificado al Cliente (Aprobado)
           </span>
           <div className="text-lg font-black text-slate-900 mt-1 font-mono">
-            {totalMontoObra.toLocaleString("es-PY")} Gs.
+            {formatGs(totalMontoObra)} Gs.
           </div>
           <span className="text-[11px] text-blue-600 font-semibold mt-1 block">
             Cuentas por Cobrar generadas
@@ -184,7 +185,7 @@ export const AdvancedCertificationsView: React.FC<AdvancedCertificationsViewProp
             Certificado a Subcontratistas
           </span>
           <div className="text-lg font-black text-emerald-700 mt-1 font-mono">
-            {totalMontoSubcontratos.toLocaleString("es-PY")} Gs.
+            {formatGs(totalMontoSubcontratos)} Gs.
           </div>
           <span className="text-[11px] text-emerald-700 font-semibold mt-1 block">
             Three-Way Match 100% validado
@@ -349,7 +350,7 @@ export const AdvancedCertificationsView: React.FC<AdvancedCertificationsViewProp
                           {isSubcontractor ? (
                             <span className="text-emerald-700 font-medium">Subcontratista (Cuentas por Pagar)</span>
                           ) : (
-                            <span className="text-blue-700 font-medium">{c.project?.clientName || "MOPC"} (Cuentas por Cobrar)</span>
+                            <span className="text-blue-700 font-medium">{c.project?.clientName || "Comitente"} (Cuentas por Cobrar)</span>
                           )}
                         </div>
                       </td>
@@ -361,7 +362,7 @@ export const AdvancedCertificationsView: React.FC<AdvancedCertificationsViewProp
                       </td>
 
                       <td className="py-3.5 px-3 text-right font-mono font-bold text-slate-900 text-sm">
-                        {Number(c.montoTotal || 0).toLocaleString("es-PY")} Gs.
+                        {formatGs(Number(c.montoTotal || 0))} Gs.
                       </td>
 
                       <td className="py-3.5 px-3 text-center">

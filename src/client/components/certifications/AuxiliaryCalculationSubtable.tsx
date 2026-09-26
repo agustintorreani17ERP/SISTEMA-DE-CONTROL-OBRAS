@@ -1,7 +1,9 @@
 import React from "react";
-import { Plus, Trash2, Calculator, Lock, Info } from "lucide-react";
+import { Plus, Trash2, Calculator, Info } from "lucide-react";
 import { AuxiliaryCalculation } from "../../types";
+import { NumCell, cellInputCls, focusCell, gridKeyDown, parseNum, readPastedMatrix } from "./sheetGrid";
 
+import { formatQty } from "../../utils/numbers";
 interface AuxiliaryCalculationSubtableProps {
   rubroCode: string;
   rubroName: string;
@@ -11,6 +13,35 @@ interface AuxiliaryCalculationSubtableProps {
   readOnly?: boolean;
 }
 
+// Columnas editables: 0 Descripción, 1 Largo, 2 Ancho, 3 Alto, 4 Piezas, 5 Descuento
+const FIELDS: (keyof AuxiliaryCalculation)[] = [
+  "descripcion",
+  "largo",
+  "ancho",
+  "alto",
+  "factor_repeticion",
+  "isDeduction",
+];
+
+const computeSubtotal = (row: AuxiliaryCalculation) => {
+  const l = Number(row.largo || 0);
+  const a = Number(row.ancho || 0);
+  const h = Number(row.alto || 0);
+  const f = Number(row.factor_repeticion || 1);
+  const v = Number((l * a * h * f).toFixed(4));
+  return row.isDeduction ? -v : v;
+};
+
+const newRow = (n: number): AuxiliaryCalculation => ({
+  descripcion: `Tramo / Eje ${n}`,
+  largo: 1,
+  ancho: 1,
+  alto: 1,
+  factor_repeticion: 1,
+  subtotal: 1,
+  isDeduction: false,
+});
+
 export const AuxiliaryCalculationSubtable: React.FC<AuxiliaryCalculationSubtableProps> = ({
   rubroCode,
   rubroName,
@@ -19,188 +50,179 @@ export const AuxiliaryCalculationSubtable: React.FC<AuxiliaryCalculationSubtable
   onChange,
   readOnly = false,
 }) => {
-  const handleAddRow = () => {
-    const newRow: AuxiliaryCalculation = {
-      descripcion: `Tramo / Eje ${calculations.length + 1}`,
-      largo: 1,
-      ancho: 1,
-      alto: 1,
-      factor_repeticion: 1,
-      subtotal: 1,
-    };
-    onChange([...calculations, newRow]);
+  const grid = `aux-${rubroCode}`;
+
+  const setField = (row: AuxiliaryCalculation, field: keyof AuxiliaryCalculation, raw: any) => {
+    let value: any = raw;
+    if (field === "isDeduction") {
+      value = typeof raw === "boolean" ? raw : /^(s|si|sí|x|1|true|-)$/i.test(String(raw).trim());
+    } else if (field === "factor_repeticion") {
+      value = typeof raw === "number" ? raw : parseNum(raw) || 1;
+    } else if (field !== "descripcion") {
+      value = typeof raw === "number" ? raw : parseNum(raw);
+    }
+    const updated = { ...row, [field]: value };
+    updated.subtotal = computeSubtotal(updated);
+    return updated;
   };
 
   const handleUpdateRow = (index: number, field: keyof AuxiliaryCalculation, value: any) => {
     const updated = [...calculations];
-    const row = { ...updated[index], [field]: value };
-
-    // Recalcular subtotal: largo * ancho * alto * factor
-    const l = Number(field === "largo" ? value : row.largo || 0);
-    const a = Number(field === "ancho" ? value : row.ancho || 0);
-    const h = Number(field === "alto" ? value : row.alto || 0);
-    const f = Number(field === "factor_repeticion" ? value : row.factor_repeticion || 1);
-
-    row.subtotal = Number((l * a * h * f).toFixed(4));
-    updated[index] = row;
+    updated[index] = setField(updated[index], field, value);
     onChange(updated);
   };
 
+  const handleAddRow = () => {
+    onChange([...calculations, newRow(calculations.length + 1)]);
+    setTimeout(() => focusCell(grid, calculations.length, 0), 0);
+  };
+
   const handleDeleteRow = (index: number) => {
-    const updated = calculations.filter((_, i) => i !== index);
+    onChange(calculations.filter((_, i) => i !== index));
+  };
+
+  const handlePaste = (e: React.ClipboardEvent, r: number, c: number) => {
+    const matrix = readPastedMatrix(e);
+    if (!matrix) return;
+    e.preventDefault();
+    const updated = [...calculations];
+    matrix.forEach((cells, i) => {
+      const idx = r + i;
+      if (!updated[idx]) updated[idx] = newRow(idx + 1);
+      cells.forEach((val, j) => {
+        const field = FIELDS[c + j];
+        if (field) updated[idx] = setField(updated[idx], field, val);
+      });
+    });
     onChange(updated);
+  };
+
+  const onKey = (e: React.KeyboardEvent<HTMLElement>, idx: number) => {
+    // Enter en la última fila agrega una nueva línea
+    if (e.key === "Enter" && !e.shiftKey && idx === calculations.length - 1 && !readOnly) {
+      e.preventDefault();
+      handleAddRow();
+      return;
+    }
+    gridKeyDown(e, calculations.length);
   };
 
   const totalSuma = calculations.reduce((sum, c) => sum + (Number(c.subtotal) || 0), 0);
 
+  const cellProps = (idx: number, c: number) => ({
+    "data-grid": grid,
+    "data-r": idx,
+    "data-c": c,
+    disabled: readOnly,
+    onKeyDown: (e: React.KeyboardEvent<HTMLElement>) => onKey(e, idx),
+    onPaste: (e: React.ClipboardEvent) => handlePaste(e, idx, c),
+  });
+
   return (
-    <div className="bg-slate-900 text-slate-100 rounded-xl p-4 my-2 border border-slate-700 shadow-xl space-y-4">
-      {/* Header bar of mini spreadsheet */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-700 pb-3">
-        <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center justify-center">
-            <Calculator className="w-4 h-4" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-mono font-bold text-emerald-400 bg-emerald-950/60 border border-emerald-700/50 px-2 py-0.5 rounded-sm">
-                {rubroCode}
-              </span>
-              <h4 className="text-sm font-bold text-white tracking-tight">
-                Planilla de Cómputo Auxiliar (Largo × Ancho × Alto × Factor)
-              </h4>
-            </div>
-            <p className="text-[11px] text-slate-400 truncate max-w-lg">
-              {rubroName} — Unidad de medida: <strong className="text-slate-200">{rubroUnit}</strong>
-            </p>
-          </div>
+    <div className="bg-white rounded-lg border border-amber-300 shadow-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-amber-50 border-b border-amber-200">
+        <div className="flex items-center gap-2 text-xs">
+          <Calculator className="w-4 h-4 text-amber-700" />
+          <span className="font-mono font-bold text-amber-900">{rubroCode}</span>
+          <span className="font-semibold text-slate-700">Cómputo auxiliar</span>
+          <span className="text-slate-500 truncate max-w-md">— {rubroName}</span>
         </div>
-
-        <div className="flex items-center gap-3">
-          <div className="bg-slate-800/90 border border-slate-700 px-3 py-1.5 rounded-lg flex items-center gap-2">
-            <Lock className="w-3.5 h-3.5 text-amber-400" />
-            <span className="text-xs text-slate-300">Cantidad resultante bloqueada:</span>
-            <span className="text-sm font-bold text-amber-300 font-mono">
-              {totalSuma.toLocaleString("es-PY", { maximumFractionDigits: 3 })} {rubroUnit}
-            </span>
-          </div>
-
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-slate-600">
+            Suma al período:{" "}
+            <strong className="font-mono text-amber-800">
+              {formatQty(totalSuma)} {rubroUnit}
+            </strong>
+          </span>
           {!readOnly && (
             <button
               type="button"
               onClick={handleAddRow}
-              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+              className="px-2 py-1 bg-white border border-amber-300 hover:bg-amber-100 text-amber-900 rounded text-xs font-semibold flex items-center gap-1 cursor-pointer"
             >
-              <Plus className="w-3.5 h-3.5" />
-              Nueva Línea
+              <Plus className="w-3.5 h-3.5" /> Fila
             </button>
           )}
         </div>
       </div>
 
-      {/* Embedded spreadsheet table */}
-      <div className="overflow-x-auto rounded-lg border border-slate-700 bg-slate-950">
-        <table className="w-full text-xs text-left border-collapse">
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs border-collapse">
           <thead>
-            <tr className="bg-slate-800/80 text-slate-300 font-semibold border-b border-slate-700 text-[11px] uppercase tracking-wider">
-              <th className="py-2 px-3 w-10 text-center text-slate-400">#</th>
-              <th className="py-2 px-3 min-w-[200px]">Descripción / Eje / Progresiva</th>
-              <th className="py-2 px-3 w-28 text-right">Largo (m)</th>
-              <th className="py-2 px-3 w-28 text-right">Ancho (m)</th>
-              <th className="py-2 px-3 w-28 text-right">Alto / Espesor (m)</th>
-              <th className="py-2 px-3 w-24 text-right">Cant. Veces</th>
-              <th className="py-2 px-3 w-32 text-right text-emerald-400 font-bold">Subtotal ({rubroUnit})</th>
-              {!readOnly && <th className="py-2 px-2 w-12 text-center">Acción</th>}
+            <tr className="bg-slate-100 text-slate-600 text-[11px] font-semibold">
+              <th className="border border-slate-200 px-2 py-1 w-8">#</th>
+              <th className="border border-slate-200 px-2 py-1 text-left min-w-[200px]">Descripción / Eje</th>
+              <th className="border border-slate-200 px-2 py-1 w-24 text-right">L</th>
+              <th className="border border-slate-200 px-2 py-1 w-24 text-right">A</th>
+              <th className="border border-slate-200 px-2 py-1 w-24 text-right">H</th>
+              <th className="border border-slate-200 px-2 py-1 w-20 text-right">Piezas</th>
+              <th className="border border-slate-200 px-2 py-1 w-16 text-center" title="Marcar para restar (vanos, huecos, etc.)">
+                Desc.
+              </th>
+              <th className="border border-slate-200 px-2 py-1 w-28 text-right">Parcial ({rubroUnit})</th>
+              {!readOnly && <th className="border border-slate-200 w-8"></th>}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-800 font-mono">
+          <tbody className="font-mono">
             {calculations.length === 0 ? (
               <tr>
-                <td colSpan={readOnly ? 7 : 8} className="py-6 text-center text-slate-400 font-sans">
-                  <div className="flex flex-col items-center justify-center gap-1.5">
-                    <Info className="w-4 h-4 text-slate-500" />
-                    <p className="text-xs">No hay desglose auxiliar en este rubro.</p>
+                <td colSpan={readOnly ? 8 : 9} className="py-4 text-center text-slate-400 font-sans">
+                  <span className="inline-flex items-center gap-1.5">
+                    <Info className="w-3.5 h-3.5" /> Sin desglose.
                     {!readOnly && (
-                      <button
-                        type="button"
-                        onClick={handleAddRow}
-                        className="text-xs text-emerald-400 hover:underline font-semibold mt-1 cursor-pointer"
-                      >
-                        + Agregar la primera línea de cálculo
+                      <button type="button" onClick={handleAddRow} className="text-amber-700 font-semibold hover:underline cursor-pointer">
+                        Agregar primera fila
                       </button>
                     )}
-                  </div>
+                  </span>
                 </td>
               </tr>
             ) : (
               calculations.map((row, idx) => (
-                <tr key={idx} className="hover:bg-slate-800/50 transition-colors">
-                  <td className="py-2 px-3 text-center text-slate-500 text-[11px]">{idx + 1}</td>
-                  <td className="py-1.5 px-3">
+                <tr key={idx} className={row.isDeduction ? "bg-red-50/60" : ""}>
+                  <td className="border border-slate-200 text-center text-slate-400 text-[11px]">{idx + 1}</td>
+                  <td className="border border-slate-200 p-0">
                     <input
+                      {...cellProps(idx, 0)}
                       type="text"
-                      disabled={readOnly}
                       value={row.descripcion}
                       onChange={(e) => handleUpdateRow(idx, "descripcion", e.target.value)}
-                      placeholder="Identificación del elemento..."
-                      className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-slate-100 text-xs font-sans focus:outline-hidden focus:border-emerald-500 disabled:opacity-75"
+                      className={`${cellInputCls} font-sans`}
                     />
                   </td>
-                  <td className="py-1.5 px-3">
+                  {(["largo", "ancho", "alto", "factor_repeticion"] as const).map((f, k) => (
+                    <td key={f} className="border border-slate-200 p-0">
+                      <NumCell
+                        {...cellProps(idx, k + 1)}
+                        value={Number(row[f] || 0)}
+                        onValue={(n) => handleUpdateRow(idx, f, n)}
+                        className={`${cellInputCls} text-right`}
+                      />
+                    </td>
+                  ))}
+                  <td className="border border-slate-200 text-center">
                     <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      disabled={readOnly}
-                      value={row.largo}
-                      onChange={(e) => handleUpdateRow(idx, "largo", parseFloat(e.target.value) || 0)}
-                      className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right text-slate-100 text-xs focus:outline-hidden focus:border-emerald-500 disabled:opacity-75"
+                      {...cellProps(idx, 5)}
+                      type="checkbox"
+                      checked={Boolean(row.isDeduction)}
+                      onChange={(e) => handleUpdateRow(idx, "isDeduction", e.target.checked)}
+                      className="accent-red-600 cursor-pointer"
                     />
                   </td>
-                  <td className="py-1.5 px-3">
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      disabled={readOnly}
-                      value={row.ancho}
-                      onChange={(e) => handleUpdateRow(idx, "ancho", parseFloat(e.target.value) || 0)}
-                      className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right text-slate-100 text-xs focus:outline-hidden focus:border-emerald-500 disabled:opacity-75"
-                    />
-                  </td>
-                  <td className="py-1.5 px-3">
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      disabled={readOnly}
-                      value={row.alto}
-                      onChange={(e) => handleUpdateRow(idx, "alto", parseFloat(e.target.value) || 0)}
-                      className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right text-slate-100 text-xs focus:outline-hidden focus:border-emerald-500 disabled:opacity-75"
-                    />
-                  </td>
-                  <td className="py-1.5 px-3">
-                    <input
-                      type="number"
-                      step="1"
-                      min="1"
-                      disabled={readOnly}
-                      value={row.factor_repeticion}
-                      onChange={(e) =>
-                        handleUpdateRow(idx, "factor_repeticion", parseInt(e.target.value, 10) || 1)
-                      }
-                      className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1 text-right text-slate-100 text-xs focus:outline-hidden focus:border-emerald-500 disabled:opacity-75"
-                    />
-                  </td>
-                  <td className="py-2 px-3 text-right text-emerald-400 font-bold text-xs bg-emerald-950/20">
-                    {Number(row.subtotal || 0).toLocaleString("es-PY", { maximumFractionDigits: 3 })}
+                  <td
+                    className={`border border-slate-200 px-2 text-right font-bold ${
+                      Number(row.subtotal) < 0 ? "text-red-700" : "text-slate-800"
+                    }`}
+                  >
+                    {formatQty(Number(row.subtotal || 0))}
                   </td>
                   {!readOnly && (
-                    <td className="py-2 px-2 text-center">
+                    <td className="border border-slate-200 text-center">
                       <button
                         type="button"
+                        tabIndex={-1}
                         onClick={() => handleDeleteRow(idx)}
-                        className="text-red-400 hover:text-red-300 p-1 rounded hover:bg-red-950/40 transition-colors cursor-pointer"
+                        className="text-slate-400 hover:text-red-600 p-1 cursor-pointer"
                         title="Eliminar fila"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
@@ -213,29 +235,24 @@ export const AuxiliaryCalculationSubtable: React.FC<AuxiliaryCalculationSubtable
           </tbody>
           {calculations.length > 0 && (
             <tfoot>
-              <tr className="bg-slate-800/90 font-bold border-t border-slate-700 text-xs">
-                <td colSpan={6} className="py-2.5 px-3 text-right text-slate-300 uppercase tracking-wider font-sans">
-                  Total Cómputo Auxiliar Sumado:
+              <tr className="bg-amber-50 font-bold">
+                <td colSpan={7} className="border border-slate-200 px-2 py-1.5 text-right text-slate-600">
+                  Total
                 </td>
-                <td className="py-2.5 px-3 text-right text-emerald-300 text-sm font-mono bg-emerald-950/40 border-l border-emerald-900">
-                  {totalSuma.toLocaleString("es-PY", { maximumFractionDigits: 3 })} {rubroUnit}
+                <td className="border border-slate-200 px-2 text-right font-mono text-amber-800">
+                  {formatQty(totalSuma)}
                 </td>
-                {!readOnly && <td></td>}
+                {!readOnly && <td className="border border-slate-200"></td>}
               </tr>
             </tfoot>
           )}
         </table>
       </div>
-
-      <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1">
-        <span className="flex items-center gap-1.5">
-          <Info className="w-3.5 h-3.5 text-blue-400" />
-          Fórmula aplicada: <code>Subtotal = Largo × Ancho × Alto × Cant. Veces</code>.
-        </span>
-        <span className="text-slate-500">
-          Los valores son certificados con valor legal de respaldo para la medición de campo.
-        </span>
-      </div>
+      {!readOnly && (
+        <p className="px-3 py-1.5 text-[10px] text-slate-500 border-t border-slate-100">
+          Parcial = L × A × H × Piezas (negativo si es descuento). Enter en la última fila agrega otra. Podés pegar celdas desde Excel.
+        </p>
+      )}
     </div>
   );
 };

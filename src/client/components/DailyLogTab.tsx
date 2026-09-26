@@ -125,7 +125,7 @@ export const DailyLogTab: React.FC<DailyLogTabProps> = ({
   return (
     <div className="space-y-6 pb-12">
       {/* Header Banner */}
-      <div className="bg-white rounded-xl p-5 border border-stone-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-end gap-2 [&>div:first-child]:hidden">
         <div>
           <div className="flex items-center gap-2">
             <BookOpen className="w-5 h-5 text-amber-600" />

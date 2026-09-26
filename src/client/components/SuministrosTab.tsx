@@ -1,22 +1,24 @@
-import React, { useState, useEffect } from "react";
-import { Package, ShoppingCart, Warehouse, Boxes, Building2 } from "lucide-react";
-import { MaterialRequestsTab } from "./MaterialRequestsTab";
-import { PurchaseOrdersTab } from "./PurchaseOrdersTab";
-import { StockWarehouseTab } from "./StockWarehouseTab";
-import { MaterialsListTab } from "./MaterialsListTab";
-import { SuppliersListTab } from "./SuppliersListTab";
+import React, { useEffect, useState } from "react";
 import {
-  Project,
-  MaterialRequest,
-  PurchaseOrder,
-  WarehouseStock,
-  StockMovement,
-  Material,
-  WorkFront,
-  Personnel,
-  Partner,
   BudgetItem,
+  Material,
+  MaterialRequest,
+  Partner,
+  Personnel,
+  Project,
+  PurchaseOrder,
+  StockMovement,
+  User,
+  WarehouseStock,
+  WorkFront,
 } from "../types";
+import { Page, PageHeader, Tabs } from "../ui";
+import { RequestsView } from "../compras/RequestsView";
+import { OrdersView } from "../compras/OrdersView";
+import { RequestForm } from "../compras/RequestForm";
+import { OrderForm } from "../compras/OrderForm";
+
+export type ComprasIntent = { action: "new-request" | "new-order"; nonce: number } | null;
 
 interface SuministrosTabProps {
   project?: Project | null;
@@ -30,196 +32,136 @@ interface SuministrosTabProps {
   partners: Partner[];
   budgetItems: BudgetItem[];
   currency: "PYG" | "USD";
+  currentUser?: User | null;
+  intent?: ComprasIntent;
   onRefresh: () => void;
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
   initialSubTab?: "pedidos" | "compras" | "stock" | "materiales" | "proveedores";
   onSubTabChange?: (sub: "pedidos" | "compras" | "stock" | "materiales" | "proveedores") => void;
 }
 
+type Sub = "pedidos" | "compras";
+
+/** Compras: 1. Pedidos de obra → 2. Órdenes de compra. El stock tiene su propio módulo. */
 export const SuministrosTab: React.FC<SuministrosTabProps> = ({
   project,
   materialRequests,
   purchaseOrders,
-  stock,
-  stockMovements,
   materials,
   workFronts,
   personnel,
   partners,
-  budgetItems,
   currency,
+  currentUser,
+  intent,
   onRefresh,
   showToast,
   initialSubTab,
   onSubTabChange,
 }) => {
-  const [subTab, setSubTabState] = useState<"pedidos" | "compras" | "stock" | "materiales" | "proveedores">(
-    initialSubTab || "pedidos"
-  );
+  const [sub, setSubState] = useState<Sub>(initialSubTab === "compras" ? "compras" : "pedidos");
+  const [requestFormOpen, setRequestFormOpen] = useState(false);
+  const [orderForm, setOrderForm] = useState<{ requestId: number | null } | null>(null);
+
+  const setSub = (value: Sub) => {
+    setSubState(value);
+    onSubTabChange?.(value);
+  };
 
   useEffect(() => {
-    if (initialSubTab && initialSubTab !== subTab) {
-      setSubTabState(initialSubTab);
-    }
+    if (initialSubTab === "compras" || initialSubTab === "pedidos") setSubState(initialSubTab);
   }, [initialSubTab]);
 
-  const setSubTab = (newTab: "pedidos" | "compras" | "stock" | "materiales" | "proveedores") => {
-    setSubTabState(newTab);
-    onSubTabChange?.(newTab);
-  };
-  const [selectedRequestForPO, setSelectedRequestForPO] = useState<MaterialRequest | null>(null);
+  // Acciones que llegan desde el botón global "+ Crear"
+  useEffect(() => {
+    if (!intent) return;
+    if (intent.action === "new-request") {
+      setSub("pedidos");
+      setRequestFormOpen(true);
+    } else {
+      setSub("compras");
+      setOrderForm({ requestId: null });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intent?.nonce]);
 
-  const pendingRequests = materialRequests.filter((r) => r.status === "BORRADOR").length;
-  const pendingOrders = purchaseOrders.filter(
-    (o) => o.status === "BORRADOR" || o.status === "APROBADO_PARA_COMPRA"
-  ).length;
-  const lowStock = stock.filter((s) => Number(s.currentStock || 0) <= 5).length;
-  const suppliersCount = partners.filter((p) => p.kind === "SUPPLIER" || p.kind === "BOTH").length;
+  if (!project) return null;
+
+  const pendingRequests = materialRequests.filter((r) => r.status === "BORRADOR" || r.status === "APROBADO_PARA_COMPRA").length;
+  const pendingOrders = purchaseOrders.filter((o) => ["BORRADOR", "APROBADO_PARA_COMPRA", "EMITIDA"].includes(o.status)).length;
 
   return (
-    <div className="space-y-4">
-      {/* Subnav Pills for Suministros */}
-      <div className="bg-white border border-slate-200 p-2 rounded-2xl flex items-center justify-between gap-2 shadow-xs">
-        <div className="flex items-center gap-1.5 overflow-x-auto">
-          <button
-            onClick={() => setSubTab("pedidos")}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-              subTab === "pedidos"
-                ? "bg-blue-50 text-blue-700 border border-blue-200 shadow-xs"
-                : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
-            }`}
-          >
-            <Package className="w-4 h-4" />
-            <span>Requisiciones / Pedidos</span>
-            {pendingRequests > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">
-                {pendingRequests}
-              </span>
-            )}
-          </button>
+    <Page>
+      <PageHeader title="Compras" help="Pedido de obra → orden de compra. Al emitir la OC se descuenta del rubro; al recibirla entra al stock." />
+      <Tabs
+        value={sub}
+        onChange={setSub}
+        items={[
+          { value: "pedidos", label: "1. Pedidos", count: pendingRequests },
+          { value: "compras", label: "2. Órdenes de compra", count: pendingOrders },
+        ]}
+      />
 
-          <button
-            onClick={() => setSubTab("compras")}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-              subTab === "compras"
-                ? "bg-blue-50 text-blue-700 border border-blue-200 shadow-xs"
-                : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
-            }`}
-          >
-            <ShoppingCart className="w-4 h-4" />
-            <span>Órdenes de Compra</span>
-            {pendingOrders > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">
-                {pendingOrders}
-              </span>
-            )}
-          </button>
-
-          <button
-            onClick={() => setSubTab("stock")}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-              subTab === "stock"
-                ? "bg-blue-50 text-blue-700 border border-blue-200 shadow-xs"
-                : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
-            }`}
-          >
-            <Warehouse className="w-4 h-4" />
-            <span>Control de Stock</span>
-            {lowStock > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700">
-                {lowStock} bajo
-              </span>
-            )}
-          </button>
-
-          <button
-            onClick={() => setSubTab("materiales")}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-              subTab === "materiales"
-                ? "bg-blue-50 text-blue-700 border border-blue-200 shadow-xs"
-                : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
-            }`}
-          >
-            <Boxes className="w-4 h-4" />
-            <span>Catálogo de Materiales ({materials.length})</span>
-          </button>
-
-          <button
-            onClick={() => setSubTab("proveedores")}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-              subTab === "proveedores"
-                ? "bg-blue-50 text-blue-700 border border-blue-200 shadow-xs"
-                : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
-            }`}
-          >
-            <Building2 className="w-4 h-4 text-blue-600" />
-            <span>Proveedores ({suppliersCount})</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Render selected Suministros sub-module */}
-      {subTab === "pedidos" && (
-        <MaterialRequestsTab
+      {sub === "pedidos" ? (
+        <RequestsView
           project={project}
-          materialRequests={materialRequests}
+          requests={materialRequests}
+          onNew={() => setRequestFormOpen(true)}
+          onCreateOrder={(r) => {
+            setSub("compras");
+            setOrderForm({ requestId: r.id });
+          }}
+          onRefresh={onRefresh}
+          showToast={showToast}
+        />
+      ) : (
+        <OrdersView
+          project={project}
+          orders={purchaseOrders}
+          currency={currency}
+          onNew={() => setOrderForm({ requestId: null })}
+          onRefresh={onRefresh}
+          showToast={showToast}
+        />
+      )}
+
+      {requestFormOpen && (
+        <RequestForm
+          project={project}
           workFronts={workFronts}
           personnel={personnel}
           materials={materials}
-          budgetItems={budgetItems}
+          currentUser={currentUser}
           currency={currency}
-          onRefresh={onRefresh}
-          showToast={showToast}
-          onOpenCreatePOForRequest={(req) => {
-            setSelectedRequestForPO(req);
-            setSubTab("compras");
+          onClose={() => setRequestFormOpen(false)}
+          onSaved={() => {
+            setRequestFormOpen(false);
+            onRefresh();
           }}
+          showToast={showToast}
         />
       )}
 
-      {subTab === "compras" && (
-        <PurchaseOrdersTab
+      {orderForm && (
+        <OrderForm
           project={project}
-          purchaseOrders={purchaseOrders}
-          materialRequests={materialRequests}
+          requests={materialRequests}
+          orders={purchaseOrders}
           partners={partners}
+          initialRequestId={orderForm.requestId}
           currency={currency}
-          onRefresh={onRefresh}
-          showToast={showToast}
-          selectedRequestForNewPO={selectedRequestForPO}
-          onClearSelectedRequestForPO={() => setSelectedRequestForPO(null)}
-        />
-      )}
-
-      {subTab === "stock" && (
-        <StockWarehouseTab
-          project={project}
-          stock={stock}
-          movements={stockMovements}
-          materials={materials}
-          workFronts={workFronts}
-          onRefresh={onRefresh}
+          onClose={() => setOrderForm(null)}
+          onSaved={() => {
+            setOrderForm(null);
+            onRefresh();
+          }}
+          onGoToRequests={() => {
+            setOrderForm(null);
+            setSub("pedidos");
+          }}
           showToast={showToast}
         />
       )}
-
-      {subTab === "materiales" && (
-        <MaterialsListTab
-          materials={materials}
-          stock={stock}
-          currency={currency}
-          onRefresh={onRefresh}
-          showToast={showToast}
-        />
-      )}
-
-      {subTab === "proveedores" && (
-        <SuppliersListTab
-          partners={partners}
-          onRefresh={onRefresh}
-          showToast={showToast}
-        />
-      )}
-    </div>
+    </Page>
   );
 };

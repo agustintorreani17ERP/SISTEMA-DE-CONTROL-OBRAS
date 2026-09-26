@@ -1,33 +1,26 @@
 import { Prisma } from "@prisma/client";
 import { toDecimal } from "../lib/money";
 
-export async function recalculateProjectFinancials(
-  tx: Prisma.TransactionClient,
-  projectId: number
-) {
-  const [project, budgetItems, purchaseOrders, subcontractorCertificates] = await Promise.all([
-    tx.project.findUnique({ where: { id: projectId } }),
-    tx.budgetItem.findMany({ where: { projectId: projectId } }),
-    tx.purchaseOrder.findMany({
-      where: { projectId, status: { in: ["EMITIDA", "RECIBIDO"] } },
-      select: { totalAmount: true },
-    }),
-    tx.subcontractorCertificate.findMany({
-      where: { contract: { projectId }, status: "PAGADO" },
-      select: { amount: true },
-    }),
-  ]);
-
+/**
+ * Consolida los montos de la obra a partir de las partidas hoja (ITEM) y del caché del
+ * libro mayor. Rubros y subrubros no se suman: su monto es la suma de sus hijos.
+ */
+export async function recalculateProjectFinancials(tx: Prisma.TransactionClient, projectId: number) {
+  const project = await tx.project.findUnique({ where: { id: projectId } });
   if (!project) return null;
 
-  const base = budgetItems.reduce((sum, item) => sum.plus(toDecimal(item.originalAmount)), new Prisma.Decimal(0));
+  const leaves = await tx.budgetItem.findMany({
+    where: { projectId, nodeKind: "ITEM" },
+    select: { originalAmount: true, costActualAmount: true },
+  });
+
+  const base = leaves.reduce((sum, item) => sum.plus(toDecimal(item.originalAmount)), new Prisma.Decimal(0));
+  const spent = leaves.reduce((sum, item) => sum.plus(toDecimal(item.costActualAmount)), new Prisma.Decimal(0));
+
   const adendas = await tx.certificacion.aggregate({
     where: { projectId, esAdenda: true, estado: { not: "RECHAZADA" } },
     _sum: { monto_total: true },
   });
-  const spent = purchaseOrders
-    .reduce((sum, order) => sum.plus(toDecimal(order.totalAmount)), new Prisma.Decimal(0))
-    .plus(subcontractorCertificates.reduce((sum, certificate) => sum.plus(toDecimal(certificate.amount)), new Prisma.Decimal(0)));
   const real = base.plus(toDecimal(adendas?._sum?.monto_total ?? 0));
 
   return tx.project.update({

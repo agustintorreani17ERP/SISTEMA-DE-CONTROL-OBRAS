@@ -17,6 +17,7 @@ import { Material, WarehouseStock } from "../types";
 import { api } from "../api";
 import { formatMoney } from "../utils/format";
 
+import { formatQty } from "../utils/numbers";
 interface MaterialsListTabProps {
   materials: Material[];
   stock: WarehouseStock[];
@@ -191,7 +192,7 @@ export const MaterialsListTab: React.FC<MaterialsListTabProps> = ({
   return (
     <div className="space-y-4">
       {/* Top Header & Actions */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 bg-white border border-slate-200 p-4 rounded-2xl shadow-xs">
+      <div className="flex flex-wrap items-center justify-end gap-2 [&>div:first-child]:hidden">
         <div>
           <div className="flex items-center gap-2">
             <Package className="w-5 h-5 text-blue-600" />
@@ -305,7 +306,7 @@ export const MaterialsListTab: React.FC<MaterialsListTabProps> = ({
                       </td>
                       <td className="p-3 text-right font-mono font-bold">
                         <span className={currentStock > 5 ? "text-emerald-700" : "text-amber-700"}>
-                          {currentStock.toLocaleString("es-PY")} {m.unit}
+                          {formatQty(currentStock)} {m.unit}
                         </span>
                       </td>
                       <td className="p-3 text-center whitespace-nowrap">

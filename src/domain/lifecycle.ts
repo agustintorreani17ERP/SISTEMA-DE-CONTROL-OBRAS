@@ -22,10 +22,11 @@ const DOC_FLOW: Record<DocumentStatus, DocumentStatus[]> = {
 };
 
 const SUB_FLOW: Record<SubcontractStatus, SubcontractStatus[]> = {
-  BORRADOR: [SubcontractStatus.CERTIFICADO],
-  CERTIFICADO: [SubcontractStatus.PAGADO],
+  BORRADOR: [SubcontractStatus.CERTIFICADO, SubcontractStatus.ANULADO],
+  CERTIFICADO: [SubcontractStatus.PAGADO, SubcontractStatus.ANULADO],
   PAGADO: [SubcontractStatus.CERRADO],
   CERRADO: [],
+  ANULADO: [],
 };
 
 export function assertMutableDocument(entity: string, status: DocumentStatus) {

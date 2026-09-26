@@ -32,8 +32,10 @@ function createInitialStore() {
     warehouseStock: [] as any[],
     stockMovement: [] as any[],
     certificacion: [] as any[],
-    costCenter: [] as any[],
-    budgetCommitment: [] as any[],
+    budgetMovement: [] as any[],
+    budgetImport: [] as any[],
+    pettyCashFund: [] as any[],
+    pettyCashExpense: [] as any[],
     documentAuditLog: [] as any[],
     projectBackup: [] as any[],
     invoice: [] as any[],
@@ -117,6 +119,29 @@ function expandRelations(modelName: string, item: any, include?: any) {
 
   if (res.subcontractId && !res.contract) {
     res.contract = mockStore.subcontractorContract.find((c: any) => c.id === res.subcontractId) || null;
+  }
+  // Relaciones uno-a-muchos pedidas en `include` que no se resolvieron arriba:
+  // se buscan por clave foránea (<modelo>Id o <última palabra del modelo>Id).
+  if (include && typeof include === "object" && item.id !== undefined) {
+    const lastWord = modelName.replace(/^.*([A-Z])/, (m) => m.slice(-1)).toLowerCase();
+    for (const key of Object.keys(include)) {
+      if (res[key] !== undefined || !key.endsWith("s")) continue;
+      const singular = key.slice(0, -1);
+      const collectionName = Object.keys(mockStore).find(
+        (name) => name === singular || name.endsWith(singular.charAt(0).toUpperCase() + singular.slice(1))
+      );
+      if (!collectionName) continue;
+      const fkCandidates = [`${modelName}Id`, `${lastWord}Id`];
+      res[key] = ((mockStore as any)[collectionName] as any[]).filter((row) =>
+        fkCandidates.some((fk) => row[fk] === item.id)
+      );
+    }
+  }
+  if (res.contractId && !res.contract) {
+    res.contract = mockStore.subcontractorContract.find((c: any) => c.id === res.contractId) || null;
+  }
+  if (res.fundId && !res.fund) {
+    res.fund = (mockStore.pettyCashFund || []).find((f: any) => f.id === res.fundId) || null;
   }
 
   if (res.details && Array.isArray(res.details)) {
@@ -233,6 +258,38 @@ function applyUpdateData(item: any, data: any) {
   item.updatedAt = new Date();
 }
 
+/** Valores por defecto de cada modelo según schema.prisma (lo que haría la base real). */
+const MODEL_DEFAULTS = new Map<string, Record<string, unknown>>();
+for (const model of Prisma.dmmf.datamodel.models) {
+  const defaults: Record<string, unknown> = {};
+  for (const field of model.fields) {
+    if (field.name === "id") continue;
+    if (field.isUpdatedAt) {
+      defaults[field.name] = "__now__";
+      continue;
+    }
+    if (!field.hasDefaultValue) continue;
+    const d = field.default as unknown;
+    if (d && typeof d === "object" && "name" in (d as object)) {
+      if ((d as { name: string }).name === "now") defaults[field.name] = "__now__";
+      continue;
+    }
+    defaults[field.name] = field.type === "Decimal" ? new Prisma.Decimal(d as number) : d;
+  }
+  MODEL_DEFAULTS.set(model.name.charAt(0).toLowerCase() + model.name.slice(1), defaults);
+}
+
+function withDefaults(modelName: string, data: Record<string, any>) {
+  const resolved: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(MODEL_DEFAULTS.get(modelName) ?? {})) {
+    resolved[key] = value === "__now__" ? new Date() : value;
+  }
+  for (const [key, value] of Object.entries(data)) {
+    if (value !== undefined) resolved[key] = value;
+  }
+  return resolved;
+}
+
 function createMockModel(modelName: string) {
   return {
     findMany: async (args?: any) => {
@@ -300,10 +357,8 @@ function createMockModel(modelName: string) {
 
       const newItem = {
         id: newId,
-        createdAt: new Date(),
-        updatedAt: new Date(),
         deletedAt: null,
-        ...args.data,
+        ...withDefaults(modelName, args.data),
         details: detailsArray.length > 0 ? detailsArray : args.data.details,
       };
       collection.push(newItem);
@@ -362,10 +417,8 @@ function createMockModel(modelName: string) {
         const newId = collection.length > 0 ? Math.max(...collection.map((i: any) => i.id || 0)) + 1 : 1;
         const newItem = {
           id: newId,
-          createdAt: new Date(),
-          updatedAt: new Date(),
           deletedAt: null,
-          ...createData,
+          ...withDefaults(modelName, createData),
         };
         collection.push(newItem);
         saveStore();
@@ -432,71 +485,98 @@ function createMockModel(modelName: string) {
       if (!args?.where) return collection.length;
       return collection.filter((item: any) => matchesWhere(item, args.where)).length;
     },
+    createMany: async (args: any) => {
+      if (!(mockStore as any)[modelName]) {
+        (mockStore as any)[modelName] = [];
+      }
+      const collection = (mockStore as any)[modelName];
+      const rows = Array.isArray(args?.data) ? args.data : [args?.data];
+      for (const row of rows) {
+        const newId = collection.length > 0 ? Math.max(...collection.map((i: any) => i.id || 0)) + 1 : 1;
+        collection.push({ id: newId, ...withDefaults(modelName, row) });
+      }
+      saveStore();
+      return { count: rows.length };
+    },
+    createManyAndReturn: async (args: any) => {
+      if (!(mockStore as any)[modelName]) {
+        (mockStore as any)[modelName] = [];
+      }
+      const collection = (mockStore as any)[modelName];
+      const rows = Array.isArray(args?.data) ? args.data : [args?.data];
+      const created = rows.map((row: any) => {
+        const newId = collection.length > 0 ? Math.max(...collection.map((i: any) => i.id || 0)) + 1 : 1;
+        const item = { id: newId, ...withDefaults(modelName, row) };
+        collection.push(item);
+        return item;
+      });
+      saveStore();
+      return created;
+    },
+    groupBy: async (args: any) => {
+      const collection = (mockStore as any)[modelName] || [];
+      const filtered = args?.where
+        ? collection.filter((item: any) => matchesWhere(item, args.where, modelName))
+        : collection;
+      const keys: string[] = args?.by ?? [];
+      const groups = new Map<string, any[]>();
+      for (const item of filtered) {
+        const k = JSON.stringify(keys.map((key) => item[key]));
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k)!.push(item);
+      }
+      return [...groups.values()].map((items) => {
+        const row: Record<string, any> = {};
+        for (const key of keys) row[key] = items[0][key];
+        if (args?._sum) {
+          row._sum = {};
+          for (const field of Object.keys(args._sum)) {
+            row._sum[field] = items.reduce(
+              (acc: Prisma.Decimal, it: any) => acc.plus(toDecimal(it[field])),
+              new Prisma.Decimal(0)
+            );
+          }
+        }
+        if (args?._count) row._count = items.length;
+        return row;
+      });
+    },
   };
 }
 
-let rawPrisma: PrismaClient | null = null;
-let isDbOffline = !process.env.DATABASE_URL || process.env.DATABASE_URL.includes("mock") || process.env.DATABASE_URL.includes("servidor");
+const useMock = !process.env.DATABASE_URL || process.env.DATABASE_URL.includes("mock");
 
-if (!isDbOffline) {
-  try {
-    rawPrisma = new PrismaClient({
-      log: ["error"],
-    });
-  } catch (err) {
-    isDbOffline = true;
-    console.warn("[InfraTrack ERP] No se pudo instanciar PrismaClient real, usando mock:", err);
-  }
+function createMockClient(): PrismaClient {
+  const client: any = new Proxy(
+    {},
+    {
+      get(_target, prop: string) {
+        if (prop === "$connect" || prop === "$disconnect") return async () => {};
+        if (prop === "$transaction") {
+          return async (arg: any) => {
+            if (typeof arg === "function") return arg(client);
+            if (Array.isArray(arg)) return Promise.all(arg);
+            return arg;
+          };
+        }
+        return createMockModel(prop);
+      },
+    }
+  );
+  return client as PrismaClient;
 }
 
-export const prisma: PrismaClient = new Proxy(
-  {},
-  {
-    get(_target, prop: string) {
-      if (prop === "$connect") return async () => {};
-      if (prop === "$disconnect") return async () => {};
-      if (prop === "$transaction") {
-        return async (arg: any) => {
-          if (typeof arg === "function") {
-            return arg(prisma);
-          }
-          if (Array.isArray(arg)) {
-            return Promise.all(arg);
-          }
-          return arg;
-        };
-      }
+if (useMock) {
+  console.warn("[ERP] DATABASE_URL no configurada: usando almacenamiento simulado (solo desarrollo).");
+}
 
-      const mockModel = createMockModel(prop);
+/**
+ * Con DATABASE_URL se usa PrismaClient real (transacciones atómicas reales).
+ * Sin DATABASE_URL se usa el almacenamiento simulado en JSON, solo para desarrollo.
+ * No hay cambio silencioso de modo: si la base real falla, el error se propaga.
+ */
+export const prisma: PrismaClient = useMock
+  ? createMockClient()
+  : new PrismaClient({ log: ["error"] });
 
-      if (!isDbOffline && rawPrisma && prop in rawPrisma) {
-        const realModel = (rawPrisma as any)[prop];
-        return new Proxy(realModel, {
-          get(targetModel, method: string) {
-            const originalMethod = targetModel[method];
-            if (typeof originalMethod !== "function") return targetModel[method];
-            return async (...args: any[]) => {
-              if (isDbOffline) {
-                const mockFn = (mockModel as any)[method];
-                return typeof mockFn === "function" ? mockFn(...args) : null;
-              }
-              try {
-                return await originalMethod.apply(targetModel, args);
-              } catch (dbErr: any) {
-                isDbOffline = true;
-                console.warn(
-                  `[InfraTrack ERP] Base de datos no disponible (${dbErr?.code || "offline"}), activando modo memoria simulada.`
-                );
-                const mockFn = (mockModel as any)[method];
-                return typeof mockFn === "function" ? mockFn(...args) : null;
-              }
-            };
-          },
-        });
-      }
-
-      return mockModel;
-    },
-  }
-) as unknown as PrismaClient;
-
+export const isMockDatabase = useMock;

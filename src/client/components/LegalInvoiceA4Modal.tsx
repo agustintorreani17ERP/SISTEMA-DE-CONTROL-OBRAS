@@ -15,6 +15,7 @@ import {
 import { formatMoney, formatDate } from "../utils/format";
 import { numeroALetrasGuaranies } from "../utils/numberToWords";
 
+import { formatGs, formatQty } from "../utils/numbers";
 interface LegalInvoiceA4ModalProps {
   invoice: any;
   project?: any;
@@ -80,29 +81,29 @@ export const LegalInvoiceA4Modal: React.FC<LegalInvoiceA4ModalProps> = ({
   const isEmitida = invoice.tipo === "EMITIDA";
   const emisorNombre = isEmitida
     ? "CONSORCIO DE CONSTRUCCIONES CIVILES S.A. (CCC S.A.)"
-    : invoice.partner?.name || "PROVEEDOR VIAL S.A.";
+    : invoice.partner?.name || "—";
   const emisorRuc = isEmitida
     ? "80034567-8"
-    : invoice.partner?.taxId || "80012345-6";
+    : invoice.partner?.taxId || "—";
   const emisorDireccion = isEmitida
     ? "Avda. Aviadores del Chaco 2050 esq. Santa Teresa - Asunción, Paraguay"
-    : invoice.partner?.fiscalAddress || "Ruta D027 km 38, Ypacaraí - Paraguay";
-  const emisorTelefono = isEmitida ? "(+595 21) 612-400" : invoice.partner?.phone || "(+595 21) 582-410";
+    : invoice.partner?.fiscalAddress || "—";
+  const emisorTelefono = isEmitida ? "(+595 21) 612-400" : invoice.partner?.phone || "—";
 
   const clienteNombre = isEmitida
-    ? invoice.partner?.name || project?.clientName || "MOPC - Ministerio de Obras Públicas y Comunicaciones"
+    ? invoice.partner?.name || project?.clientName || "—"
     : "CONSORCIO DE CONSTRUCCIONES CIVILES S.A. (CCC S.A.)";
-  const clienteRuc = isEmitida ? invoice.partner?.taxId || "80024501-1" : "80034567-8";
+  const clienteRuc = isEmitida ? invoice.partner?.taxId || "—" : "80034567-8";
   const clienteDireccion = isEmitida
-    ? "Oliva y Alberdi, Asunción - Paraguay"
-    : `Campamento de Obra ${project?.code || "Ruta PY02"}, km 45 - Cordillera`;
+    ? "—"
+    : project?.location || "—";
 
   const items =
     invoice.items && invoice.items.length > 0
       ? invoice.items
       : [
           {
-            description: invoice.concepto || "Servicios y Materiales de Infraestructura Vial",
+            description: invoice.concepto || "Servicios y Materiales de Obra",
             quantity: 1,
             unitPrice: total,
             vatType: "IVA10",
@@ -203,7 +204,7 @@ export const LegalInvoiceA4Modal: React.FC<LegalInvoiceA4ModalProps> = ({
                       {emisorNombre}
                     </h1>
                     <p className="text-[10px] text-slate-600 font-medium">
-                      Obras Viales · Asfaltos · Movimiento de Suelos · Hormigón
+                      Construcción de Obras Civiles
                     </p>
                   </div>
                 </div>
@@ -213,10 +214,10 @@ export const LegalInvoiceA4Modal: React.FC<LegalInvoiceA4ModalProps> = ({
                     <strong>Casa Central:</strong> {emisorDireccion}
                   </p>
                   <p>
-                    <strong>Teléfono:</strong> {emisorTelefono} | <strong>Email:</strong> administracion@ccc-vial.com.py
+                    <strong>Teléfono:</strong> {emisorTelefono} | <strong>Email:</strong> administracion@ccc.com.py
                   </p>
                   <p>
-                    <strong>Actividad Económica:</strong> Construcción de Obras de Ingeniería Civil y Vial
+                    <strong>Actividad Económica:</strong> Construcción de Obras de Ingeniería Civil
                   </p>
                 </div>
               </div>
@@ -303,7 +304,7 @@ export const LegalInvoiceA4Modal: React.FC<LegalInvoiceA4ModalProps> = ({
                 <div className="sm:col-span-6">
                   <strong>Proyecto / Centro de Costos: </strong>
                   <span className="font-bold text-slate-800">
-                    {project?.code || "OBRA-PY02"} · {project?.name || "Duplicación Ruta PY02"}
+                    {project?.code} · {project?.name}
                   </span>
                 </div>
               </div>
@@ -331,7 +332,7 @@ export const LegalInvoiceA4Modal: React.FC<LegalInvoiceA4ModalProps> = ({
                     return (
                       <tr key={idx} className="min-h-[28px]">
                         <td className="p-2 border-r border-slate-300 text-center">
-                          {Number(item.quantity).toLocaleString("es-PY")}
+                          {formatQty(Number(item.quantity))}
                         </td>
                         <td className="p-2 border-r border-slate-300 font-sans text-[11px] text-slate-900">
                           {item.description}
@@ -400,7 +401,7 @@ export const LegalInvoiceA4Modal: React.FC<LegalInvoiceA4ModalProps> = ({
                   TOTAL A PAGAR:
                 </div>
                 <div className="font-mono font-black text-base text-slate-900">
-                  ₲ {total.toLocaleString("es-PY")}
+                  ₲ {formatGs(total)}
                 </div>
               </div>
             </div>
@@ -474,11 +475,11 @@ export const LegalInvoiceA4Modal: React.FC<LegalInvoiceA4ModalProps> = ({
               {/* Signatures Box */}
               <div className="sm:col-span-5 grid grid-cols-2 gap-2 text-center text-[9px] text-slate-600">
                 <div className="border-t border-slate-400 pt-6">
-                  <p className="font-bold uppercase text-slate-800">Ing. Ana Urbina</p>
-                  <p>Jefe de Obra Vial</p>
+                  <p className="font-bold uppercase text-slate-800">&nbsp;</p>
+                  <p>Jefe de Obra</p>
                 </div>
                 <div className="border-t border-slate-400 pt-6">
-                  <p className="font-bold uppercase text-slate-800">Lic. María Gómez</p>
+                  <p className="font-bold uppercase text-slate-800">&nbsp;</p>
                   <p>Auditoría / Pagos</p>
                 </div>
               </div>

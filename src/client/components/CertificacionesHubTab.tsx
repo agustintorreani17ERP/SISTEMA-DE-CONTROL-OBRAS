@@ -196,7 +196,6 @@ export const CertificacionesHubTab: React.FC<CertificacionesHubTabProps> = ({
         const updated = await api.updateBudgetItem(editingItem.id, {
           code: itemFormData.code.trim(),
           name: itemFormData.name.trim(),
-          category: itemFormData.category.trim() || "GENERAL",
           unit: itemFormData.unit.trim() || "un",
           totalQuantity: qty,
           unitPrice: price,
@@ -213,7 +212,6 @@ export const CertificacionesHubTab: React.FC<CertificacionesHubTabProps> = ({
           projectId: project.id,
           code: itemFormData.code.trim(),
           name: itemFormData.name.trim(),
-          category: itemFormData.category.trim() || "GENERAL",
           unit: itemFormData.unit.trim() || "un",
           totalQuantity: qty,
           unitPrice: price,
@@ -358,7 +356,7 @@ export const CertificacionesHubTab: React.FC<CertificacionesHubTabProps> = ({
       (c) => c.budgetItemId === selectedBudgetItem.id && c.estado !== "RECHAZADA"
     );
     const sumCerts = certsForRubro.reduce((acc, c) => acc + Number(c.cantidad_medida || 0), 0);
-    return Math.max(Number(selectedBudgetItem.executedQuantity || 0), sumCerts);
+    return Math.max(Number(selectedBudgetItem.certifiedQuantity || 0), sumCerts);
   }, [selectedBudgetItem, certificaciones]);
 
   const currentMeasuredNum = parseFloat(measuredQuantity) || 0;
@@ -371,7 +369,7 @@ export const CertificacionesHubTab: React.FC<CertificacionesHubTabProps> = ({
     ? Number(selectedBudgetItem.originalAmount || totalBudgetQty * unitPrice)
     : 0;
   const currentExecutedAmount = selectedBudgetItem
-    ? Number(selectedBudgetItem.executedAmount || previousAccumulatedQty * unitPrice)
+    ? Number(selectedBudgetItem.certifiedAmount || previousAccumulatedQty * unitPrice)
     : 0;
   const newRemainingAmount = Math.max(0, currentPlannedAmount - (currentExecutedAmount + currentValuation));
 
@@ -405,7 +403,6 @@ export const CertificacionesHubTab: React.FC<CertificacionesHubTabProps> = ({
         projectId: project.id,
         code: customRubroCode.trim(),
         name: customRubroName.trim(),
-        category: customRubroCategory.trim() || "ADICIONALES",
         unit: customRubroUnit.trim() || "un",
         totalQuantity: qty,
         unitPrice: price,
@@ -462,8 +459,8 @@ export const CertificacionesHubTab: React.FC<CertificacionesHubTabProps> = ({
       setLocalBudgetItems((prev) =>
         prev.map((item) => {
           if (String(item.id) === selectedBudgetItemId) {
-            const currentExecQty = Number(item.executedQuantity || previousAccumulatedQty || 0);
-            const currentExecAmt = Number(item.executedAmount || 0);
+            const currentExecQty = Number(item.certifiedQuantity || previousAccumulatedQty || 0);
+            const currentExecAmt = Number(item.certifiedAmount || 0);
             return {
               ...item,
               executedQuantity: currentExecQty + currentMeasuredNum,
@@ -576,13 +573,13 @@ export const CertificacionesHubTab: React.FC<CertificacionesHubTabProps> = ({
       const plannedQty = Number(item.totalQuantity || (item as any).plannedQuantity || (item as any).quantity || 0);
       const certsForRubro = certificaciones.filter((c) => c.budgetItemId === item.id && c.estado !== "RECHAZADA");
       const sumCerts = certsForRubro.reduce((acc, c) => acc + Number(c.cantidad_medida || 0), 0);
-      const execQty = Math.max(Number(item.executedQuantity || 0), sumCerts);
+      const execQty = Math.max(Number(item.certifiedQuantity || 0), sumCerts);
       const remainingQty = Math.max(0, plannedQty - execQty);
       const progress = plannedQty > 0 ? ((execQty / plannedQty) * 100).toFixed(1) : "0";
 
       const plannedAmt = Number(item.originalAmount || 0);
       const uPrice = Number(item.unitPrice || (plannedQty > 0 ? plannedAmt / plannedQty : 0));
-      const execAmt = Math.max(Number(item.executedAmount || 0), Math.round(execQty * uPrice));
+      const execAmt = Math.max(Number(item.certifiedAmount || 0), Math.round(execQty * uPrice));
       const remainingAmt = Math.max(0, plannedAmt - execAmt);
 
       return [
@@ -637,9 +634,9 @@ export const CertificacionesHubTab: React.FC<CertificacionesHubTabProps> = ({
 
       const certsForRubro = certificaciones.filter((c) => c.budgetItemId === item.id && c.estado !== "RECHAZADA");
       const sumCerts = certsForRubro.reduce((acc, c) => acc + Number(c.cantidad_medida || 0), 0);
-      const execQty = Math.max(Number(item.executedQuantity || 0), sumCerts);
+      const execQty = Math.max(Number(item.certifiedQuantity || 0), sumCerts);
 
-      const eAmt = Math.max(Number(item.executedAmount || 0), Math.round(execQty * uPrice));
+      const eAmt = Math.max(Number(item.certifiedAmount || 0), Math.round(execQty * uPrice));
       const rAmt = Math.max(0, pAmt - eAmt);
 
       plannedAmt += pAmt;
@@ -772,8 +769,8 @@ export const CertificacionesHubTab: React.FC<CertificacionesHubTabProps> = ({
         const uP = Number(it.unitPrice || (pQty > 0 ? pAmt / pQty : 0));
         const cList = certificaciones.filter((c) => c.budgetItemId === it.id && c.estado !== "RECHAZADA");
         const sCerts = cList.reduce((acc, c) => acc + Number(c.cantidad_medida || 0), 0);
-        const eQty = Math.max(Number(it.executedQuantity || 0), sCerts);
-        const eAmt = Math.max(Number(it.executedAmount || 0), Math.round(eQty * uP));
+        const eQty = Math.max(Number(it.certifiedQuantity || 0), sCerts);
+        const eAmt = Math.max(Number(it.certifiedAmount || 0), Math.round(eQty * uP));
         const rAmt = Math.max(0, pAmt - eAmt);
 
         catPlannedQty += pQty;
@@ -1236,7 +1233,7 @@ export const CertificacionesHubTab: React.FC<CertificacionesHubTabProps> = ({
                                 (acc, c) => acc + Number(c.cantidad_medida || 0),
                                 0
                               );
-                              const execQty = Math.max(Number(item.executedQuantity || 0), sumCerts);
+                              const execQty = Math.max(Number(item.certifiedQuantity || 0), sumCerts);
 
                               // Calculated Remaining Quantity
                               const remainingQty = Math.max(0, plannedQty - execQty);
@@ -1248,7 +1245,7 @@ export const CertificacionesHubTab: React.FC<CertificacionesHubTabProps> = ({
                                 item.unitPrice || (plannedQty > 0 ? plannedAmt / plannedQty : 0)
                               );
                               const execAmt = Math.max(
-                                Number(item.executedAmount || 0),
+                                Number(item.certifiedAmount || 0),
                                 Math.round(execQty * uPrice)
                               );
                               const remainingAmt = Math.max(0, plannedAmt - execAmt);
@@ -1666,7 +1663,7 @@ export const CertificacionesHubTab: React.FC<CertificacionesHubTabProps> = ({
                     const pQty = Number(
                       item.totalQuantity || (item as any).plannedQuantity || (item as any).quantity || 0
                     );
-                    const eQty = Number(item.executedQuantity || 0);
+                    const eQty = Number(item.certifiedQuantity || 0);
                     const rem = Math.max(0, pQty - eQty);
 
                     return (

@@ -1,57 +1,59 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useCallback, useEffect, useState } from "react";
+import { AlertCircle, Menu, RefreshCw } from "lucide-react";
 import { Sidebar, ActiveTab, SuministrosSubTab } from "./components/Sidebar";
-import { DashboardTab } from "./components/DashboardTab";
 import { CentroCostosTab } from "./components/CentroCostosTab";
-import { EjecucionCertificacionesTab } from "./components/EjecucionCertificacionesTab";
 import { SuministrosTab } from "./components/SuministrosTab";
 import { PartesDiariosFrentesTab } from "./components/PartesDiariosFrentesTab";
 import { ContabilidadFinanzasTab } from "./components/ContabilidadFinanzasTab";
-import { CertificacionesHubTab } from "./components/CertificacionesHubTab";
-import { SubcontractsTab } from "./components/SubcontractsTab";
+import { RRHHTab } from "./components/RRHHTab";
 import { LoginModal } from "./components/LoginModal";
 import { CreateProjectModal } from "./components/CreateProjectModal";
-import { ProjectSelectionPortal } from "./components/ProjectSelectionPortal";
 import { ToastContainer, ToastMessage } from "./components/Toast";
+import { PortfolioPage } from "./pages/PortfolioPage";
+import { OverviewPage } from "./pages/OverviewPage";
+import { ConfigPage } from "./pages/ConfigPage";
+import { StockPage } from "./pages/StockPage";
+import { CertificadosPage, CertificadosIntent } from "./certificados/CertificadosPage";
+import { ComprasIntent } from "./components/SuministrosTab";
+import { CreateAction, CreateMenu } from "./layout/CreateMenu";
 import {
-  Project,
   BudgetItem,
-  WorkFront,
-  Personnel,
-  Partner,
   Material,
   MaterialRequest,
+  Partner,
+  PendingItem,
+  Personnel,
+  Project,
   PurchaseOrder,
-  SubcontractorContract,
-  WarehouseStock,
   StockMovement,
-  DashboardData,
+  SubcontractorContract,
   User,
+  WarehouseStock,
+  WorkFront,
 } from "./types";
 import { api } from "./api";
-import {
-  Loader2,
-  AlertCircle,
-  RefreshCw,
-  LogIn,
-  Menu,
-  X,
-  CheckCircle2,
-  Plus,
-  ArrowLeft,
-  FolderOpen,
-  DollarSign,
-  Building2,
-} from "lucide-react";
+import { cx } from "./ui";
+
+type FinanzasSubTab = "facturas" | "auditoria-match" | "cuentas-pagar" | "cuentas-cobrar" | "caja-chica";
 
 export function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
   const [suministrosSubTab, setSuministrosSubTab] = useState<SuministrosSubTab>("pedidos");
+  const [finanzasSubTab, setFinanzasSubTab] = useState<FinanzasSubTab>("facturas");
   const [currency, setCurrency] = useState<"PYG" | "USD">("PYG");
-  const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [openImporterTrigger, setOpenImporterTrigger] = useState(false);
+  const [showCreateProject, setShowCreateProject] = useState(false);
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  // Acciones del botón global "+ Crear": cada módulo abre su formulario al recibirlas
+  const [comprasIntent, setComprasIntent] = useState<ComprasIntent>(null);
+  const [stockIntent, setStockIntent] = useState<{ action: "out" | "adjust"; nonce: number } | null>(null);
+  const [certIntent, setCertIntent] = useState<CertificadosIntent>(null);
+  const [laborImportNonce, setLaborImportNonce] = useState(0);
 
-  // Authentication State: Start at login screen per user requirement
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     try {
       const saved = localStorage.getItem("infratrack_user");
@@ -61,10 +63,9 @@ export function App() {
     }
   });
 
-  // Core entities
+  // Datos de la obra seleccionada
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProjectId, setSelectedProjectId] = useState<number | undefined>(undefined);
-  const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [budgetItems, setBudgetItems] = useState<BudgetItem[]>([]);
   const [workFronts, setWorkFronts] = useState<WorkFront[]>([]);
   const [personnel, setPersonnel] = useState<Personnel[]>([]);
@@ -76,70 +77,23 @@ export function App() {
   const [stock, setStock] = useState<WarehouseStock[]>([]);
   const [stockMovements, setStockMovements] = useState<StockMovement[]>([]);
 
-  // Mobile sidebar toggle
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-
-  // Budget importer trigger
-  const [openImporterTrigger, setOpenImporterTrigger] = useState(false);
-
-  // Create Project Modal trigger
-  const [showCreateProjectModal, setShowCreateProjectModal] = useState(false);
-
-  // Toast feedback state
-  const [toasts, setToasts] = useState<ToastMessage[]>([]);
-
   const showToast = useCallback((message: string, type: "success" | "error" | "info" = "success") => {
     const id = Math.random().toString(36).substring(2, 9);
     setToasts((prev) => [...prev, { id, message, type }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 4500);
+    setTimeout(() => setToasts((prev) => prev.filter((t) => t.id !== id)), 4500);
   }, []);
+  const dismissToast = useCallback((id: string) => setToasts((prev) => prev.filter((t) => t.id !== id)), []);
 
-  const dismissToast = useCallback((id: string) => {
-    setToasts((prev) => prev.filter((t) => t.id !== id));
-  }, []);
-
-  // Fetch all primary project data
   const fetchData = useCallback(
     async (projId?: number, isRefresh = false) => {
       if (isRefresh) setRefreshing(true);
-      else setLoading(true);
       setError(null);
-
       try {
-        const currentProjects = await api.getProjects();
-        const targetId = projId || selectedProjectId;
-        setProjects((prev) => {
-          const list = [...currentProjects];
-          if (targetId && !list.some((p) => p.id === targetId)) {
-            const existing = prev.find((p) => p.id === targetId);
-            if (existing) list.unshift(existing);
-          }
-          return list;
-        });
+        setProjects(await api.getProjects());
+        const targetId = projId ?? selectedProjectId;
+        if (!targetId) return;
 
-        if (!targetId) {
-          // In portal mode (no specific project selected yet)
-          setLoading(false);
-          setRefreshing(false);
-          return;
-        }
-
-        const [
-          dashRes,
-          budRes,
-          wfRes,
-          persRes,
-          partRes,
-          matRes,
-          reqRes,
-          poRes,
-          scRes,
-          stockRes,
-          movRes,
-        ] = await Promise.allSettled([
-          api.getDashboard(targetId),
+        const results = await Promise.allSettled([
           api.getBudgetItems(targetId),
           api.getWorkFronts(targetId),
           api.getPersonnel(),
@@ -151,24 +105,24 @@ export function App() {
           api.getStock(targetId),
           api.getStockMovements(targetId),
         ]);
-
-        if (dashRes.status === "fulfilled") setDashboard(dashRes.value);
-        if (budRes.status === "fulfilled") setBudgetItems(budRes.value);
-        if (wfRes.status === "fulfilled") setWorkFronts(wfRes.value);
-        if (persRes.status === "fulfilled") setPersonnel(persRes.value);
-        if (partRes.status === "fulfilled") setPartners(partRes.value);
-        if (matRes.status === "fulfilled") setMaterials(matRes.value);
-        if (reqRes.status === "fulfilled") setMaterialRequests(reqRes.value);
-        if (poRes.status === "fulfilled") setPurchaseOrders(poRes.value);
-        if (scRes.status === "fulfilled") setSubcontracts(scRes.value);
-        if (stockRes.status === "fulfilled") setStock(stockRes.value);
-        if (movRes.status === "fulfilled") setStockMovements(movRes.value);
+        const setters: ((v: any) => void)[] = [
+          setBudgetItems,
+          setWorkFronts,
+          setPersonnel,
+          setPartners,
+          setMaterials,
+          setMaterialRequests,
+          setPurchaseOrders,
+          setSubcontracts,
+          setStock,
+          setStockMovements,
+        ];
+        results.forEach((r, i) => r.status === "fulfilled" && setters[i](r.value));
       } catch (err: any) {
-        console.error("Error loading ERP data:", err);
-        setError(err.message || "Error al conectar con el servidor de la obra");
+        setError(err.message || "No se pudo conectar con el servidor");
       } finally {
-        setLoading(false);
         setRefreshing(false);
+        setRefreshKey((k) => k + 1);
       }
     },
     [selectedProjectId]
@@ -176,32 +130,74 @@ export function App() {
 
   useEffect(() => {
     fetchData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleSelectProject = (id: number) => {
+  const openProject = (id: number) => {
     setSelectedProjectId(id);
     setActiveTab("dashboard");
-    fetchData(id, false);
+    setSidebarOpen(false);
+    fetchData(id);
   };
 
-  const handleRefresh = () => {
-    if (selectedProjectId) {
-      fetchData(selectedProjectId, true);
-    } else {
-      fetchData(undefined, true);
+  const goPortfolio = () => {
+    setSelectedProjectId(undefined);
+    setSidebarOpen(false);
+    fetchData(undefined, true);
+  };
+
+  const navigate = (tab: ActiveTab) => {
+    setActiveTab(tab);
+    setOpenImporterTrigger(false);
+    setSidebarOpen(false);
+  };
+
+  const navigateFromOverview = (tab: PendingItem["tab"], subTab?: string) => {
+    if (tab === "suministros" && subTab) setSuministrosSubTab(subTab as SuministrosSubTab);
+    if (tab === "contabilidad-finanzas" && subTab) setFinanzasSubTab(subTab as FinanzasSubTab);
+    navigate(tab);
+  };
+
+  const handleRefresh = () => fetchData(selectedProjectId, true);
+
+  const handleCreate = (action: CreateAction) => {
+    const nonce = Date.now();
+    switch (action) {
+      case "new-request":
+      case "new-order":
+        setComprasIntent({ action, nonce });
+        return navigate("suministros");
+      case "stock-out":
+      case "stock-adjust":
+        setStockIntent({ action: action === "stock-out" ? "out" : "adjust", nonce });
+        return navigate("stock");
+      case "new-measurement":
+      case "new-contract":
+        setCertIntent({ action, nonce });
+        return navigate("ejecucion-certificaciones");
+      case "new-invoice":
+        setFinanzasSubTab("facturas");
+        return navigate("contabilidad-finanzas");
+      case "petty-expense":
+        setFinanzasSubTab("caja-chica");
+        return navigate("contabilidad-finanzas");
+      case "import-budget":
+        navigate("centro-costos");
+        return setOpenImporterTrigger(true);
+      case "labor-prices":
+        setLaborImportNonce(nonce);
+        return navigate("centro-costos");
+      case "new-project":
+        return setShowCreateProject(true);
     }
   };
 
-  const handleToggleCurrency = () => {
-    setCurrency((prev) => (prev === "PYG" ? "USD" : "PYG"));
-  };
-
-  const handleLoginSuccess = (user: User) => {
+  const handleLogin = (user: User) => {
     setCurrentUser(user);
     try {
       localStorage.setItem("infratrack_user", JSON.stringify(user));
     } catch {}
-    showToast(`Bienvenida/o, ${user.fullName} (${user.roleLabel || user.role})`);
+    showToast(`Bienvenida/o, ${user.fullName}`);
   };
 
   const handleLogout = () => {
@@ -210,419 +206,255 @@ export function App() {
     try {
       localStorage.removeItem("infratrack_user");
     } catch {}
-    showToast("Sesión cerrada correctamente", "info");
   };
 
-  const handleClearAllProjects = async () => {
-    try {
-      await api.clearAllProjects();
-      setProjects([]);
-      setSelectedProjectId(undefined);
-      setBudgetItems([]);
-      showToast("Todos los proyectos y presupuestos han sido eliminados correctamente");
-    } catch (err: any) {
-      showToast(err.message || "Error al eliminar proyectos", "error");
-    }
-  };
-
-  const handleDeleteProject = async (id: number, name: string) => {
+  const archiveProject = async (id: number, name: string) => {
     try {
       await api.archiveProject(id);
-      setProjects((prev) => prev.filter((p) => p.id !== id));
-      if (selectedProjectId === id) {
-        setSelectedProjectId(undefined);
-      }
-      showToast(`Proyecto "${name}" eliminado correctamente`);
+      showToast(`Obra "${name}" archivada`);
+      if (selectedProjectId === id) setSelectedProjectId(undefined);
+      fetchData(undefined, true);
     } catch (err: any) {
-      showToast(err.message || "Error al eliminar proyecto", "error");
+      showToast(err.message || "No se pudo archivar la obra", "error");
     }
   };
 
-  const handleProjectCreated = (newProject: Project, initialMode: "excel" | "manual") => {
-    setProjects((prev) => [newProject, ...prev.filter((p) => p.id !== newProject.id)]);
-    setSelectedProjectId(newProject.id);
-    setShowCreateProjectModal(false);
-    setActiveTab("certificaciones");
-    if (initialMode === "excel") {
-      setOpenImporterTrigger(true);
-    } else {
-      setOpenImporterTrigger(false);
-    }
-    fetchData(newProject.id, false);
-    showToast(`Proyecto "${newProject.name}" creado con éxito. Carga tu presupuesto base.`);
+  const handleProjectCreated = (project: Project) => {
+    setShowCreateProject(false);
+    setProjects((prev) => [project, ...prev.filter((p) => p.id !== project.id)]);
+    setSelectedProjectId(project.id);
+    setActiveTab("centro-costos");
+    setOpenImporterTrigger(true);
+    fetchData(project.id);
+    showToast(`Obra "${project.name}" creada. Importá su presupuesto.`);
   };
 
-  const currentProject = projects.find((p) => p.id === selectedProjectId);
+  const project = projects.find((p) => p.id === selectedProjectId) ?? null;
+  const badges = {
+    compras:
+      materialRequests.filter((r) => r.projectId === selectedProjectId && r.status === "BORRADOR").length +
+      purchaseOrders.filter((o) => o.projectId === selectedProjectId && (o.status === "BORRADOR" || o.status === "APROBADO_PARA_COMPRA")).length,
+    certificados: subcontracts
+      .filter((sc) => sc.projectId === selectedProjectId)
+      .reduce((acc, sc) => acc + (sc.certificates || []).filter((c) => c.status === "BORRADOR").length, 0),
+  };
 
-  // Counters for sidebar badges
-  const pendingRequisitionsCount = materialRequests.filter((r) => r.status === "BORRADOR").length;
-  const pendingOrdersCount = purchaseOrders.filter(
-    (o) => o.status === "BORRADOR" || o.status === "APROBADO_PARA_COMPRA"
-  ).length;
-  const pendingCertificatesCount = subcontracts.reduce((acc, sc) => {
-    const pendingCerts = (sc.certificates || []).filter((c) => c.status === "BORRADOR");
-    return acc + pendingCerts.length;
-  }, 0);
-  const lowStockCount = stock.filter((s) => Number(s.currentStock || 0) <= 5).length;
-
-  // STEP 1: If not authenticated, require login first
   if (!currentUser) {
     return (
-      <div className="min-h-screen bg-white flex items-center justify-center p-4">
-        <LoginModal
-          onLoginSuccess={handleLoginSuccess}
-          canCancel={false}
-        />
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 p-4">
+        <LoginModal onLoginSuccess={handleLogin} canCancel={false} />
         <ToastContainer toasts={toasts} onDismiss={dismissToast} />
       </div>
     );
   }
 
-  // STEP 2: If no project selected, show Project Selection Portal (Select existing or Create new)
-  if (!selectedProjectId || !currentProject) {
-    return (
-      <div className="min-h-screen bg-white text-slate-900 flex flex-col font-sans">
-        <ProjectSelectionPortal
-          projects={projects}
-          currentUser={currentUser}
-          currency={currency}
-          onSelectProject={handleSelectProject}
-          onCreateProjectClick={() => setShowCreateProjectModal(true)}
-          onLogout={handleLogout}
-          onDeleteProject={handleDeleteProject}
-          onClearAllProjects={handleClearAllProjects}
-          onRefresh={() => fetchData(undefined, true)}
-        />
+  const sidebar = (
+    <Sidebar
+      activeTab={activeTab}
+      onNavigate={navigate}
+      onGoPortfolio={goPortfolio}
+      project={project}
+      currentUser={currentUser}
+      onLogout={handleLogout}
+      badges={badges}
+    />
+  );
 
-        {showCreateProjectModal && (
-          <CreateProjectModal
-            isOpen={showCreateProjectModal}
-            onClose={() => setShowCreateProjectModal(false)}
-            onProjectCreated={handleProjectCreated}
-            currency={currency}
-            showToast={showToast}
-          />
-        )}
-
-        <ToastContainer toasts={toasts} onDismiss={dismissToast} />
-      </div>
-    );
-  }
-
-  // STEP 3: Project selected -> Show full ERP Workspace with all menus
   return (
-    <div className="flex h-screen bg-white text-slate-900 font-sans overflow-hidden">
-      {/* Left-Aligned Sidebar Menu */}
-      <div className="hidden md:flex shrink-0">
-        <Sidebar
-          activeTab={activeTab}
-          setActiveTab={(tab) => {
-            setActiveTab(tab);
-            setOpenImporterTrigger(false);
-          }}
-          suministrosSubTab={suministrosSubTab}
-          setSuministrosSubTab={setSuministrosSubTab}
-          projects={projects}
-          selectedProjectId={selectedProjectId}
-          onSelectProject={handleSelectProject}
-          onBackToPortal={() => setSelectedProjectId(undefined)}
-          currentUser={currentUser}
-          onLogout={handleLogout}
-          currency={currency}
-          onToggleCurrency={handleToggleCurrency}
-          pendingRequisitionsCount={pendingRequisitionsCount}
-          pendingOrdersCount={pendingOrdersCount}
-          pendingCertificatesCount={pendingCertificatesCount}
-          lowStockCount={lowStockCount}
-          onOpenBudgetImporter={() => {
-            setActiveTab("centro-costos");
-            setOpenImporterTrigger(true);
-          }}
-          onOpenCreateProject={() => setShowCreateProjectModal(true)}
-        />
-      </div>
-
-      {/* Mobile Drawer Sidebar */}
+    <div className="flex h-screen overflow-hidden bg-slate-50 text-slate-900">
+      <div className="hidden shrink-0 md:flex">{sidebar}</div>
       {sidebarOpen && (
-        <div className="fixed inset-0 z-50 flex md:hidden">
-          <div
-            className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm"
-            onClick={() => setSidebarOpen(false)}
-          />
-          <div className="relative z-10 w-72 max-w-full">
-            <Sidebar
-              activeTab={activeTab}
-              setActiveTab={(tab) => {
-                setActiveTab(tab);
-                setSidebarOpen(false);
-                setOpenImporterTrigger(false);
-              }}
-              suministrosSubTab={suministrosSubTab}
-              setSuministrosSubTab={setSuministrosSubTab}
-              projects={projects}
-              selectedProjectId={selectedProjectId}
-              onSelectProject={(id) => {
-                handleSelectProject(id);
-                setSidebarOpen(false);
-              }}
-              onBackToPortal={() => {
-                setSelectedProjectId(undefined);
-                setSidebarOpen(false);
-              }}
-              currentUser={currentUser}
-              onLogout={handleLogout}
-              currency={currency}
-              onToggleCurrency={handleToggleCurrency}
-              pendingRequisitionsCount={pendingRequisitionsCount}
-              pendingOrdersCount={pendingOrdersCount}
-              pendingCertificatesCount={pendingCertificatesCount}
-              lowStockCount={lowStockCount}
-              onOpenBudgetImporter={() => {
-                setActiveTab("centro-costos");
-                setOpenImporterTrigger(true);
-                setSidebarOpen(false);
-              }}
-              onOpenCreateProject={() => {
-                setSidebarOpen(false);
-                setShowCreateProjectModal(true);
-              }}
-            />
-          </div>
+        <div className="fixed inset-0 z-40 flex md:hidden">
+          <div className="fixed inset-0 bg-slate-900/40" onClick={() => setSidebarOpen(false)} />
+          <div className="relative z-10">{sidebar}</div>
         </div>
       )}
 
-      {/* Main Content Pane */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden bg-white">
-        {/* Top Operational Header */}
-        <header className="h-14 bg-white border-b border-slate-200 px-4 flex items-center justify-between shrink-0 z-10 shadow-xs">
-          <div className="flex items-center gap-3 min-w-0">
-            {/* Mobile menu hamburger */}
-            <button
-              onClick={() => setSidebarOpen(true)}
-              className="p-1.5 rounded-lg text-slate-600 hover:text-blue-700 hover:bg-blue-50 md:hidden"
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-4">
+          <button onClick={() => setSidebarOpen(true)} className="rounded-lg p-1.5 text-slate-600 hover:bg-slate-100 md:hidden" aria-label="Menú">
+            <Menu className="h-5 w-5" />
+          </button>
+          {projects.length > 0 && (
+            <select
+              value={selectedProjectId ?? ""}
+              onChange={(e) => (e.target.value ? openProject(Number(e.target.value)) : goPortfolio())}
+              className="max-w-xs truncate rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 focus:border-brand-500 focus:outline-none"
             >
-              <Menu className="w-5 h-5" />
-            </button>
-
-            {/* Back to Projects Portal Button */}
-            <button
-              onClick={() => setSelectedProjectId(undefined)}
-              title="Volver al portal de selección de proyectos"
-              className="hidden sm:flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-white hover:bg-blue-50 text-slate-700 hover:text-blue-700 text-xs font-semibold border border-slate-200 hover:border-blue-200 transition"
-            >
-              <ArrowLeft className="w-3.5 h-3.5 text-blue-600" />
-              <span>Obras</span>
-            </button>
-
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-blue-50 text-blue-700 border border-blue-200 shrink-0">
-                {currentProject?.code || "OBRA"}
-              </span>
-              <div className="truncate">
-                <span className="text-xs font-extrabold text-slate-900 truncate block sm:inline">
-                  {currentProject?.name}
-                </span>
-                <span className="hidden sm:inline text-xs text-slate-300 mx-1.5">|</span>
-                <span className="text-xs font-medium text-slate-600 truncate hidden sm:inline">
-                  {activeTab === "dashboard" && "Dashboard de Control Gerencial & Curva S"}
-                  {(activeTab === "centro-costos" || activeTab === "certificaciones") &&
-                    "Centro de Costos (WBS) & Presupuesto Base"}
-                  {(activeTab === "ejecucion-certificaciones" || activeTab === "subcontratistas") &&
-                    "Ejecución de Obra & Certificaciones (Mediciones, Subcontratos, Cliente)"}
-                  {activeTab === "suministros" &&
-                    "Suministros y Logística (Requisiciones, Órdenes de Compra, Pañol)"}
-                  {activeTab === "partes-diarios" && "Partes Diarios de Obra & Frentes de Trabajo"}
-                  {activeTab === "contabilidad-finanzas" &&
-                    "Contabilidad y Finanzas (Facturación Fiscal, Pagos, Cobranzas, Caja)"}
-                </span>
-              </div>
+              <option value="">Todas las obras</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.code} · {p.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <div className="ml-auto flex items-center gap-2">
+            <CreateMenu hasProject={!!project} onAction={handleCreate} />
+            <div className="flex rounded-xl border border-slate-200 p-0.5 text-xs font-medium">
+              {(["PYG", "USD"] as const).map((c) => (
+                <button
+                  key={c}
+                  onClick={() => setCurrency(c)}
+                  className={cx("rounded-lg px-2.5 py-1", currency === c ? "bg-slate-900 text-white" : "text-slate-500")}
+                >
+                  {c === "PYG" ? "₲" : "US$"}
+                </button>
+              ))}
             </div>
-          </div>
-
-          <div className="flex items-center gap-2 shrink-0">
-            {/* Currency toggle */}
-            <button
-              onClick={handleToggleCurrency}
-              title="Alternar moneda (Guaraníes / Dólares)"
-              className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-white hover:bg-blue-50 text-slate-700 hover:text-blue-700 text-xs font-mono font-bold border border-slate-200 hover:border-blue-200 transition"
-            >
-              <DollarSign className="w-3.5 h-3.5 text-blue-600" />
-              <span>{currency}</span>
-            </button>
-
-            <button
-              id="btn-create-project-top"
-              onClick={() => setShowCreateProjectModal(true)}
-              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition shadow-sm active:scale-95"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Nueva Obra</span>
-            </button>
-
             <button
               onClick={handleRefresh}
-              disabled={refreshing}
-              title="Sincronizar datos"
-              className="p-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 hover:text-blue-600 hover:bg-blue-50 hover:border-blue-200 transition"
+              className="rounded-xl border border-slate-200 p-2 text-slate-500 hover:bg-slate-50"
+              title="Actualizar datos"
             >
-              <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin text-blue-600" : ""}`} />
+              <RefreshCw className={cx("h-4 w-4", refreshing && "animate-spin")} />
             </button>
           </div>
         </header>
 
-        {/* Scrollable View Container */}
-        <main className="flex-1 overflow-y-auto p-4 md:p-6 bg-white">
-          {loading ? (
-            <div className="flex flex-col items-center justify-center py-28 text-slate-500">
-              <Loader2 className="w-8 h-8 animate-spin text-blue-600 mb-3" />
-              <p className="text-sm font-semibold text-slate-700">Cargando base de datos de la obra...</p>
-              <p className="text-xs text-slate-500 mt-1">Sincronizando rubros, mediciones y presupuestos</p>
-            </div>
-          ) : error ? (
-            <div className="bg-white border border-rose-200 rounded-2xl p-6 text-center max-w-lg mx-auto my-12 text-slate-800 shadow-sm">
-              <AlertCircle className="w-8 h-8 text-rose-600 mx-auto mb-2" />
-              <h2 className="text-base font-bold text-slate-900">Error de Conexión ERP</h2>
-              <p className="text-xs text-rose-700 mt-1">{error}</p>
-              <button
-                onClick={() => fetchData(selectedProjectId, false)}
-                className="mt-4 px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white rounded-xl text-xs font-bold shadow-sm transition"
-              >
-                Reintentar Conexión
+        <main className="flex-1 overflow-y-auto px-4 py-6 sm:px-8">
+          {error && (
+            <div className="mx-auto mb-6 flex max-w-7xl items-center gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+              <AlertCircle className="h-4 w-4" />
+              {error}
+              <button onClick={handleRefresh} className="ml-auto font-medium underline">
+                Reintentar
               </button>
             </div>
-          ) : (
-            <>
-              {/* 1. 📊 Tab: Dashboard de Obra */}
-              {activeTab === "dashboard" && (
-                <DashboardTab
-                  project={currentProject}
-                  dashboard={dashboard}
-                  currency={currency}
-                  materialRequests={materialRequests}
-                  purchaseOrders={purchaseOrders}
-                  subcontracts={subcontracts}
-                  onNavigateTab={(tab: any) => {
-                    if (tab === "pedidos") {
-                      setActiveTab("suministros");
-                      setSuministrosSubTab("pedidos");
-                    } else if (tab === "compras") {
-                      setActiveTab("suministros");
-                      setSuministrosSubTab("compras");
-                    } else if (tab === "stock") {
-                      setActiveTab("suministros");
-                      setSuministrosSubTab("stock");
-                    } else if (tab === "partidas" || tab === "presupuesto") {
-                      setActiveTab("centro-costos");
-                    } else if (tab === "subcontratos" || tab === "mediciones") {
-                      setActiveTab("ejecucion-certificaciones");
-                    } else if (tab === "frentes" || tab === "parte-diario") {
-                      setActiveTab("partes-diarios");
-                    } else if (tab === "finanzas" || tab === "facturas" || tab === "caja") {
-                      setActiveTab("contabilidad-finanzas");
-                    }
-                  }}
-                  onOpenNewRequest={() => {
-                    setActiveTab("suministros");
-                    setSuministrosSubTab("pedidos");
-                  }}
-                  onOpenNewOrder={() => {
-                    setActiveTab("suministros");
-                    setSuministrosSubTab("compras");
-                  }}
-                  onOpenNewSubcontract={() => setActiveTab("ejecucion-certificaciones")}
-                />
-              )}
+          )}
 
-              {/* 2. 🏗️ Tab: Centro de Costos (WBS & Presupuesto Base) */}
-              {(activeTab === "centro-costos" || activeTab === "certificaciones") && (
-                <CentroCostosTab
-                  project={currentProject}
-                  budgetItems={budgetItems}
-                  purchaseOrders={purchaseOrders}
-                  currency={currency}
-                  onRefresh={handleRefresh}
-                  showToast={showToast}
-                  initialOpenImporter={openImporterTrigger}
-                />
-              )}
+          {!project && (
+            <PortfolioPage
+              currency={currency}
+              userName={currentUser.fullName}
+              onOpenProject={openProject}
+              onCreateProject={() => setShowCreateProject(true)}
+              onArchiveProject={archiveProject}
+              showToast={showToast}
+              refreshKey={refreshKey}
+            />
+          )}
 
-              {/* 3. 📐 Tab: Ejecución y Certificaciones */}
-              {(activeTab === "ejecucion-certificaciones" || activeTab === "subcontratistas") && (
-                <EjecucionCertificacionesTab
-                  project={currentProject}
-                  projects={projects}
-                  budgetItems={budgetItems}
-                  partners={partners}
-                  subcontracts={subcontracts}
-                  workFronts={workFronts}
-                  currency={currency}
-                  onRefresh={handleRefresh}
-                  showToast={showToast}
-                  onNavigateToFinance={() => setActiveTab("contabilidad-finanzas")}
-                />
-              )}
+          {project && activeTab === "dashboard" && (
+            <OverviewPage
+              project={project}
+              currency={currency}
+              onNavigate={navigateFromOverview}
+              onImportBudget={() => {
+                setActiveTab("centro-costos");
+                setOpenImporterTrigger(true);
+              }}
+              refreshKey={refreshKey}
+              showToast={showToast}
+            />
+          )}
 
-              {/* 4. 📦 Tab: Suministros y Logística */}
-              {activeTab === "suministros" && (
-                <SuministrosTab
-                  project={currentProject}
-                  materialRequests={materialRequests}
-                  purchaseOrders={purchaseOrders}
-                  stock={stock}
-                  stockMovements={stockMovements}
-                  materials={materials}
-                  workFronts={workFronts}
-                  personnel={personnel}
-                  partners={partners}
-                  budgetItems={budgetItems}
-                  currency={currency}
-                  onRefresh={handleRefresh}
-                  showToast={showToast}
-                  initialSubTab={suministrosSubTab}
-                  onSubTabChange={setSuministrosSubTab}
-                />
-              )}
+          {project && (activeTab === "centro-costos" || activeTab === "certificaciones") && (
+            <CentroCostosTab
+              project={project}
+              budgetItems={budgetItems}
+              purchaseOrders={purchaseOrders}
+              currency={currency}
+              onRefresh={handleRefresh}
+              showToast={showToast}
+              initialOpenImporter={openImporterTrigger}
+              laborImportNonce={laborImportNonce}
+            />
+          )}
 
-              {/* 5. 🚜 Tab: Partes Diarios & Frentes */}
-              {activeTab === "partes-diarios" && (
-                <PartesDiariosFrentesTab
-                  project={currentProject}
-                  workFronts={workFronts}
-                  personnel={personnel}
-                  showToast={showToast}
-                />
-              )}
+          {project && (activeTab === "ejecucion-certificaciones" || activeTab === "subcontratistas") && (
+            <CertificadosPage
+              project={project}
+              budgetItems={budgetItems}
+              partners={partners}
+              subcontracts={subcontracts}
+              currency={currency}
+              intent={certIntent}
+              onRefresh={handleRefresh}
+              showToast={showToast}
+            />
+          )}
 
-              {/* 6. 💼 Tab: Contabilidad y Finanzas */}
-              {activeTab === "contabilidad-finanzas" && (
-                <ContabilidadFinanzasTab
-                  project={currentProject}
-                  purchaseOrders={purchaseOrders}
-                  subcontracts={subcontracts}
-                  budgetItems={budgetItems}
-                  partners={partners}
-                  currency={currency}
-                  onRefresh={handleRefresh}
-                  showToast={showToast}
-                />
-              )}
-            </>
+          {project && activeTab === "suministros" && (
+            <SuministrosTab
+              project={project}
+              materialRequests={materialRequests.filter((r) => r.projectId === project.id)}
+              purchaseOrders={purchaseOrders.filter((o) => o.projectId === project.id)}
+              stock={stock}
+              stockMovements={stockMovements}
+              materials={materials}
+              workFronts={workFronts}
+              personnel={personnel}
+              partners={partners}
+              budgetItems={budgetItems}
+              currency={currency}
+              onRefresh={handleRefresh}
+              showToast={showToast}
+              initialSubTab={suministrosSubTab}
+              onSubTabChange={setSuministrosSubTab}
+              currentUser={currentUser}
+              intent={comprasIntent}
+            />
+          )}
+
+          {project && activeTab === "stock" && (
+            <StockPage
+              project={project}
+              stock={stock}
+              movements={stockMovements}
+              materials={materials}
+              workFronts={workFronts}
+              intent={stockIntent}
+              onRefresh={handleRefresh}
+              showToast={showToast}
+            />
+          )}
+
+          {project && activeTab === "partes-diarios" && (
+            <PartesDiariosFrentesTab project={project} workFronts={workFronts} personnel={personnel} showToast={showToast} onRefresh={handleRefresh} />
+          )}
+
+          {project && activeTab === "contabilidad-finanzas" && (
+            <ContabilidadFinanzasTab
+              key={finanzasSubTab}
+              project={project}
+              purchaseOrders={purchaseOrders.filter((o) => o.projectId === project.id)}
+              subcontracts={subcontracts.filter((s) => s.projectId === project.id)}
+              budgetItems={budgetItems}
+              partners={partners}
+              currency={currency}
+              onRefresh={handleRefresh}
+              showToast={showToast}
+              initialSubTab={finanzasSubTab}
+            />
+          )}
+
+          {project && activeTab === "rrhh" && (
+            <RRHHTab project={project} showToast={showToast} />
+          )}
+
+          {project && activeTab === "configuracion" && (
+            <ConfigPage
+              materials={materials}
+              partners={partners}
+              stock={stock}
+              currency={currency}
+              onRefresh={handleRefresh}
+              showToast={showToast}
+            />
           )}
         </main>
       </div>
 
-      {/* Create Project Wizard Modal */}
-      {showCreateProjectModal && (
+      {showCreateProject && (
         <CreateProjectModal
-          isOpen={showCreateProjectModal}
-          onClose={() => setShowCreateProjectModal(false)}
+          isOpen
+          onClose={() => setShowCreateProject(false)}
           onProjectCreated={handleProjectCreated}
           currency={currency}
           showToast={showToast}
         />
       )}
-
-      {/* Global Toast Container */}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
     </div>
   );

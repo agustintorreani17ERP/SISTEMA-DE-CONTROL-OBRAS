@@ -7,6 +7,7 @@ export interface Project {
   contractNumber?: string | null;
   clientName?: string | null;
   executionMonths?: number | null;
+  currency?: string;
   globalBudget: string | number;
   montoContractualManual?: string | number | null;
   montoRealActualizado?: string | number | null;
@@ -26,20 +27,149 @@ export interface User {
   initials: string;
 }
 
+export type BudgetNodeKind = "RUBRO" | "SUBRUBRO" | "ITEM";
+
+/**
+ * Nodo del presupuesto. Solo los ITEM tienen cantidad/PU/monto propios; los montos de
+ * rubros se obtienen sumando a sus hijos (ver CostControlData).
+ * Las columnas cost*, subcontract* y certified* son el caché del libro mayor.
+ */
 export interface BudgetItem {
   id: number;
   projectId: number;
+  parentId?: number | null;
   code: string;
   name: string;
   category: string;
+  path?: string;
+  nodeKind?: BudgetNodeKind;
+  hierarchyLevel?: number;
+  sortOrder?: number;
+  isSystem?: boolean;
   unit?: string | null;
   totalQuantity?: string | number | null;
-  executedQuantity?: string | number | null;
-  plannedQuantity?: string | number | null;
   unitPrice?: string | number | null;
   originalAmount: string | number;
-  committedAmount: string | number;
-  executedAmount: string | number;
+  costCommittedAmount?: string | number;
+  costActualAmount?: string | number;
+  subcontractQuantity?: string | number;
+  certifiedQuantity?: string | number;
+  certifiedAmount?: string | number;
+}
+
+export interface BudgetWarning {
+  budgetItemId: number;
+  code: string;
+  name: string;
+  kind: "COST_OVER_BUDGET" | "QUANTITY_OVER_CONTRACT";
+  message: string;
+}
+
+export type BudgetMovementSource =
+  | "PURCHASE_ORDER"
+  | "SUBCONTRACT"
+  | "PETTY_CASH"
+  | "CLIENT_CERTIFICATE"
+  | "MANUAL_ADJUSTMENT";
+
+export interface CostNode {
+  id: number;
+  parentId: number | null;
+  code: string;
+  name: string;
+  nodeKind: BudgetNodeKind;
+  level: number;
+  isSystem: boolean;
+  unit: string | null;
+  totalQuantity: number;
+  unitPrice: number;
+  budget: number;
+  committed: number;
+  actual: number;
+  certifiedAmount: number;
+  certifiedQuantity: number;
+  subcontractQuantity: number;
+  balance: number;
+  overBudget: boolean;
+  progressPct: number | null;
+  bySource: Partial<Record<BudgetMovementSource, number>>;
+  executedQuantity: number;
+  executedAmount: number;
+  quantityExceeded: boolean;
+}
+
+export interface CostControlData {
+  project: { id: number; code: string; name: string; currency: string; contractAmount: number };
+  kpis: {
+    budget: number;
+    committed: number;
+    actual: number;
+    certified: number;
+    balance: number;
+    generalExpenses: number;
+    generalExpensesShare: number;
+    overBudgetItems: number;
+    exceededItems: number;
+    bySource: Partial<Record<BudgetMovementSource, number>>;
+  };
+  nodes: CostNode[];
+}
+
+export interface BudgetMovement {
+  id: number;
+  budgetItemId: number;
+  source: BudgetMovementSource;
+  stage: "COMMITTED" | "ACTUAL";
+  amount: string | number;
+  quantity: string | number | null;
+  sourceType: string;
+  sourceId: number;
+  sourceNumber: string | null;
+  reversalOfId: number | null;
+  overBudget: boolean;
+  note: string | null;
+  createdAt: string;
+  budgetItem?: { id: number; code: string; name: string };
+}
+
+/** Partida hoja donde se puede imputar un gasto, con su saldo. */
+export interface ImputableItem {
+  id: number;
+  code: string;
+  name: string;
+  unit: string | null;
+  isSystem: boolean;
+  rubro: string;
+  budget: number;
+  committed: number;
+  balance: number;
+}
+
+export interface PettyCashExpense {
+  id: number;
+  fundId: number;
+  budgetItemId: number;
+  date: string;
+  receiptNumber: string;
+  supplierName: string;
+  concept: string;
+  amount: string | number;
+  responsibleName?: string | null;
+  status: "PENDIENTE_RENDICION" | "RENDIDO" | "RECHAZADO";
+  rejectionReason?: string | null;
+  budgetItem?: { id: number; code: string; name: string };
+}
+
+export interface PettyCashFund {
+  id: number;
+  projectId: number;
+  name: string;
+  responsibleName: string;
+  assignedAmount: string | number;
+  active: boolean;
+  pendingAmount: number;
+  currentBalance: number;
+  expenses: PettyCashExpense[];
 }
 
 export interface WorkFront {
@@ -47,8 +177,8 @@ export interface WorkFront {
   projectId: number;
   code: string;
   name: string;
-  chiefId: number;
-  chief?: Personnel;
+  chiefId?: number | null;
+  chief?: Personnel | null;
 }
 
 export interface Personnel {
@@ -82,24 +212,24 @@ export interface Material {
 export interface MaterialRequestDetail {
   id: number;
   materialId: number;
-  budgetItemId: number;
+  budgetItemId?: number | null;
   quantity: string | number;
   material?: Material;
-  budgetItem?: BudgetItem;
+  budgetItem?: BudgetItem | null;
 }
 
 export interface MaterialRequest {
   id: number;
   number: string;
   projectId: number;
-  workFrontId: number;
-  requestedById: number;
+  workFrontId?: number | null;
+  requestedById?: number | null;
   requestedDate?: string | null;
   status: "BORRADOR" | "APROBADO_PARA_COMPRA" | "EMITIDA" | "RECIBIDO" | "ANULADO";
   notes?: string | null;
   project?: Project;
-  workFront?: WorkFront;
-  requestedBy?: Personnel;
+  workFront?: WorkFront | null;
+  requestedBy?: Personnel | null;
   details?: MaterialRequestDetail[];
   purchaseOrders?: { id: number; number: string; status: string }[];
   createdAt: string;
@@ -344,31 +474,6 @@ export interface ClientBillableCertificate {
   notes?: string;
 }
 
-export interface PettyCashTransaction {
-  id: string;
-  projectId: number;
-  date: string;
-  receiptNumber: string;
-  supplierOrBeneficiary: string;
-  concept: string;
-  budgetItemId?: number;
-  budgetItemCode?: string;
-  category: "COMBUSTIBLE" | "PEAJE" | "FERRETERIA" | "VIATICOS" | "PRIMEROS_AUXILIOS" | "OTROS";
-  amount: number;
-  responsibleName: string;
-  settlementStatus: "PENDIENTE_RENDICION" | "RENDIDO" | "REEMBOLSADO";
-  settlementBatchId?: string;
-}
-
-export interface PettyCashFund {
-  id: string;
-  projectId: number;
-  assignedAmount: number; // Fondo fijo total autorizado
-  currentBalance: number;
-  responsiblePerson: string;
-  lastSettlementDate?: string;
-}
-
 // ----------------------------------------------------
 // MÓDULO: MEDICIONES Y CERTIFICACIONES AVANZADAS
 // ----------------------------------------------------
@@ -387,6 +492,9 @@ export interface AuxiliaryCalculation {
   alto: number;
   factor_repeticion: number;
   subtotal: number;
+  location?: string | null;
+  isDeduction?: boolean;
+  needsReview?: boolean;
   createdAt?: string;
 }
 
@@ -407,6 +515,7 @@ export interface CertificationItem {
   cantidadAcumulada: number;
   precioUnitario: number;
   montoTotal: number;
+  priceSource?: "VENTA" | "MANO_DE_OBRA";
   budgetItem?: BudgetItem;
   auxiliaryCalculations?: AuxiliaryCalculation[];
   photos?: ItemPhoto[];
@@ -421,8 +530,15 @@ export interface Certification {
   estado: CertificationStatus;
   montoTotal: number;
   notes?: string | null;
+  periodFrom?: string | null;
+  periodTo?: string | null;
+  contractId?: number | null;
+  retentionPct?: number | string;
+  retentionAmount?: number | string;
+  netAmount?: number | string;
   project?: Project;
   partner?: Partner | null;
+  contract?: SubcontractorContract | null;
   items: CertificationItem[];
   invoices?: any[];
   createdAt?: string;
@@ -430,3 +546,247 @@ export interface Certification {
 }
 
 
+
+// ----------------------------------------------------
+// DASHBOARD: CARTERA Y RESUMEN DE OBRA
+// ----------------------------------------------------
+export type Health = "good" | "warn" | "bad" | "none";
+
+export interface ProjectKpis {
+  contract: number;
+  budget: number;
+  committed: number;
+  actual: number;
+  certified: number;
+  balance: number;
+  progress: number; // certificado ÷ presupuesto
+  costPct: number; // costo incurrido ÷ presupuesto
+  result: number; // certificado − costo
+  deviation: number; // costo % − avance %
+  health: Health;
+  overBudgetItems: number;
+}
+
+export interface PendingItem {
+  key: string;
+  label: string;
+  count: number;
+  tab: "suministros" | "ejecucion-certificaciones" | "contabilidad-finanzas" | "centro-costos";
+  subTab?: string;
+}
+
+export interface ProjectOverview {
+  project: { id: number; code: string; name: string; currency: string; contractAmount: number };
+  hasBudget: boolean;
+  kpis: ProjectKpis;
+  topRubros: {
+    id: number;
+    code: string;
+    name: string;
+    budget: number;
+    committed: number;
+    usage: number;
+    progress: number;
+    overBudget: boolean;
+  }[];
+  pending: PendingItem[];
+  cash: { receivable: number; payable: number };
+  curve: { label: string; values: { certified: number; cost: number } }[];
+}
+
+export interface PortfolioRow extends ProjectKpis {
+  id: number;
+  code: string;
+  name: string;
+  clientName?: string | null;
+  location?: string | null;
+  status: string;
+  pendingCount: number;
+}
+
+export interface Portfolio {
+  totals: {
+    projects: number;
+    contract: number;
+    budget: number;
+    certified: number;
+    actual: number;
+    result: number;
+    atRisk: number;
+  };
+  projects: PortfolioRow[];
+}
+
+// ----------------------------------------------------
+// PRECIOS DE MANO DE OBRA Y CERTIFICADO (Medición N / Cert N)
+// ----------------------------------------------------
+export interface LaborPrice {
+  id: number;
+  projectId: number;
+  budgetItemId: number | null;
+  code: string;
+  description: string;
+  unit: string | null;
+  unitPrice: number;
+  salePrice: number | null;
+  margin: number | null;
+  budgetItem?: { id: number; code: string; name: string; unit: string | null } | null;
+}
+
+export interface LaborPreviewRow {
+  code: string;
+  description: string;
+  unit: string;
+  unitPrice: number;
+  budgetItemId: number | null;
+  matchedBy: "code" | "description" | "similar" | null;
+  budgetItemLabel: string | null;
+}
+
+export interface MeasurableItem {
+  id: number;
+  code: string;
+  name: string;
+  category: string;
+  unit: string;
+  unitPrice: number;
+  salePrice: number;
+  laborPrice: number | null;
+  priceSource: "VENTA" | "MANO_DE_OBRA";
+  missingPrice: boolean;
+  totalContractQuantity: number;
+  cantidadAnterior: number;
+  montoAnterior: number;
+}
+
+export interface CertificateSummaryRow {
+  code: string;
+  name: string;
+  unit: string;
+  contractedQuantity: number;
+  previousQuantity: number;
+  periodQuantity: number;
+  accumulatedQuantity: number;
+  progress: number;
+  overContract: boolean;
+  unitPrice: number;
+  contractedAmount: number;
+  previousAmount: number;
+  periodAmount: number;
+  accumulatedAmount: number;
+}
+
+export interface CertificateSummaryData {
+  certification: Certification;
+  summary: {
+    rows: CertificateSummaryRow[];
+    contractAmount: number;
+    previousAmount: number;
+    periodAmount: number;
+    accumulatedAmount: number;
+    balance: number;
+    retentionPct: number;
+    retentionAmount: number;
+    netAmount: number;
+  };
+  checks: {
+    measurementMatchesCertificate: boolean;
+    previousMatchesHistory: boolean;
+    noPendingReview: boolean;
+    pendingReview: number;
+    overContract: string[];
+  };
+}
+
+// ═══════════════════════════════════════════
+// RRHH
+// ═══════════════════════════════════════════
+
+export type EmpleadoTipo = "MENSUALERO" | "JORNALERO" | "DESTAJISTA";
+export type AsistenciaEstado = "PRESENTE" | "AUSENTE" | "MEDIA_JORNADA" | "FERIADO";
+export type LiquidacionEstado = "BORRADOR" | "APROBADA" | "PAGADA";
+
+export interface EmpleadoDoc {
+  id: number;
+  empleadoId: number;
+  tipo: string;
+  url: string;
+  nombre: string;
+  createdAt?: string;
+}
+
+export interface Empleado {
+  id: number;
+  personnelId?: number | null;
+  projectId?: number | null;
+  fullName: string;
+  ci: string;
+  oficio: string;
+  tipo: EmpleadoTipo;
+  fechaIngreso: string;
+  salarioBase: number | string;
+  nroIPS?: string | null;
+  banco?: string | null;
+  cuentaBanco?: string | null;
+  activo: boolean;
+  notas?: string | null;
+  project?: { id: number; name: string; code: string } | null;
+  documentos?: EmpleadoDoc[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface Asistencia {
+  id: number;
+  empleadoId: number;
+  projectId: number;
+  budgetItemId?: number | null;
+  fecha: string;
+  estado: AsistenciaEstado;
+  horasNormales: number | string;
+  horasExtra: number | string;
+  jornal: number | string;
+  notas?: string | null;
+  empleado?: { id: number; fullName: string; tipo: EmpleadoTipo; salarioBase: number | string };
+  budgetItem?: { id: number; code: string; name: string } | null;
+}
+
+export interface LiquidacionPersonal {
+  id: number;
+  empleadoId: number;
+  projectId: number;
+  periodo: string;
+  estado: LiquidacionEstado;
+  diasTrabajados: number | string;
+  horasNormales: number | string;
+  horasExtra: number | string;
+  salarioBase: number | string;
+  valorHoraExtra: number | string;
+  montoHorasExtra: number | string;
+  bonificacionFamiliar: number | string;
+  otrosBonos: number | string;
+  subTotal: number | string;
+  ipsObrero: number | string;
+  ipsPatronal: number | string;
+  aguinaldo: number | string;
+  anticipos: number | string;
+  otrosDescuentos: number | string;
+  netoAPagar: number | string;
+  costoTotal: number | string;
+  budgetItemId?: number | null;
+  notas?: string | null;
+  empleado?: { id: number; fullName: string; ci: string; tipo: EmpleadoTipo };
+  project?: { id: number; name: string; code: string };
+  budgetItem?: { id: number; code: string; name: string } | null;
+}
+
+export interface RRHHConfig {
+  id?: number;
+  projectId?: number | null;
+  pctIpsObrero: number | string;
+  pctIpsPatronal: number | string;
+  factorHoraExtra: number | string;
+  horasDiasLaborales: number | string;
+  bonificacionFamiliar: number | string;
+  aguinaldoMeses: number | string;
+}

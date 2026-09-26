@@ -6,12 +6,33 @@ import {
   Personnel,
   WorkFront,
   BudgetItem,
+  BudgetMovement,
+  BudgetWarning,
+  CostControlData,
+  ImputableItem,
+  Portfolio,
+  LaborPrice,
+  LaborPreviewRow,
+  MeasurableItem,
+  CertificateSummaryData,
+  ProjectOverview,
+  PettyCashFund,
+  PettyCashExpense,
   MaterialRequest,
   PurchaseOrder,
   SubcontractorContract,
   WarehouseStock,
   StockMovement,
 } from "./types";
+import type {
+  ArithmeticStrategy,
+  BudgetImportPreview,
+  CanonicalColumnRole,
+  CommitBudgetResult,
+  ImportRow,
+  NumberFormat,
+  SurchargeTreatment,
+} from "../modules/budgets/engine/types";
 
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -47,16 +68,15 @@ export const api = {
     request<{ success: boolean; message: string }>("/api/projects/clear-all", {
       method: "POST",
     }),
+  /** El monto contractual no se carga acá: lo fija la importación del presupuesto. */
   createProject: (body: {
     code: string;
     name: string;
     location: string;
     clientName: string;
     executionMonths: number;
-    globalBudget: number;
-    roadSection?: string;
     contractNumber?: string;
-    montoContractualManual?: number;
+    currency?: "PYG" | "USD";
   }) =>
     request<Project>("/api/projects", {
       method: "POST",
@@ -160,10 +180,8 @@ export const api = {
   updateBudgetItem: (id: number, body: Partial<{
     code: string;
     name: string;
-    category: string;
     unit: string;
     totalQuantity: number;
-    executedQuantity: number;
     unitPrice: number;
     originalAmount: number;
   }>) =>
@@ -179,35 +197,16 @@ export const api = {
     request<{ deletedAll: boolean; projectId: number }>(`/api/projects/${projectId}/budget-items`, {
       method: "DELETE",
     }),
-  approvePlanillaMadre: (projectId: number, body: {
-    items: Array<{
-      code: string;
-      name: string;
-      category?: string;
-      unit?: string;
-      quantity?: number;
-      totalQuantity?: number;
-      unitPrice?: number;
-      originalAmount?: number;
-    }>;
-    markupPercent?: number;
-  }) =>
-    request<{
-      approved: boolean;
-      totalItems: number;
-      totalAmount: number;
-      budgetItems: BudgetItem[];
-    }>(`/api/projects/${projectId}/planilla-madre/aprobar`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+  /** @deprecated El presupuesto se carga solo con el importador (previewBudgetImport/commitBudgetImport). */
+  approvePlanillaMadre: (_projectId: number, _body: unknown): Promise<{ totalItems: number }> =>
+    Promise.reject(new Error("Usá el importador de presupuesto del Centro de Costos")),
 
   // Material Requests
   getMaterialRequests: () => request<MaterialRequest[]>("/api/pedidos"),
   createMaterialRequest: (body: {
     projectId: number;
-    workFrontId: number;
-    requestedById: number;
+    workFrontId?: number | null;
+    requestedById?: number | null;
     requestedDate?: string;
     notes?: string;
     details: {
@@ -233,6 +232,8 @@ export const api = {
     expectedDate?: string;
     details: {
       requestDetailId: number;
+      /** Rubro de destino; si falta se usa el del pedido. */
+      budgetItemId?: number;
       quantity: number;
       unitPrice: number;
     }[];
@@ -244,7 +245,7 @@ export const api = {
   approvePurchaseOrder: (id: number) =>
     request<PurchaseOrder>(`/api/compras/${id}/aprobar`, { method: "POST" }),
   issuePurchaseOrder: (id: number) =>
-    request<PurchaseOrder>(`/api/compras/${id}/emitir`, { method: "POST" }),
+    request<PurchaseOrder & { budgetWarnings?: BudgetWarning[] }>(`/api/compras/${id}/emitir`, { method: "POST" }),
   receivePurchaseOrder: (id: number) =>
     request<PurchaseOrder>(`/api/compras/${id}/recibir`, { method: "POST" }),
   cancelPurchaseOrder: (id: number) =>
@@ -271,6 +272,7 @@ export const api = {
     subcontractId: number;
     amount: number;
     advancePercentage?: number;
+    quantity?: number;
     notes?: string;
     periodFrom?: string;
     periodTo?: string;
@@ -289,7 +291,7 @@ export const api = {
   cancelSubcontractCertificate: (id: number) =>
     request<any>(`/api/subcontratos/certificados/${id}/anular`, { method: "POST" }),
 
-  // Certificaciones de Avance / Obras Viales
+  // Certificaciones de Avance de Obra
   getCertificaciones: (projectId?: number) =>
     request<any[]>(`/api/certificaciones${projectId ? `?projectId=${projectId}` : ""}`),
   createCertificacion: (body: {
@@ -318,94 +320,178 @@ export const api = {
     request<any>(`/api/certificaciones/${id}`, {
       method: "DELETE",
     }),
-  saveApprovedBudget: (body: {
-    projectId: number;
-    markupPercent: number;
-    items: Array<{
-      code: string;
-      name: string;
-      category?: string;
-      unit?: string;
-      quantity: number;
-      unitPrice: number;
-      originalAmount: number;
-    }>;
-  }) =>
-    request<any>("/api/certificaciones/presupuesto/guardar-aprobado", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
   createBudgetItem: (body: {
     projectId: number;
+    parentId?: number;
+    nodeKind?: "RUBRO" | "ITEM";
     code: string;
     name: string;
-    category?: string;
     unit?: string;
     totalQuantity?: number;
     unitPrice?: number;
     originalAmount?: number;
   }) =>
-    request<any>("/api/budget-items", {
+    request<BudgetItem>("/api/budget-items", {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  importBudgetFile: async (file: File, projectId?: number) => {
-    const formData = new FormData();
-    formData.append("file", file);
-    if (projectId) formData.append("projectId", String(projectId));
-    const response = await fetch("/api/certificaciones/import-budget", {
-      method: "POST",
-      body: formData,
-    });
-    const payload = await response.json();
-    if (!response.ok || payload.success === false) {
-      throw new Error(payload.error?.message || payload.message || "Error al importar presupuesto");
-    }
-    return payload.data;
-  },
 
+  // Importación de presupuesto (único camino)
   previewBudgetImport: async (
     projectId: number,
     data: {
       file?: File | null;
       pastedText?: string;
       googleSheetsUrl?: string;
-      activeSheetName?: string;
-      customHeaderRows?: Record<string, number>;
-      customColumnMappings?: Record<string, Record<number, string>>;
+      selectedSheets?: string[];
+      headerRows?: Record<string, number>;
+      columnMappings?: Record<string, Record<number, CanonicalColumnRole>>;
+      numberFormat?: NumberFormat;
+      includeHidden?: boolean;
     }
-  ) => {
-    let response: Response;
-    if (data.file) {
-      const formData = new FormData();
-      formData.append("file", data.file);
-      if (data.activeSheetName) formData.append("activeSheetName", data.activeSheetName);
-      if (data.customHeaderRows) formData.append("customHeaderRows", JSON.stringify(data.customHeaderRows));
-      if (data.customColumnMappings) formData.append("customColumnMappings", JSON.stringify(data.customColumnMappings));
-      response = await fetch(`/api/projects/${projectId}/budget-import/preview`, {
-        method: "POST",
-        body: formData,
-      });
-    } else {
-      response = await fetch(`/api/projects/${projectId}/budget-import/preview`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
-    }
+  ): Promise<BudgetImportPreview & { projectLocked: boolean }> => {
+    const formData = new FormData();
+    if (data.file) formData.append("file", data.file);
+    if (data.pastedText) formData.append("pastedText", data.pastedText);
+    if (data.googleSheetsUrl) formData.append("googleSheetsUrl", data.googleSheetsUrl);
+    if (data.selectedSheets?.length) formData.append("selectedSheets", JSON.stringify(data.selectedSheets));
+    if (data.headerRows) formData.append("headerRows", JSON.stringify(data.headerRows));
+    if (data.columnMappings) formData.append("columnMappings", JSON.stringify(data.columnMappings));
+    if (data.numberFormat) formData.append("numberFormat", data.numberFormat);
+    if (data.includeHidden) formData.append("includeHidden", "true");
+    const response = await fetch(`/api/projects/${projectId}/budget-import/preview`, {
+      method: "POST",
+      body: formData,
+    });
     const payload = await response.json();
     if (!response.ok || payload.success === false) {
-      throw new Error(payload.error?.message || payload.message || "Error al previsualizar la planilla");
+      throw new Error(payload.error?.message || payload.message || "Error al analizar la planilla");
+    }
+    return payload.data;
+  },
+  commitBudgetImport: async (
+    projectId: number,
+    body: {
+      rows: ImportRow[];
+      surchargeTreatments: Record<string, SurchargeTreatment>;
+      arithmeticStrategy: ArithmeticStrategy;
+      acceptDifference: boolean;
+      metadata: { fileName?: string; sourceType: string; sheets: string[]; numberFormat: NumberFormat; columnMappings?: unknown };
+    }
+  ): Promise<CommitBudgetResult> => {
+    const response = await fetch(`/api/projects/${projectId}/budget-import/commit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const payload = await response.json();
+    if (!response.ok || payload.success === false) {
+      const error = new Error(payload.error?.message || "Error al importar el presupuesto") as Error & {
+        code?: string;
+        details?: unknown;
+      };
+      error.code = payload.error?.code;
+      error.details = payload.error?.details;
+      throw error;
     }
     return payload.data;
   },
 
-  commitBudgetImport: async (projectId: number, payload: any) => {
-    return request<any>(`/api/projects/${projectId}/budget-import/commit`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
+  // Frentes de obra
+  createWorkFront: (body: { projectId: number; name: string; chiefId?: number | null }) =>
+    request<WorkFront>("/api/work-fronts", { method: "POST", body: JSON.stringify(body) }),
+  updateWorkFront: (id: number, body: { name?: string; chiefId?: number | null }) =>
+    request<WorkFront>(`/api/work-fronts/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteWorkFront: (id: number) => request<{ deleted: boolean }>(`/api/work-fronts/${id}`, { method: "DELETE" }),
+
+  // Fotos (medición desde el celular)
+  uploadImage: async (file: File): Promise<{ url: string; name: string }> => {
+    const form = new FormData();
+    form.append("file", file);
+    const response = await fetch("/api/uploads", { method: "POST", body: form });
+    const payload = await response.json();
+    if (!response.ok || payload.success === false) throw new Error(payload.error?.message || "No se pudo subir la imagen");
+    return payload.data;
   },
+
+  // Lista de precios de mano de obra
+  getLaborPrices: (projectId: number) => request<LaborPrice[]>(`/api/projects/${projectId}/labor-prices`),
+  previewLaborPrices: async (projectId: number, data: { file?: File | null; pastedText?: string }) => {
+    const form = new FormData();
+    if (data.file) form.append("file", data.file);
+    if (data.pastedText) form.append("pastedText", data.pastedText);
+    const response = await fetch(`/api/projects/${projectId}/labor-prices/preview`, { method: "POST", body: form });
+    const payload = await response.json();
+    if (!response.ok || payload.success === false) throw new Error(payload.error?.message || "No se pudo leer la planilla");
+    return payload.data as { sheetName: string; rows: LaborPreviewRow[]; summary: { total: number; matched: number } };
+  },
+  commitLaborPrices: (projectId: number, rows: LaborPreviewRow[]) =>
+    request<{ saved: number }>(`/api/projects/${projectId}/labor-prices/commit`, { method: "POST", body: JSON.stringify({ rows }) }),
+  saveLaborPrice: (
+    projectId: number,
+    body: { code?: string; description: string; unit?: string; unitPrice: number; budgetItemId?: number | null }
+  ) => request<LaborPrice>(`/api/projects/${projectId}/labor-prices`, { method: "POST", body: JSON.stringify(body) }),
+  updateLaborPrice: (id: number, body: Partial<{ unitPrice: number; budgetItemId: number | null; description: string }>) =>
+    request<LaborPrice>(`/api/labor-prices/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteLaborPrice: (id: number) => request<{ deleted: boolean }>(`/api/labor-prices/${id}`, { method: "DELETE" }),
+
+  // Certificado (Medición N / Cert N)
+  getCertificateSummary: (id: number) => request<CertificateSummaryData>(`/api/certifications/${id}/summary`),
+  setCertificateRetention: (id: number, retentionPct: number) =>
+    request<any>(`/api/certifications/${id}/retention`, { method: "PATCH", body: JSON.stringify({ retentionPct }) }),
+  getMeasurableItems: (projectId: number, partnerId?: number | null) =>
+    request<MeasurableItem[]>(`/api/certifications/rubros-disponibles?projectId=${projectId}&partnerId=${partnerId ?? "null"}`),
+
+  // Dashboard: cartera de obras y resumen de una obra
+  getPortfolio: () => request<Portfolio>("/api/portfolio"),
+  getProjectOverview: (projectId: number) => request<ProjectOverview>(`/api/projects/${projectId}/overview`),
+
+  // Control de costos y libro mayor presupuestario
+  getCostControl: (projectId: number) => request<CostControlData>(`/api/projects/${projectId}/cost-control`),
+  getBudgetMovements: (projectId: number, budgetItemId?: number) =>
+    request<BudgetMovement[]>(
+      `/api/projects/${projectId}/budget-movements${budgetItemId ? `?budgetItemId=${budgetItemId}` : ""}`
+    ),
+  getImputableItems: (projectId: number) => request<ImputableItem[]>(`/api/projects/${projectId}/imputable-items`),
+  createBudgetAdjustment: (projectId: number, body: { budgetItemId: number; amount: number; note: string; createdBy?: string }) =>
+    request<{ adjustmentId: number; budgetWarnings: BudgetWarning[] }>(`/api/projects/${projectId}/budget-adjustments`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  rebuildBudgetLedger: (projectId: number) =>
+    request<{ postedDocuments: number; skipped: string[]; items: number; movements: number }>(
+      `/api/projects/${projectId}/budget-ledger/rebuild`,
+      { method: "POST" }
+    ),
+
+  // Caja chica
+  getPettyCash: (projectId: number) => request<PettyCashFund[]>(`/api/caja-chica?projectId=${projectId}`),
+  createPettyCashFund: (body: { projectId: number; name?: string; responsibleName: string; assignedAmount: number }) =>
+    request<PettyCashFund>("/api/caja-chica/fondos", { method: "POST", body: JSON.stringify(body) }),
+  updatePettyCashFund: (id: number, body: Partial<{ name: string; responsibleName: string; assignedAmount: number; active: boolean }>) =>
+    request<PettyCashFund>(`/api/caja-chica/fondos/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  createPettyCashExpense: (body: {
+    fundId: number;
+    budgetItemId: number;
+    date: string;
+    receiptNumber: string;
+    supplierName: string;
+    concept: string;
+    amount: number;
+    responsibleName?: string;
+  }) =>
+    request<PettyCashExpense & { budgetWarnings: BudgetWarning[] }>("/api/caja-chica/gastos", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  settlePettyCashFund: (fundId: number) =>
+    request<{ settled: number }>(`/api/caja-chica/fondos/${fundId}/rendicion`, { method: "POST" }),
+  rejectPettyCashExpense: (id: number, reason: string) =>
+    request<PettyCashExpense>(`/api/caja-chica/gastos/${id}/rechazar`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
+
 
   // Authentication
   login: (credentials: { email: string; password?: string }) =>
@@ -470,12 +556,62 @@ export const api = {
       method: "POST",
     }),
   approveCertification: (id: number) =>
-    request<{ certification: any; invoice: any }>(`/api/certifications/${id}/approve`, {
+    request<{ certification: any; invoice: any; budgetWarnings?: BudgetWarning[] }>(`/api/certifications/${id}/approve`, {
       method: "POST",
     }),
   deleteCertification: (id: number) =>
     request<{ deleted: boolean; id: number }>(`/api/certifications/${id}`, {
       method: "DELETE",
+    }),
+
+  // RRHH
+  getEmpleados: (projectId?: number) =>
+    request<any[]>(`/api/rrhh/empleados${projectId ? `?projectId=${projectId}` : ""}`),
+  getEmpleado: (id: number) => request<any>(`/api/rrhh/empleados/${id}`),
+  createEmpleado: (body: any) =>
+    request<any>("/api/rrhh/empleados", { method: "POST", body: JSON.stringify(body) }),
+  updateEmpleado: (id: number, body: any) =>
+    request<any>(`/api/rrhh/empleados/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  addEmpleadoDoc: (id: number, body: { tipo: string; url: string; nombre: string }) =>
+    request<any>(`/api/rrhh/empleados/${id}/documentos`, { method: "POST", body: JSON.stringify(body) }),
+  deleteEmpleadoDoc: (id: number) =>
+    request<any>(`/api/rrhh/documentos/${id}`, { method: "DELETE" }),
+
+  getAsistencias: (params?: { projectId?: number; fecha?: string; empleadoId?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.projectId) q.set("projectId", String(params.projectId));
+    if (params?.fecha) q.set("fecha", params.fecha);
+    if (params?.empleadoId) q.set("empleadoId", String(params.empleadoId));
+    return request<any[]>(`/api/rrhh/asistencias${q.toString() ? `?${q}` : ""}`);
+  },
+  saveAsistencia: (body: any) =>
+    request<any>("/api/rrhh/asistencias", { method: "POST", body: JSON.stringify(body) }),
+  saveAsistenciaBatch: (rows: any[]) =>
+    request<any[]>("/api/rrhh/asistencias/batch", { method: "POST", body: JSON.stringify(rows) }),
+
+  getLiquidaciones: (params?: { projectId?: number; periodo?: string; empleadoId?: number }) => {
+    const q = new URLSearchParams();
+    if (params?.projectId) q.set("projectId", String(params.projectId));
+    if (params?.periodo) q.set("periodo", params.periodo);
+    if (params?.empleadoId) q.set("empleadoId", String(params.empleadoId));
+    return request<any[]>(`/api/rrhh/liquidaciones${q.toString() ? `?${q}` : ""}`);
+  },
+  getLiquidacion: (id: number) => request<any>(`/api/rrhh/liquidaciones/${id}`),
+  calcularLiquidacion: (body: any) =>
+    request<any>("/api/rrhh/liquidaciones/calcular", { method: "POST", body: JSON.stringify(body) }),
+  createLiquidacion: (body: any) =>
+    request<any>("/api/rrhh/liquidaciones", { method: "POST", body: JSON.stringify(body) }),
+  aprobarLiquidacion: (id: number) =>
+    request<any>(`/api/rrhh/liquidaciones/${id}/aprobar`, { method: "POST" }),
+  pagarLiquidacion: (id: number) =>
+    request<any>(`/api/rrhh/liquidaciones/${id}/pagar`, { method: "POST" }),
+
+  getRRHHConfig: (projectId?: number) =>
+    request<any>(`/api/rrhh/config${projectId ? `?projectId=${projectId}` : ""}`),
+  saveRRHHConfig: (body: any, projectId?: number) =>
+    request<any>(`/api/rrhh/config${projectId ? `?projectId=${projectId}` : ""}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
     }),
 };
 

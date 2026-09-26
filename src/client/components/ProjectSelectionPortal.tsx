@@ -88,7 +88,7 @@ export const ProjectSelectionPortal: React.FC<ProjectSelectionPortalProps> = ({
                   InfraTrack ERP
                 </span>
                 <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200">
-                  Obras Civiles & Viales
+                  Control de Obras
                 </span>
               </div>
               <p className="text-xs text-slate-500">

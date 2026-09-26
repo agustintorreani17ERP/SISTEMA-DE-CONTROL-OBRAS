@@ -15,6 +15,7 @@ import {
 import { Partner, PurchaseOrder } from "../types";
 import { formatMoney } from "../utils/format";
 
+import { formatGs } from "../utils/numbers";
 interface NewInvoiceModalProps {
   project?: any;
   partners: Partner[];
@@ -165,7 +166,7 @@ export const NewInvoiceModal: React.FC<NewInvoiceModalProps> = ({
         passed: false,
         message: `Discrepancia detectada (Tolerancia 0%): Monto facturado (₲ ${totalAmount.toLocaleString(
           "es-PY"
-        )}) difiere de O.C. (₲ ${poAmount.toLocaleString("es-PY")}). Diferencia: ₲ ${diff.toLocaleString(
+        )}) difiere de O.C. (₲ ${formatGs(poAmount)}). Diferencia: ₲ ${diff.toLocaleString(
           "es-PY"
         )}.`,
       };
@@ -323,7 +324,7 @@ export const NewInvoiceModal: React.FC<NewInvoiceModalProps> = ({
                 className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:border-blue-500 text-xs"
               >
                 <option value="RECIBIDA">Recibida (Proveedor / Subcontrato)</option>
-                <option value="EMITIDA">Emitida (Al Cliente MOPC)</option>
+                <option value="EMITIDA">Emitida (Al Cliente)</option>
               </select>
             </div>
 
@@ -368,7 +369,7 @@ export const NewInvoiceModal: React.FC<NewInvoiceModalProps> = ({
                 {purchaseOrders.map((po) => (
                   <option key={po.id} value={po.id}>
                     {po.number} · {po.partner?.name || "Proveedor"} · Monto: ₲{" "}
-                    {Number(po.totalAmount || 0).toLocaleString("es-PY")} ·{" "}
+                    {formatGs(Number(po.totalAmount || 0))} ·{" "}
                     {po.stockRegistered ? "✓ Recepcionado en Pañol" : "⚠️ Pendiente Recepción"}
                   </option>
                 ))}

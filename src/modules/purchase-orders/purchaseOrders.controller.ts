@@ -7,7 +7,7 @@ import { ok } from "../../http/respond";
 import { DomainError, NotFoundError, TraceabilityError } from "../../errors/domain";
 import { assertDocTransition, assertMutableDocument } from "../../domain/lifecycle";
 import { audit, nextNumber } from "../../domain/audit";
-import { commitBudget, executeBudget, releaseBudget } from "../../domain/budget";
+import { assertImputableItem, postMovement, reverseMovements, type BudgetWarning } from "../../domain/budget";
 import { receiveStock } from "../../domain/stock";
 import { toDecimal } from "../../lib/money";
 import { recalculateProjectFinancials } from "../../domain/projectFinancials";
@@ -42,6 +42,8 @@ const createSchema = z.object({
     .array(
       z.object({
         requestDetailId: z.number().int(),
+        /** Rubro de destino; si no viene se usa el del pedido. */
+        budgetItemId: z.number().int().positive().optional(),
         quantity: z.coerce.number().positive(),
         unitPrice: z.coerce.number().positive(),
       })
@@ -61,9 +63,6 @@ purchaseOrdersRouter.post(
           include: { details: true },
         });
         if (!request) throw new NotFoundError("Pedido de material", body.materialRequestId);
-        if (!request.workFrontId || !request.requestedById) {
-          throw new TraceabilityError("El pedido no tiene origen de campo");
-        }
         if (request.status !== DocumentStatus.APROBADO_PARA_COMPRA) {
           throw new TraceabilityError(
             "Ninguna OC puede emitirse sin un Pedido de Material aprobado para compra"
@@ -100,13 +99,20 @@ purchaseOrdersRouter.post(
               `Cantidad supera el pedido ${request.number} para el insumo ${reqLine.materialId}`
             );
           }
+          const budgetItemId = line.budgetItemId ?? reqLine.budgetItemId;
+          if (!budgetItemId) {
+            throw new TraceabilityError(
+              `Elegí el rubro de destino (o Gastos Generales) para el insumo ${reqLine.materialId}`
+            );
+          }
+          await assertImputableItem(tx, request.projectId, budgetItemId);
           const unitPrice = toDecimal(line.unitPrice);
           const subtotal = qty.times(unitPrice).toDecimalPlaces(2);
           total = total.plus(subtotal);
           lines.push({
             materialId: reqLine.materialId,
             requestDetailId: reqLine.id,
-            budgetItemId: reqLine.budgetItemId,
+            budgetItemId,
             quantity: qty,
             unitPrice,
             subtotal,
@@ -189,15 +195,20 @@ purchaseOrdersRouter.post(
           const prev = byItem.get(d.budgetItemId) ?? toDecimal(0);
           byItem.set(d.budgetItemId, prev.plus(d.subtotal));
         }
+        const budgetWarnings: BudgetWarning[] = [];
         for (const [budgetItemId, amount] of byItem) {
-          await commitBudget(tx, {
+          const { warnings } = await postMovement(tx, {
+            projectId: order.projectId,
             budgetItemId,
             amount,
-            kind: "PURCHASE_ORDER",
+            source: "PURCHASE_ORDER",
+            stage: "COMMITTED",
             sourceType: "PurchaseOrder",
             sourceId: order.id,
+            sourceNumber: order.number,
             note: `Compromiso OC ${order.number}`,
           });
+          budgetWarnings.push(...warnings);
         }
 
         const next = await tx.purchaseOrder.update({
@@ -218,8 +229,9 @@ purchaseOrdersRouter.post(
           action: "ISSUE",
           fromStatus: order.status,
           toStatus: next.status,
+          payload: budgetWarnings.length ? { budgetWarnings: budgetWarnings.map((w) => w.message) } : undefined,
         });
-        return next;
+        return { ...next, budgetWarnings };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
     );
@@ -240,6 +252,7 @@ purchaseOrdersRouter.post(
         if (!order) throw new NotFoundError("Orden de compra", id);
         assertDocTransition(order.status, DocumentStatus.RECIBIDO);
 
+        const byItem = new Map<number, ReturnType<typeof toDecimal>>();
         for (const d of order.details) {
           await receiveStock(tx, {
             projectId: order.projectId,
@@ -248,7 +261,21 @@ purchaseOrdersRouter.post(
             sourceType: "PurchaseOrder",
             sourceId: order.id,
           });
-          await executeBudget(tx, d.budgetItemId, d.subtotal);
+          byItem.set(d.budgetItemId, (byItem.get(d.budgetItemId) ?? toDecimal(0)).plus(d.subtotal));
+        }
+        // El compromiso ya existe desde la emisión: aquí solo pasa a costo incurrido.
+        for (const [budgetItemId, amount] of byItem) {
+          await postMovement(tx, {
+            projectId: order.projectId,
+            budgetItemId,
+            amount,
+            source: "PURCHASE_ORDER",
+            stage: "ACTUAL",
+            sourceType: "PurchaseOrder",
+            sourceId: order.id,
+            sourceNumber: order.number,
+            note: `Recepción OC ${order.number}`,
+          });
         }
 
         const next = await tx.purchaseOrder.update({
@@ -290,20 +317,12 @@ purchaseOrdersRouter.post(
         assertDocTransition(order.status, DocumentStatus.ANULADO);
 
         if (order.status === DocumentStatus.EMITIDA) {
-          const byItem = new Map<number, ReturnType<typeof toDecimal>>();
-          for (const d of order.details) {
-            const prev = byItem.get(d.budgetItemId) ?? toDecimal(0);
-            byItem.set(d.budgetItemId, prev.plus(d.subtotal));
-          }
-          for (const [budgetItemId, amount] of byItem) {
-            await releaseBudget(tx, {
-              budgetItemId,
-              amount,
-              sourceType: "PurchaseOrder",
-              sourceId: order.id,
-              note: `Liberación por anulación OC ${order.number}`,
-            });
-          }
+          await reverseMovements(tx, {
+            sourceType: "PurchaseOrder",
+            sourceId: order.id,
+            note: `Liberación por anulación OC ${order.number}`,
+          });
+          await recalculateProjectFinancials(tx, order.projectId);
         }
 
         const next = await tx.purchaseOrder.update({

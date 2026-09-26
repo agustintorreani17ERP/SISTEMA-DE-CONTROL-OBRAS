@@ -8,6 +8,7 @@ import { DomainError, NotFoundError } from "../../errors/domain";
 import { assertDocTransition, assertMutableDocument } from "../../domain/lifecycle";
 import { audit, nextNumber } from "../../domain/audit";
 import { toDecimal } from "../../lib/money";
+import { assertImputableItem } from "../../domain/budget";
 
 export const materialRequestsRouter = Router();
 
@@ -30,8 +31,8 @@ materialRequestsRouter.get(
 
 const createSchema = z.object({
   projectId: z.number().int(),
-  workFrontId: z.number().int(),
-  requestedById: z.number().int(),
+  workFrontId: z.number().int().positive().optional().nullable(),
+  requestedById: z.number().int().positive().optional().nullable(),
   requestedDate: z.coerce.date().optional(),
   notes: z.string().optional(),
   details: z
@@ -51,41 +52,29 @@ materialRequestsRouter.post(
     const body = createSchema.parse(req.body);
 
     const created = await prisma.$transaction(async (tx) => {
-      let front = await tx.workFront.findUnique({
-        where: { id: body.workFrontId },
-        include: { chief: true },
-      });
-      if (!front) {
-        const firstFront = await tx.workFront.findFirst({
-          where: { projectId: body.projectId },
-          include: { chief: true },
-        });
-        if (firstFront) {
-          front = firstFront;
-        } else {
-          throw new NotFoundError("Frente / Sector", body.workFrontId);
-        }
+      // Frente y solicitante son opcionales; si vienen, se validan contra la obra.
+      if (body.workFrontId) {
+        const front = await tx.workFront.findUnique({ where: { id: body.workFrontId } });
+        if (!front || front.projectId !== body.projectId) throw new NotFoundError("Frente de obra", body.workFrontId);
       }
-      if (!front) {
-        throw new NotFoundError("Frente / Sector", body.workFrontId);
+      if (body.requestedById) {
+        const requester = await tx.personnel.findUnique({ where: { id: body.requestedById } });
+        if (!requester) throw new NotFoundError("Personal", body.requestedById);
       }
 
-      const requester = (await tx.personnel.findUnique({ where: { id: body.requestedById } })) ||
-        (await tx.personnel.findFirst({ where: { active: true } }));
-      if (!requester) throw new NotFoundError("Personal", body.requestedById);
-
-      const defaultItem = await tx.budgetItem.findFirst({ where: { projectId: body.projectId } });
-
+      // El rubro es opcional en el pedido; si falta, se exige al armar la OC.
       const validatedDetails = [];
       for (const line of body.details) {
         const material = await tx.material.findUnique({ where: { id: line.materialId } });
         if (!material) {
           throw new NotFoundError("Material", line.materialId);
         }
-        const resolvedBudgetItemId = line.budgetItemId || defaultItem?.id || 1;
+        if (line.budgetItemId) {
+          await assertImputableItem(tx, body.projectId, line.budgetItemId);
+        }
         validatedDetails.push({
           materialId: line.materialId,
-          budgetItemId: resolvedBudgetItemId,
+          budgetItemId: line.budgetItemId ?? null,
           quantity: line.quantity,
         });
       }
@@ -95,8 +84,8 @@ materialRequestsRouter.post(
         data: {
           number,
           projectId: body.projectId,
-          workFrontId: front.id,
-          requestedById: requester.id,
+          workFrontId: body.workFrontId ?? null,
+          requestedById: body.requestedById ?? null,
           requestedDate: body.requestedDate || new Date(),
           notes: body.notes,
           details: {

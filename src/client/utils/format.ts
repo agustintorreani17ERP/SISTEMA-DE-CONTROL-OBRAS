@@ -1,26 +1,10 @@
-export function formatMoney(
-  amount: number | string | undefined | null,
-  currency: "PYG" | "USD" = "PYG"
-): string {
-  if (amount === undefined || amount === null) return currency === "PYG" ? "0 ₲" : "$ 0.00";
-  const num = typeof amount === "string" ? parseFloat(amount) : amount;
-  if (isNaN(num)) return currency === "PYG" ? "0 ₲" : "$ 0.00";
+import { formatMoney as fmtMoney, formatPct, formatQty } from "./numbers";
 
-  if (currency === "USD") {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(num);
-  }
+/** Delegan en el formato único de ./numbers (se mantienen para no romper imports). */
+export { formatGs, formatQty, formatPct } from "./numbers";
 
-  return (
-    new Intl.NumberFormat("es-PY", {
-      style: "decimal",
-      maximumFractionDigits: 0,
-    }).format(Math.round(num)) + " ₲"
-  );
+export function formatMoney(amount: number | string | undefined | null, currency: "PYG" | "USD" = "PYG"): string {
+  return fmtMoney(amount, currency);
 }
 
 export function formatCompactMoney(amount: number | string | undefined | null): string {
@@ -40,9 +24,9 @@ export function formatCompactMoney(amount: number | string | undefined | null): 
   return formatMoney(num);
 }
 
+/** Recibe un porcentaje (62.4) y lo muestra "62,4 %". */
 export function formatPercent(value: number | undefined | null): string {
-  if (value === undefined || value === null || isNaN(value)) return "0.0%";
-  return `${value.toFixed(1)}%`;
+  return formatPct(value === null || value === undefined ? null : value / 100);
 }
 
 /**
@@ -105,13 +89,9 @@ export function parseFlexibleNumber(value: unknown): number {
   return isNegative ? -Math.abs(num) : num;
 }
 
-export function formatQuantity(val: number | string | undefined | null, maxDecimals = 2): string {
+export function formatQuantity(val: number | string | undefined | null, decimals = 2): string {
   const num = typeof val === "number" ? val : parseFlexibleNumber(val);
-  if (isNaN(num)) return "0";
-  return new Intl.NumberFormat("es-PY", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: maxDecimals,
-  }).format(num);
+  return formatQty(num, decimals, { empty: "0" });
 }
 
 export function formatDate(dateStr?: string | null): string {

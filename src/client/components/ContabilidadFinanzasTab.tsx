@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
+import { PageHeader } from "../ui";
 import {
   DollarSign,
   Receipt,
@@ -37,8 +38,6 @@ import {
   SubcontractorContract,
   FiscalInvoice,
   ClientBillableCertificate,
-  PettyCashTransaction,
-  PettyCashFund,
   BudgetItem,
 } from "../types";
 import { formatMoney, formatDate } from "../utils/format";
@@ -46,7 +45,10 @@ import { LegalInvoiceA4Modal } from "./LegalInvoiceA4Modal";
 import { ThreeWayMatchModal } from "./ThreeWayMatchModal";
 import { RegisterPaymentModal } from "./RegisterPaymentModal";
 import { NewInvoiceModal } from "./NewInvoiceModal";
+import { PettyCashPanel } from "./PettyCashPanel";
+import { api } from "../api";
 
+import { formatGs } from "../utils/numbers";
 interface ContabilidadFinanzasTabProps {
   project?: Project | null;
   budgetItems: BudgetItem[];
@@ -88,7 +90,6 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
 
   // Local storage fallback / secondary modules
   const storageKeyClientCerts = `infratrack_fin_client_certs_${project?.id || 0}`;
-  const storageKeyPettyCash = `infratrack_fin_petty_cash_${project?.id || 0}`;
 
   // Fetch real invoices from backend API
   const fetchInvoices = useCallback(async () => {
@@ -112,108 +113,33 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
     fetchInvoices();
   }, [fetchInvoices]);
 
-  // Client Certificates / Invoices to Collect (MOPC / Itaipú / Cliente)
+  // Client Certificates / Invoices to Collect (Comitente)
   const [clientCerts, setClientCerts] = useState<ClientBillableCertificate[]>(() => {
     try {
       const saved = localStorage.getItem(storageKeyClientCerts);
       if (saved) return JSON.parse(saved);
     } catch {}
 
-    return [
-      {
-        id: "CERT-CLI-01",
-        projectId: project?.id || 1,
-        certificateNumber: "CERT-OBRA-01",
-        periodName: "Mes 1 - Movimiento de Suelos & Sub-base",
-        issueDate: "2026-08-31",
-        dueDate: "2026-09-30",
-        clientName: project?.clientName || "MOPC - Ministerio de Obras Públicas",
-        contractNumber: project?.contractNumber || "CT-2026/89",
-        certifiedAmountGross: 185000000,
-        advanceDeduction: 18500000, // 10% anticipo amortizado
-        guaranteeRetention: 9250000, // 5% fondo de reparo retenido
-        netAmountToCollect: 157250000,
-        status: "PRESENTADO_FISCAL",
-        invoiceNumber: "001-001-0000312",
-        notes: "Carátula aprobada por Fiscal de Obras. En trámite de orden de pago en tesorería central.",
-      },
-      {
-        id: "CERT-CLI-02",
-        projectId: project?.id || 1,
-        certificateNumber: "CERT-OBRA-02",
-        periodName: "Mes 2 - Base Granular & Pavimento Asfáltico",
-        issueDate: "2026-09-15",
-        dueDate: "2026-10-15",
-        clientName: project?.clientName || "MOPC - Ministerio de Obras Públicas",
-        contractNumber: project?.contractNumber || "CT-2026/89",
-        certifiedAmountGross: 320000000,
-        advanceDeduction: 32000000,
-        guaranteeRetention: 16000000,
-        netAmountToCollect: 272000000,
-        status: "PENDIENTE_APROBACION",
-        invoiceNumber: "001-001-0000318",
-        notes: "Medición de campo verificada. Pendiente de firma de fiscalización.",
-      },
-    ];
+    return [];
   });
 
-  // Petty Cash (Fondo Fijo de Obra)
-  const [pettyCashFund, setPettyCashFund] = useState<PettyCashFund>(() => {
-    return {
-      id: "FF-01",
-      projectId: project?.id || 1,
-      assignedAmount: 10000000, // 10.000.000 Gs de fondo fijo asignado
-      currentBalance: 7850000,
-      responsiblePerson: "Ing. Carlos Benítez (Jefe de Frente)",
-      lastSettlementDate: "2026-09-14",
-    };
-  });
-
-  const [pettyCashTx, setPettyCashTx] = useState<PettyCashTransaction[]>(() => {
+  // Caja chica: resumen del fondo (el detalle vive en PettyCashPanel, conectado al presupuesto)
+  const [pettySummary, setPettySummary] = useState({ assigned: 0, balance: 0 });
+  const loadPettySummary = useCallback(async () => {
+    if (!project?.id) return;
     try {
-      const saved = localStorage.getItem(storageKeyPettyCash);
-      if (saved) return JSON.parse(saved);
-    } catch {}
-
-    return [
-      {
-        id: "TX-01",
-        projectId: project?.id || 1,
-        date: "2026-09-18",
-        receiptNumber: "TKT-89412",
-        supplierOrBeneficiary: "Petrobras San Lorenzo",
-        concept: "Combustible urgente generador de pista de hormigonado",
-        category: "COMBUSTIBLE",
-        amount: 850000,
-        responsibleName: "Carlos Benítez",
-        settlementStatus: "PENDIENTE_RENDICION",
-      },
-      {
-        id: "TX-02",
-        projectId: project?.id || 1,
-        date: "2026-09-19",
-        receiptNumber: "FAC-003-4512",
-        supplierOrBeneficiary: "Ferretería La Central",
-        concept: "Alambre de atar, discos de corte y clavos de 2 pulg",
-        category: "FERRETERIA",
-        amount: 680000,
-        responsibleName: "Jorge Duarte",
-        settlementStatus: "PENDIENTE_RENDICION",
-      },
-      {
-        id: "TX-03",
-        projectId: project?.id || 1,
-        date: "2026-09-20",
-        receiptNumber: "BOL-1209",
-        supplierOrBeneficiary: "Hielo & Agua Cristalina",
-        concept: "Hielo y agua potable para personal de pista",
-        category: "OTROS",
-        amount: 320000,
-        responsibleName: "Ana Urbina",
-        settlementStatus: "PENDIENTE_RENDICION",
-      },
-    ];
-  });
+      const funds = await api.getPettyCash(project.id);
+      setPettySummary({
+        assigned: funds.reduce((acc, fund) => acc + Number(fund.assignedAmount), 0),
+        balance: funds.reduce((acc, fund) => acc + fund.currentBalance, 0),
+      });
+    } catch {
+      setPettySummary({ assigned: 0, balance: 0 });
+    }
+  }, [project?.id]);
+  useEffect(() => {
+    loadPettySummary();
+  }, [loadPettySummary]);
 
   // Local storage saves
   const saveClientCerts = (newCerts: ClientBillableCertificate[]) => {
@@ -223,24 +149,8 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
     } catch {}
   };
 
-  const savePettyCash = (newTxs: PettyCashTransaction[]) => {
-    setPettyCashTx(newTxs);
-    const spentPending = newTxs
-      .filter((t) => t.settlementStatus === "PENDIENTE_RENDICION")
-      .reduce((acc, t) => acc + t.amount, 0);
-    setPettyCashFund((prev) => ({
-      ...prev,
-      currentBalance: Math.max(0, prev.assignedAmount - spentPending),
-    }));
-    try {
-      localStorage.setItem(storageKeyPettyCash, JSON.stringify(newTxs));
-    } catch {}
-  };
-
   // Other Modals
   const [showNewClientCertModal, setShowNewClientCertModal] = useState(false);
-  const [showNewPettyTxModal, setShowNewPettyTxModal] = useState(false);
-  const [showRendicionModal, setShowRendicionModal] = useState(false);
 
   // New Client Cert Form
   const [clientCertForm, setClientCertForm] = useState({
@@ -248,23 +158,12 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
     periodName: `Mes ${clientCerts.length + 1} - Avance Certificado`,
     issueDate: new Date().toISOString().split("T")[0],
     dueDate: new Date(Date.now() + 30 * 86400000).toISOString().split("T")[0],
-    clientName: project?.clientName || "MOPC",
-    contractNumber: project?.contractNumber || "CT-2026/89",
+    clientName: project?.clientName || "",
+    contractNumber: project?.contractNumber || "",
     certifiedAmountGross: 250000000,
     advanceDeduction: 25000000,
     guaranteeRetention: 12500000,
     notes: "",
-  });
-
-  // New Petty Cash Form
-  const [pettyForm, setPettyForm] = useState({
-    receiptNumber: "",
-    supplierOrBeneficiary: "",
-    concept: "",
-    category: "COMBUSTIBLE" as PettyCashTransaction["category"],
-    amount: 150000,
-    responsibleName: "Ing. Carlos Benítez",
-    budgetItemId: budgetItems[0]?.id,
   });
 
   // Filter state for Accounts Payable (Corrida semanal)
@@ -414,65 +313,11 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
     showToast("Cobro de certificado confirmado y acreditado en cuenta");
   };
 
-  // Action: Create Petty Cash Expense
-  const handleCreatePettyTx = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (pettyForm.amount <= 0) {
-      showToast("El monto debe ser mayor a 0", "error");
-      return;
-    }
-
-    const newTx: PettyCashTransaction = {
-      id: `TX-${Date.now()}`,
-      projectId: project?.id || 1,
-      date: new Date().toISOString().split("T")[0],
-      receiptNumber: pettyForm.receiptNumber || `TKT-${Math.floor(Math.random() * 90000 + 10000)}`,
-      supplierOrBeneficiary: pettyForm.supplierOrBeneficiary || "Gasto Menor",
-      concept: pettyForm.concept || "Gasto operativo en obra",
-      category: pettyForm.category,
-      amount: Number(pettyForm.amount),
-      responsibleName: pettyForm.responsibleName,
-      budgetItemId: pettyForm.budgetItemId,
-      settlementStatus: "PENDIENTE_RENDICION",
-    };
-
-    savePettyCash([newTx, ...pettyCashTx]);
-    setShowNewPettyTxModal(false);
-    showToast(`Gasto de caja chica por ${formatMoney(newTx.amount, currency)} registrado`);
-  };
-
-  // Action: Close Weekly Petty Cash Settlement
-  const handleCerrarRendicionSemanal = () => {
-    const pendingTxs = pettyCashTx.filter((t) => t.settlementStatus === "PENDIENTE_RENDICION");
-    if (pendingTxs.length === 0) {
-      showToast("No hay comprobantes pendientes de rendición en el fondo fijo", "info");
-      return;
-    }
-
-    const updatedTxs = pettyCashTx.map((t) => ({
-      ...t,
-      settlementStatus: "RENDIDO" as const,
-    }));
-
-    setPettyCashTx(updatedTxs);
-    setPettyCashFund((prev) => ({
-      ...prev,
-      currentBalance: prev.assignedAmount,
-      lastSettlementDate: todayStr,
-    }));
-
-    try {
-      localStorage.setItem(storageKeyPettyCash, JSON.stringify(updatedTxs));
-    } catch {}
-
-    setShowRendicionModal(false);
-    showToast("Rendición semanal cerrada con éxito. Fondo Fijo restituido al 100%");
-  };
-
   return (
-    <div className="space-y-6 pb-12 text-slate-800">
+    <div className="mx-auto w-full max-w-7xl space-y-6 pb-12 text-slate-800">
+      <PageHeader title="Finanzas" help="Facturas, lo que hay que pagar, lo que hay que cobrar y la caja chica." />
       {/* Top Header Card */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-end gap-2 [&>div:first-child]:hidden">
         <div>
           <div className="flex items-center gap-2.5">
             <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center border border-blue-100 shadow-xs">
@@ -504,7 +349,7 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
             <span>+ Registrar Factura Fiscal</span>
           </button>
           <button
-            onClick={() => setShowNewPettyTxModal(true)}
+            onClick={() => setSubTab("caja-chica")}
             className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 text-xs font-bold transition cursor-pointer"
           >
             <Banknote className="w-4 h-4 text-emerald-600" />
@@ -522,7 +367,7 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
       </div>
 
       {/* Financial KPIs Banner */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 [&>div:nth-child(2)]:hidden [&>div:nth-child(3)]:hidden">
         {/* KPI 1: Cuentas por Pagar Total */}
         <div className="p-4 rounded-2xl bg-white border border-slate-200 shadow-xs space-y-1">
           <div className="flex items-center justify-between">
@@ -594,7 +439,7 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
             {formatMoney(totalCuentasPorCobrar, currency)}
           </p>
           <p className="text-[11px] text-slate-500 truncate">
-            {project?.clientName || "MOPC"} · Certificaciones
+            {project?.clientName || "Comitente"} · Certificaciones
           </p>
         </div>
 
@@ -609,10 +454,10 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
             </span>
           </div>
           <p className="text-xl font-extrabold text-blue-900 font-mono">
-            {formatMoney(pettyCashFund.currentBalance, currency)}
+            {formatMoney(pettySummary.balance, currency)}
           </p>
           <p className="text-[11px] text-slate-500">
-            Asignado: {formatMoney(pettyCashFund.assignedAmount, currency)}
+            Asignado: {formatMoney(pettySummary.assigned, currency)}
           </p>
         </div>
       </div>
@@ -1149,7 +994,7 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
                             diff === 0 ? "text-emerald-600" : "text-rose-600 font-black"
                           }`}
                         >
-                          ₲ {diff.toLocaleString("es-PY")} ({diff === 0 ? "0.00%" : "Desvío"})
+                          ₲ {formatGs(diff)} ({diff === 0 ? "0.00%" : "Desvío"})
                         </span>
                       </div>
                     </div>
@@ -1339,7 +1184,7 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
               <FileCheck className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
               <div className="text-xs leading-relaxed text-slate-700">
                 <strong className="text-emerald-900">Seguimiento de Certificaciones al Cliente:</strong> Registra las
-                facturas de venta y certificados emitidos al comitente ({project?.clientName || "MOPC"}). Aplica
+                facturas de venta y certificados emitidos al comitente ({project?.clientName || "Comitente"}). Aplica
                 automáticamente las deducciones contractuales de <strong>amortización de anticipo (10%)</strong> y la{" "}
                 <strong>retención de garantía / fondo de reparo (5%)</strong> para reflejar el importe neto a cobrar.
               </div>
@@ -1435,94 +1280,9 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
         </div>
       )}
 
-      {/* VIEW 5: FONDO FIJO / CAJA CHICA */}
+      {/* VIEW 5: FONDO FIJO / CAJA CHICA (conectada al presupuesto) */}
       {subTab === "caja-chica" && (
-        <div className="space-y-4">
-          <div className="p-4 rounded-2xl bg-white border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <Banknote className="w-5 h-5 text-blue-600" />
-                <h3 className="font-bold text-sm text-slate-900">
-                  Estado del Fondo Fijo Operativo de Obra
-                </h3>
-              </div>
-              <p className="text-xs text-slate-500">
-                Custodio: <strong>{pettyCashFund.responsiblePerson}</strong> · Último cierre:{" "}
-                {formatDate(pettyCashFund.lastSettlementDate)}
-              </p>
-            </div>
-
-            <div className="flex items-center gap-3">
-              <button
-                onClick={() => setShowRendicionModal(true)}
-                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-xs transition cursor-pointer flex items-center gap-1.5"
-              >
-                <FileCheck2 className="w-4 h-4" />
-                <span>Cerrar Rendición Semanal</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Transactions list */}
-          <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xs">
-            <div className="p-4 border-b border-slate-200 flex items-center justify-between">
-              <h4 className="font-bold text-xs uppercase tracking-wider text-slate-700">
-                Comprobantes Menores de la Semana
-              </h4>
-              <span className="text-xs text-slate-500">
-                Pendientes de rendición:{" "}
-                <strong>
-                  {pettyCashTx.filter((t) => t.settlementStatus === "PENDIENTE_RENDICION").length}
-                </strong>
-              </span>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs border-collapse">
-                <thead className="bg-slate-50 text-slate-600 font-bold uppercase tracking-wider text-[11px] border-b border-slate-200">
-                  <tr>
-                    <th className="p-3">FECHA</th>
-                    <th className="p-3">COMPROBANTE</th>
-                    <th className="p-3">PROVEEDOR / COMERCIO</th>
-                    <th className="p-3">CONCEPTO / DESTINO</th>
-                    <th className="p-3">CATEGORÍA</th>
-                    <th className="p-3 text-right">MONTO</th>
-                    <th className="p-3 text-center">ESTADO</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {pettyCashTx.map((tx) => (
-                    <tr key={tx.id} className="hover:bg-slate-50 transition">
-                      <td className="p-3 font-mono">{formatDate(tx.date)}</td>
-                      <td className="p-3 font-mono font-bold text-slate-900">{tx.receiptNumber}</td>
-                      <td className="p-3 font-medium text-slate-800">{tx.supplierOrBeneficiary}</td>
-                      <td className="p-3 text-slate-600">{tx.concept}</td>
-                      <td className="p-3">
-                        <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-bold">
-                          {tx.category}
-                        </span>
-                      </td>
-                      <td className="p-3 text-right font-mono font-bold text-slate-900">
-                        {formatMoney(tx.amount, currency)}
-                      </td>
-                      <td className="p-3 text-center">
-                        <span
-                          className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                            tx.settlementStatus === "RENDIDO"
-                              ? "bg-emerald-100 text-emerald-800"
-                              : "bg-amber-100 text-amber-800"
-                          }`}
-                        >
-                          {tx.settlementStatus === "RENDIDO" ? "Rendido" : "Pendiente"}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
+        <PettyCashPanel project={project} currency={currency} showToast={showToast} onChanged={loadPettySummary} />
       )}
 
       {/* MODAL 1: REGISTRAR NUEVA FACTURA LEGAL (API) */}
@@ -1696,172 +1456,6 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
         </div>
       )}
 
-      {/* MODAL 6: REGISTRAR GASTO CAJA CHICA */}
-      {showNewPettyTxModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 shadow-xl relative text-xs">
-            <button
-              onClick={() => setShowNewPettyTxModal(false)}
-              className="absolute right-4 top-4 text-slate-400 hover:text-slate-600 cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-2 mb-4">
-              <Banknote className="w-5 h-5 text-emerald-600" />
-              <h3 className="text-base font-bold text-slate-900">Registrar Comprobante de Caja Chica</h3>
-            </div>
-
-            <form onSubmit={handleCreatePettyTx} className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">N° Comprobante / Ticket:</label>
-                  <input
-                    type="text"
-                    required
-                    placeholder="FAC-001-841"
-                    value={pettyForm.receiptNumber}
-                    onChange={(e) => setPettyForm({ ...pettyForm, receiptNumber: e.target.value })}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 font-mono text-xs"
-                  />
-                </div>
-                <div>
-                  <label className="block font-bold text-slate-700 mb-1">Categoría:</label>
-                  <select
-                    value={pettyForm.category}
-                    onChange={(e) =>
-                      setPettyForm({ ...pettyForm, category: e.target.value as any })
-                    }
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs"
-                  >
-                    <option value="COMBUSTIBLE">Combustible</option>
-                    <option value="FERRETERIA">Ferretería</option>
-                    <option value="ALIMENTACION">Alimentación</option>
-                    <option value="TRANSPORTE">Transporte / Flete</option>
-                    <option value="OTROS">Otros Gastos</option>
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">Comercio / Proveedor:</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Ej: Ferretería El Tornillo"
-                  value={pettyForm.supplierOrBeneficiary}
-                  onChange={(e) =>
-                    setPettyForm({ ...pettyForm, supplierOrBeneficiary: e.target.value })
-                  }
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">Concepto del Gasto:</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="Ej: Clavos, alambre y bolsas de cemento urgente"
-                  value={pettyForm.concept}
-                  onChange={(e) => setPettyForm({ ...pettyForm, concept: e.target.value })}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs"
-                />
-              </div>
-
-              <div>
-                <label className="block font-bold text-slate-700 mb-1">Monto Pagado (Gs.):</label>
-                <input
-                  type="number"
-                  min="1"
-                  required
-                  value={pettyForm.amount}
-                  onChange={(e) => setPettyForm({ ...pettyForm, amount: Number(e.target.value) })}
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 font-mono text-sm font-bold text-slate-900"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
-                <button
-                  type="button"
-                  onClick={() => setShowNewPettyTxModal(false)}
-                  className="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-100 font-semibold cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold shadow-xs cursor-pointer"
-                >
-                  Confirmar Egreso de Caja
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL 7: CERRAR RENDICION SEMANAL */}
-      {showRendicionModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md p-6 shadow-xl relative text-xs">
-            <button
-              onClick={() => setShowRendicionModal(false)}
-              className="absolute right-4 top-4 text-slate-400 hover:text-slate-600 cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
-
-            <div className="flex items-center gap-2 mb-3">
-              <Banknote className="w-5 h-5 text-blue-600" />
-              <h3 className="text-base font-bold text-slate-900">Cierre de Rendición Semanal</h3>
-            </div>
-
-            <p className="text-slate-600 mb-4 leading-relaxed">
-              Esta acción agrupa todos los comprobantes menores de la semana, genera el informe de rendición para
-              Auditoría y <strong>restituye el saldo del Fondo Fijo</strong> a{" "}
-              <strong>{formatMoney(pettyCashFund.assignedAmount, currency)}</strong>.
-            </p>
-
-            <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2 mb-4 font-mono">
-              <div className="flex items-center justify-between text-slate-600">
-                <span>Comprobantes a rendir:</span>
-                <span className="font-bold">
-                  {pettyCashTx.filter((t) => t.settlementStatus === "PENDIENTE_RENDICION").length}
-                </span>
-              </div>
-              <div className="flex items-center justify-between text-slate-900 font-bold text-sm pt-2 border-t border-slate-200">
-                <span>Monto a Reembolsar:</span>
-                <span className="text-blue-700">
-                  {formatMoney(
-                    pettyCashTx
-                      .filter((t) => t.settlementStatus === "PENDIENTE_RENDICION")
-                      .reduce((acc, t) => acc + t.amount, 0),
-                    currency
-                  )}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setShowRendicionModal(false)}
-                className="px-4 py-2 rounded-xl text-slate-600 hover:bg-slate-100 font-semibold cursor-pointer"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={handleCerrarRendicionSemanal}
-                className="px-5 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold shadow-xs cursor-pointer"
-              >
-                Aprobar y Reembolsar Fondo
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

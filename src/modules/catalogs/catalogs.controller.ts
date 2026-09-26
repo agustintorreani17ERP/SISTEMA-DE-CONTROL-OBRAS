@@ -1,9 +1,13 @@
 import { Router } from "express";
+import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { prisma, resetStore } from "../../lib/prisma";
 import { asyncHandler } from "../../middleware/asyncHandler";
 import { ok } from "../../http/respond";
 import { DomainError, NotFoundError } from "../../errors/domain";
+import { audit } from "../../domain/audit";
+import { ensureGeneralExpenses } from "../../domain/generalExpenses";
+import { recalculateProjectFinancials } from "../../domain/projectFinancials";
 
 export const catalogsRouter = Router();
 
@@ -14,7 +18,12 @@ catalogsRouter.post(
       resetStore();
     } catch {}
     try {
+      await prisma.budgetMovement.deleteMany({});
+      await prisma.pettyCashExpense.deleteMany({});
+      await prisma.pettyCashFund.deleteMany({});
+      await prisma.budgetItem.updateMany({ data: { parentId: null } });
       await prisma.budgetItem.deleteMany({});
+      await prisma.budgetImport.deleteMany({});
       await prisma.certificacion.deleteMany({});
       await prisma.materialRequestDetail.deleteMany({});
       await prisma.materialRequest.deleteMany({});
@@ -74,6 +83,7 @@ const projectSchema = z.object({
   contractNumber: z.string().trim().optional(),
   globalBudget: z.coerce.number().nonnegative().default(0),
   montoContractualManual: z.coerce.number().nonnegative().optional(),
+  currency: z.enum(["PYG", "USD"]).optional().default("PYG"),
 });
 
 const partnerSchema = z.object({
@@ -88,10 +98,10 @@ const partnerSchema = z.object({
 
 const materialSchema = z.object({
   code: z.string().min(2),
-  description: z.string().min(3),
+  description: z.string().trim().min(2),
   unit: z.string().min(1),
   category: z.string().min(2),
-  estimatedCost: z.coerce.number().nonnegative(),
+  estimatedCost: z.coerce.number().nonnegative().default(0),
 });
 
 const personnelSchema = z.object({
@@ -101,29 +111,38 @@ const personnelSchema = z.object({
 });
 
 const budgetItemSchema = z.object({
-  projectId: z.number().int(),
-  code: z.string().min(2),
-  name: z.string().min(3),
-  category: z.string().min(2),
-  originalAmount: z.coerce.number().positive(),
+  projectId: z.coerce.number().int(),
+  parentId: z.coerce.number().int().positive().optional(),
+  nodeKind: z.enum(["RUBRO", "ITEM"]).default("ITEM"),
+  code: z.string().trim().min(1).max(60),
+  name: z.string().trim().min(1).max(500),
+  unit: z.string().trim().max(40).optional(),
+  totalQuantity: z.coerce.number().nonnegative().optional(),
+  unitPrice: z.coerce.number().nonnegative().optional(),
+  originalAmount: z.coerce.number().nonnegative().optional(),
 });
 
 const workFrontSchema = z.object({
-  projectId: z.number().int(),
-  name: z.string().min(3),
-  chiefId: z.number().int(),
+  projectId: z.coerce.number().int(),
+  name: z.string().trim().min(2, "Poné un nombre para el frente"),
+  chiefId: z.coerce.number().int().positive().optional().nullable(),
 });
 
 catalogsRouter.post(
   "/projects",
   asyncHandler(async (req, res) => {
     const body = projectSchema.parse(req.body);
-    const project = await prisma.project.create({
-      data: {
-        ...body,
-        montoContractualManual: body.montoContractualManual ?? body.globalBudget,
-        montoRealActualizado: body.montoContractualManual ?? body.globalBudget,
-      },
+    const project = await prisma.$transaction(async (tx) => {
+      const created = await tx.project.create({
+        data: {
+          ...body,
+          montoContractualManual: body.montoContractualManual ?? body.globalBudget,
+          montoRealActualizado: body.montoContractualManual ?? body.globalBudget,
+        },
+      });
+      // Gastos Generales disponible desde el día uno, aunque todavía no se importe el presupuesto.
+      await ensureGeneralExpenses(tx, created.id);
+      return created;
     });
     ok(res, project, 201);
   })
@@ -230,9 +249,47 @@ catalogsRouter.post(
   "/budget-items",
   asyncHandler(async (req, res) => {
     const body = budgetItemSchema.parse(req.body);
-    const project = await prisma.project.findUnique({ where: { id: body.projectId } });
-    if (!project) throw new NotFoundError("Obra", body.projectId);
-    ok(res, await prisma.budgetItem.create({ data: body }), 201);
+    const created = await prisma.$transaction(async (tx) => {
+      const project = await tx.project.findUnique({ where: { id: body.projectId } });
+      if (!project) throw new NotFoundError("Obra", body.projectId);
+
+      let parent = null;
+      if (body.parentId) {
+        parent = await tx.budgetItem.findUnique({ where: { id: body.parentId } });
+        if (!parent || parent.projectId !== body.projectId) throw new NotFoundError("Rubro", body.parentId);
+        if (parent.nodeKind === "ITEM") {
+          throw new DomainError("PARENT_IS_ITEM", "Solo se pueden agregar partidas dentro de un rubro", 422);
+        }
+      }
+      const path = parent ? `${parent.path}/${body.code}` : body.code;
+      if (await tx.budgetItem.findUnique({ where: { projectId_path: { projectId: body.projectId, path } } })) {
+        throw new DomainError("DUPLICATE_CODE", `Ya existe "${body.code}" en ese rubro`, 409);
+      }
+      const qty = body.totalQuantity ?? (body.nodeKind === "ITEM" ? 1 : 0);
+      const price = body.unitPrice ?? 0;
+      const isItem = body.nodeKind === "ITEM";
+      const item = await tx.budgetItem.create({
+        data: {
+          projectId: body.projectId,
+          parentId: parent?.id ?? null,
+          code: body.code,
+          name: body.name,
+          category: parent ? parent.category : body.name,
+          unit: isItem ? body.unit || "un" : null,
+          totalQuantity: isItem ? qty : 0,
+          unitPrice: isItem ? price : 0,
+          originalAmount: isItem ? body.originalAmount ?? Math.round(qty * price * 100) / 100 : 0,
+          path,
+          hierarchyLevel: parent ? parent.hierarchyLevel + 1 : 0,
+          nodeKind: isItem ? "ITEM" : parent ? "SUBRUBRO" : "RUBRO",
+          sortOrder: (await tx.budgetItem.count({ where: { projectId: body.projectId } })) + 1,
+        },
+      });
+      await audit(tx, { entity: "BudgetItem", entityId: item.id, action: "CREATE" });
+      await recalculateProjectFinancials(tx, body.projectId);
+      return item;
+    });
+    ok(res, created, 201);
   })
 );
 
@@ -240,16 +297,41 @@ catalogsRouter.post(
   "/work-fronts",
   asyncHandler(async (req, res) => {
     const body = workFrontSchema.parse(req.body);
-    const [project, chief] = await Promise.all([
-      prisma.project.findUnique({ where: { id: body.projectId } }),
-      prisma.personnel.findUnique({ where: { id: body.chiefId } }),
-    ]);
+    const project = await prisma.project.findUnique({ where: { id: body.projectId } });
     if (!project) throw new NotFoundError("Obra", body.projectId);
-    if (!chief) throw new NotFoundError("Personal", body.chiefId);
-    if (chief.role !== "JEFE_FRENTE") {
-      throw new DomainError("INVALID_CHIEF", "El responsable debe tener rol JEFE_FRENTE");
+    if (body.chiefId && !(await prisma.personnel.findUnique({ where: { id: body.chiefId } }))) {
+      throw new NotFoundError("Personal", body.chiefId);
     }
-    ok(res, await prisma.workFront.create({ data: body, include: { chief: true, project: true } }), 201);
+    ok(
+      res,
+      await prisma.workFront.create({
+        data: { projectId: body.projectId, name: body.name, chiefId: body.chiefId ?? null },
+        include: { chief: true },
+      }),
+      201
+    );
+  })
+);
+
+catalogsRouter.patch(
+  "/work-fronts/:id",
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const body = workFrontSchema.partial().omit({ projectId: true }).parse(req.body);
+    ok(res, await prisma.workFront.update({ where: { id }, data: body, include: { chief: true } }));
+  })
+);
+
+catalogsRouter.delete(
+  "/work-fronts/:id",
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    const used = await prisma.materialRequest.count({ where: { workFrontId: id } });
+    if (used > 0) {
+      throw new DomainError("WORK_FRONT_IN_USE", `El frente tiene ${used} pedido(s): no se puede borrar`, 409);
+    }
+    await prisma.workFront.delete({ where: { id } });
+    ok(res, { deleted: true, id });
   })
 );
 
@@ -283,7 +365,7 @@ catalogsRouter.get(
       await prisma.budgetItem.findMany({
         where: projectId ? { projectId } : undefined,
         include: { project: true },
-        orderBy: { code: "asc" },
+        orderBy: { sortOrder: "asc" },
       })
     );
   })
@@ -305,60 +387,114 @@ catalogsRouter.get(
 );
 
 // --- MODIFICAR Y ELIMINAR PARTIDAS / RUBROS DEL PRESUPUESTO ---
+// Solo datos del presupuesto (código, nombre, unidad, cantidad, PU). Lo ejecutado sale
+// exclusivamente del libro mayor y no se edita a mano.
+const budgetItemUpdateSchema = z.object({
+  code: z.string().trim().min(1).max(60).optional(),
+  name: z.string().trim().min(1).max(500).optional(),
+  unit: z.string().trim().max(40).optional(),
+  totalQuantity: z.coerce.number().nonnegative().optional(),
+  unitPrice: z.coerce.number().nonnegative().optional(),
+  originalAmount: z.coerce.number().nonnegative().optional(),
+});
+
 catalogsRouter.put(
   "/budget-items/:id",
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
-    const existing = await prisma.budgetItem.findUnique({ where: { id } });
-    if (!existing) throw new NotFoundError("Rubro de presupuesto", id);
+    const body = budgetItemUpdateSchema.parse(req.body);
 
-    const { code, name, category, unit, totalQuantity, executedQuantity, unitPrice, originalAmount } = req.body;
-    const qty = totalQuantity !== undefined ? Number(totalQuantity) : Number(existing.totalQuantity);
-    const price = unitPrice !== undefined ? Number(unitPrice) : Number(existing.unitPrice);
-    const amount = originalAmount !== undefined ? Number(originalAmount) : Math.round(qty * price);
+    const updated = await prisma.$transaction(async (tx) => {
+      const existing = await tx.budgetItem.findUnique({ where: { id } });
+      if (!existing) throw new NotFoundError("Partida de presupuesto", id);
 
-    const updated = await prisma.budgetItem.update({
-      where: { id },
-      data: {
-        ...(code ? { code: String(code).trim() } : {}),
-        ...(name ? { name: String(name).trim() } : {}),
-        ...(category ? { category: String(category).trim() } : {}),
-        ...(unit !== undefined ? { unit: String(unit).trim() } : {}),
-        totalQuantity: qty,
-        ...(executedQuantity !== undefined ? { executedQuantity: Number(executedQuantity) } : {}),
-        unitPrice: price,
-        originalAmount: amount,
-      },
+      const data: Prisma.BudgetItemUpdateInput = {
+        ...(body.code ? { code: body.code } : {}),
+        ...(body.name ? { name: body.name } : {}),
+      };
+      if (existing.nodeKind === "ITEM") {
+        const qty = body.totalQuantity ?? Number(existing.totalQuantity);
+        const price = body.unitPrice ?? Number(existing.unitPrice);
+        Object.assign(data, {
+          ...(body.unit !== undefined ? { unit: body.unit } : {}),
+          totalQuantity: qty,
+          unitPrice: price,
+          originalAmount:
+            body.originalAmount ??
+            (body.totalQuantity !== undefined || body.unitPrice !== undefined
+              ? Math.round(qty * price * 100) / 100
+              : Number(existing.originalAmount)),
+        });
+      }
+
+      const next = await tx.budgetItem.update({ where: { id }, data });
+      await audit(tx, {
+        entity: "BudgetItem",
+        entityId: id,
+        action: "UPDATE",
+        payload: {
+          before: {
+            code: existing.code,
+            name: existing.name,
+            totalQuantity: existing.totalQuantity.toString(),
+            unitPrice: existing.unitPrice.toString(),
+            originalAmount: existing.originalAmount.toString(),
+          },
+          after: body,
+        } as Prisma.InputJsonValue,
+      });
+      await recalculateProjectFinancials(tx, existing.projectId);
+      return next;
     });
 
     ok(res, updated);
   })
 );
 
+/** Motivo por el que una partida no se puede borrar, o null si se puede. */
+async function budgetItemDeleteBlocker(tx: Prisma.TransactionClient, ids: number[]): Promise<string | null> {
+  const where = { budgetItemId: { in: ids } };
+  const [movements, requests, orders, subcontracts, certs, certItems, petty] = await Promise.all([
+    tx.budgetMovement.count({ where }),
+    tx.materialRequestDetail.count({ where }),
+    tx.purchaseOrderDetail.count({ where }),
+    tx.subcontractorContract.count({ where }),
+    tx.certificacion.count({ where }),
+    tx.certificationItem.count({ where }),
+    tx.pettyCashExpense.count({ where }),
+  ]);
+  if (movements) return "tiene movimientos imputados (OC, certificados o caja chica)";
+  const refs = requests + orders + subcontracts + certs + certItems + petty;
+  if (refs) return `la usan ${refs} documento(s) (pedidos, OC, subcontratos, certificados o caja chica)`;
+  return null;
+}
+
 catalogsRouter.delete(
   "/budget-items/:id",
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
-    const existing = await prisma.budgetItem.findUnique({ where: { id } });
-    if (!existing) throw new NotFoundError("Rubro de presupuesto", id);
-
-    // Remove any dependent references or certifications gracefully
-    try {
-      await prisma.certificacion.deleteMany({ where: { budgetItemId: id } });
-      await prisma.subcontractorContract.deleteMany({ where: { budgetItemId: id } });
-      await prisma.materialRequestDetail.deleteMany({ where: { budgetItemId: id } });
-      await prisma.purchaseOrderDetail.deleteMany({ where: { budgetItemId: id } });
-      await prisma.budgetCommitment.deleteMany({ where: { budgetItemId: id } });
-    } catch (e) {
-      console.warn("Cleaned dependencies for budgetItem:", id);
-    }
-
-    const deleted = await prisma.budgetItem.delete({ where: { id } });
-    ok(res, { deleted: true, id: deleted.id });
+    await prisma.$transaction(async (tx) => {
+      const existing = await tx.budgetItem.findUnique({ where: { id } });
+      if (!existing) throw new NotFoundError("Partida de presupuesto", id);
+      if (existing.isSystem) {
+        throw new DomainError("SYSTEM_BUDGET_ITEM", "Las partidas de Gastos Generales no se pueden borrar", 409);
+      }
+      if ((await tx.budgetItem.count({ where: { parentId: id } })) > 0) {
+        throw new DomainError("BUDGET_ITEM_HAS_CHILDREN", `"${existing.name}" tiene ítems: borralos primero`, 409);
+      }
+      const blocker = await budgetItemDeleteBlocker(tx, [id]);
+      if (blocker) {
+        throw new DomainError("BUDGET_ITEM_IN_USE", `No se puede borrar "${existing.name}": ${blocker}`, 409);
+      }
+      await tx.budgetItem.delete({ where: { id } });
+      await audit(tx, { entity: "BudgetItem", entityId: id, action: "DELETE" });
+      await recalculateProjectFinancials(tx, existing.projectId);
+    });
+    ok(res, { deleted: true, id });
   })
 );
 
-// Limpiar todas las partidas de una obra (para empezar de cero con la Planilla Madre)
+// Limpiar el presupuesto de una obra (solo si todavía no tiene nada imputado).
 catalogsRouter.delete(
   "/projects/:projectId/budget-items",
   asyncHandler(async (req, res) => {
@@ -366,122 +502,19 @@ catalogsRouter.delete(
     if (!Number.isInteger(projectId) || projectId <= 0) {
       throw new DomainError("INVALID_PROJECT", "Identificador de obra inválido");
     }
-
-    try {
-      await prisma.certificacion.deleteMany({ where: { projectId } });
-      await prisma.budgetItem.deleteMany({ where: { projectId } });
-    } catch (e) {
-      console.warn("Could not batch delete budget items:", e);
-    }
-
-    ok(res, { deletedAll: true, projectId });
-  })
-);
-
-// --- PLANILLA MADRE Y CENTROS DE COSTOS (APROBAR PLANILLA MADRE) ---
-catalogsRouter.post(
-  "/projects/:projectId/planilla-madre/aprobar",
-  asyncHandler(async (req, res) => {
-    const projectId = Number(req.params.projectId);
-    const { items, markupPercent } = req.body;
-
-    if (!Array.isArray(items) || items.length === 0) {
-      throw new DomainError("INVALID_BUDGET", "La planilla madre debe contener al menos un rubro");
-    }
-
-    const project = await prisma.project.findUnique({ where: { id: projectId } });
-    if (!project) throw new NotFoundError("Obra", projectId);
-
-    // 1. Limpiar o reemplazar partidas anteriores de este proyecto
-    try {
-      await prisma.certificacion.deleteMany({ where: { projectId } });
-      await prisma.budgetItem.deleteMany({ where: { projectId } });
-    } catch (e) {
-      console.warn("Cleared existing items for master budget");
-    }
-
-    // 2. Extraer categorías únicas para crear o sincronizar Centros de Costos
-    const categoriesSet = new Set<string>();
-    items.forEach((it: any) => {
-      if (it.category) categoriesSet.add(String(it.category).trim().toUpperCase());
-      else categoriesSet.add("GENERAL");
-    });
-
-    const costCenterMap = new Map<string, number>();
-    let ccIndex = 1;
-    for (const catName of categoriesSet) {
-      const ccCode = `CC-${String(ccIndex).padStart(2, "0")}`;
-      try {
-        const cc = await prisma.costCenter.upsert({
-          where: { projectId_code: { projectId, code: ccCode } },
-          update: { name: catName },
-          create: {
-            projectId,
-            code: ccCode,
-            name: catName,
-            level: 1,
-          },
-        });
-        costCenterMap.set(catName, cc.id);
-        ccIndex++;
-      } catch (err) {
-        // Continue if cost center exists
+    await prisma.$transaction(async (tx) => {
+      const items = await tx.budgetItem.findMany({ where: { projectId, isSystem: false }, select: { id: true } });
+      const ids = items.map((i) => i.id);
+      if (!ids.length) return;
+      const blocker = await budgetItemDeleteBlocker(tx, ids);
+      if (blocker) {
+        throw new DomainError("BUDGET_IN_USE", `No se puede limpiar el presupuesto: ${blocker}`, 409);
       }
-    }
-
-    // 3. Crear los rubros oficiales de la Planilla Madre
-    let totalBudgetSum = 0;
-    const createdItems = [];
-
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
-      const code = String(it.code || `R-${String(i + 1).padStart(2, "0")}`).trim();
-      const name = String(it.name || "Rubro sin nombre").trim();
-      const cat = String(it.category || "GENERAL").trim().toUpperCase();
-      const unit = String(it.unit || "un").trim();
-      const qty = Math.max(0, Number(it.quantity || it.totalQuantity || 1));
-      const uPrice = Math.max(0, Number(it.unitPrice || 0));
-      const origAmt = Number(it.originalAmount) > 0 ? Number(it.originalAmount) : Math.round(qty * uPrice);
-      totalBudgetSum += origAmt;
-
-      const costCenterId = costCenterMap.get(cat) || undefined;
-
-      const created = await prisma.budgetItem.create({
-        data: {
-          projectId,
-          code,
-          name,
-          category: cat,
-          unit,
-          totalQuantity: qty,
-          executedQuantity: 0,
-          unitPrice: uPrice,
-          originalAmount: origAmt,
-          committedAmount: 0,
-          executedAmount: 0,
-          costCenterId,
-        },
-      });
-      createdItems.push(created);
-    }
-
-    // 4. Actualizar montos oficiales de la obra
-    await prisma.project.update({
-      where: { id: projectId },
-      data: {
-        montoPresupuestoBase: totalBudgetSum,
-        montoContractualManual: totalBudgetSum,
-        montoRealActualizado: totalBudgetSum,
-        globalBudget: totalBudgetSum,
-      },
+      await tx.budgetItem.updateMany({ where: { id: { in: ids } }, data: { parentId: null } });
+      await tx.budgetItem.deleteMany({ where: { id: { in: ids } } });
+      await recalculateProjectFinancials(tx, projectId);
     });
-
-    ok(res, {
-      approved: true,
-      totalItems: createdItems.length,
-      totalAmount: totalBudgetSum,
-      budgetItems: createdItems,
-    });
+    ok(res, { deletedAll: true, projectId });
   })
 );
 

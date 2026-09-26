@@ -139,7 +139,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   InfraTrack ERP
                 </span>
                 <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                  Obras Viales
+                  Control de Obras
                 </span>
               </div>
               <p className="text-xs text-stone-400">Control Presupuestario & Compras en Faena</p>

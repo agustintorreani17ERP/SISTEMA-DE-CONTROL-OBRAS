@@ -14,11 +14,15 @@ import {
   DollarSign,
   Camera,
   Layers,
+  Download,
 } from "lucide-react";
 import { Certification, ItemPhoto, AuxiliaryCalculation } from "../../types";
 import { api } from "../../api";
 import { ItemPhotoModal } from "./ItemPhotoModal";
+import { StatusSteps, statusStepIndex } from "./MeasurementForm";
+import { NumCell } from "./sheetGrid";
 
+import { formatGs, formatQty } from "../../utils/numbers";
 interface CertificateExcelPreviewProps {
   certification: Certification;
   onBack: () => void;
@@ -56,6 +60,44 @@ export const CertificateExcelPreview: React.FC<CertificateExcelPreviewProps> = (
 
   const totalMontoAcumulado = totalMontoAnterior + totalMontoPresente;
 
+  // Filas de presentación (monto contractual y saldo por ítem)
+  const rows = certification.items.map((item, idx) => {
+    const pu = Number(item.precioUnitario || 0);
+    const cantAnt = Number(item.cantidadAnterior || 0);
+    const cantPres = Number(item.cantidadPresente || 0);
+    const cantContrato = Number(item.budgetItem?.totalQuantity || 0);
+    const montoAnt = Math.round(cantAnt * pu);
+    const montoPres = Math.round(cantPres * pu);
+    const montoTot = montoAnt + montoPres;
+    const contractual = Math.round(cantContrato * pu);
+    return {
+      item,
+      code: item.budgetItem?.code || String(idx + 1),
+      name: item.budgetItem?.name || "Rubro presupuestario",
+      unit: item.budgetItem?.unit || "un",
+      pu,
+      cantAnt,
+      cantPres,
+      cantContrato,
+      montoAnt,
+      montoPres,
+      montoTot,
+      contractual,
+      saldo: contractual - montoTot,
+    };
+  });
+  const totalContractual = rows.reduce((s, r) => s + r.contractual, 0);
+
+  // Pie del certificado
+  const hasStoredRetention = certification.retentionAmount != null && Number(certification.retentionAmount) > 0;
+  const [reparoPct, setReparoPct] = useState<number>(Number(certification.retentionPct || 0));
+  const [anticipo, setAnticipo] = useState<number>(0);
+  const [materiales, setMateriales] = useState<number>(0);
+  const fondoReparo = hasStoredRetention
+    ? Math.round(Number(certification.retentionAmount))
+    : Math.round((totalMontoPresente * reparoPct) / 100);
+  const netoAPagar = totalMontoPresente - fondoReparo - anticipo - materiales;
+
   const isApproved = certification.estado === "APROBADO";
   const isBorradorCertificado = certification.estado === "CERTIFICADO_BORRADOR";
   const isBorradorMedicion = certification.estado === "MEDICION_BORRADOR";
@@ -84,8 +126,8 @@ export const CertificateExcelPreview: React.FC<CertificateExcelPreviewProps> = (
   // Manejo de Aprobación y Facturación Automática (Three-Way Match)
   const handleApprove = async () => {
     const msg = certification.partnerId
-      ? `¿Aprobar Certificado N° ${certification.numero} de Subcontratista?\n\nAcción Contable: Se creará automáticamente una Factura Fiscal RECIBIDA (Cuentas por Pagar) con Three-Way Match 100% validado por ${totalMontoPresente.toLocaleString("es-PY")} Gs.`
-      : `¿Aprobar Certificado N° ${certification.numero} de Obra al Cliente?\n\nAcción Contable: Se creará automáticamente una Factura Fiscal EMITIDA (Cuentas por Cobrar) por ${totalMontoPresente.toLocaleString("es-PY")} Gs.`;
+      ? `¿Aprobar Certificado N° ${certification.numero} de Subcontratista?\n\nAcción Contable: Se creará automáticamente una Factura Fiscal RECIBIDA (Cuentas por Pagar) con Three-Way Match 100% validado por ${formatGs(totalMontoPresente)} Gs.`
+      : `¿Aprobar Certificado N° ${certification.numero} de Obra al Cliente?\n\nAcción Contable: Se creará automáticamente una Factura Fiscal EMITIDA (Cuentas por Cobrar) por ${formatGs(totalMontoPresente)} Gs.`;
 
     if (!window.confirm(msg)) return;
 
@@ -93,7 +135,11 @@ export const CertificateExcelPreview: React.FC<CertificateExcelPreviewProps> = (
     try {
       const res = await api.approveCertification(certification.id);
       alert(
-        `✅ Certificado N° ${certification.numero} APROBADO EXITOSAMENTE.\n\nFactura generada: ${res.invoice?.numeroFactura || "Fiscal"}\nMonto: ${Number(res.invoice?.total || totalMontoPresente).toLocaleString("es-PY")} Gs.\nThree-Way Match: 100% Aprobado.`
+        `✅ Certificado N° ${certification.numero} APROBADO EXITOSAMENTE.\n\nFactura generada: ${res.invoice?.numeroFactura || "Fiscal"}\nMonto: ${formatGs(Number(res.invoice?.total || totalMontoPresente))} Gs.\nThree-Way Match: 100% Aprobado.${
+          res.budgetWarnings?.length
+            ? `\n\n⚠ Avisos de presupuesto:\n${res.budgetWarnings.map((w) => "• " + w.message).join("\n")}`
+            : ""
+        }`
       );
       onRefresh();
     } catch (err: any) {
@@ -110,11 +156,11 @@ export const CertificateExcelPreview: React.FC<CertificateExcelPreviewProps> = (
     // Encabezado del Certificado
     const titleRows = [
       ["PLANILLA DE MEDICIÓN Y CERTIFICACIÓN DE OBRA"],
-      [`Obra: ${certification.project?.name || "Proyecto Vial"} (${certification.project?.code || ""})`],
+      [`Obra: ${certification.project?.name || ""} (${certification.project?.code || ""})`],
       [
         certification.partner
           ? `Subcontratista: ${certification.partner.name} (RUC: ${certification.partner.taxId})`
-          : `Comitente / Cliente: ${certification.project?.clientName || "MOPC / República del Paraguay"}`,
+          : `Comitente / Cliente: ${certification.project?.clientName || "—"}`,
       ],
       [
         `Certificado / Medición N°: ${certification.numero}`,
@@ -255,6 +301,32 @@ export const CertificateExcelPreview: React.FC<CertificateExcelPreviewProps> = (
     XLSX.writeFile(wb, safeFilename);
   };
 
+  // CSV plano: una fila por ítem, números sin formato
+  const handleExportCsv = () => {
+    const esc = (v: string | number) => {
+      const s = String(v ?? "");
+      return /[";\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const header = [
+      "item", "descripcion", "unidad", "cant_contratada", "cant_anterior", "cant_periodo", "cant_acumulada",
+      "precio_unitario", "monto_contractual", "monto_anterior", "monto_cert", "monto_acumulado", "saldo",
+    ];
+    const lines = rows.map((r) =>
+      [
+        r.code, r.name, r.unit, r.cantContrato, r.cantAnt, r.cantPres, r.cantAnt + r.cantPres,
+        r.pu, r.contractual, r.montoAnt, r.montoPres, r.montoTot, r.saldo,
+      ].map(esc).join(";")
+    );
+    const csv = "﻿" + [header.join(";"), ...lines].join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Certificado_${certification.numero}_${certification.project?.code || "Obra"}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   // Imprimir en A4 Horizontal
   const handlePrint = () => {
     window.print();
@@ -315,22 +387,10 @@ export const CertificateExcelPreview: React.FC<CertificateExcelPreviewProps> = (
                   N° {String(certification.numero).padStart(2, "0")}
                 </span>
               </h2>
-              {isApproved ? (
-                <span className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
-                  <CheckCircle2 className="w-3.5 h-3.5" /> APROBADO Y FACTURADO
-                </span>
-              ) : isBorradorCertificado ? (
-                <span className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-200">
-                  <FileText className="w-3.5 h-3.5" /> CERTIFICADO BORRADOR
-                </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 text-xs font-bold px-2.5 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
-                  <Layers className="w-3.5 h-3.5" /> MEDICIÓN BORRADOR
-                </span>
-              )}
+              <StatusSteps current={statusStepIndex(certification.estado)} />
             </div>
             <p className="text-xs text-slate-500">
-              Formato Civil Estricto — Normas MOPC / Contratos Privados de Infraestructura
+              Formato Civil Estricto — Contratos Públicos y Privados de Obra
             </p>
           </div>
         </div>
@@ -346,13 +406,21 @@ export const CertificateExcelPreview: React.FC<CertificateExcelPreviewProps> = (
             Exportar a Excel (.xlsx)
           </button>
 
+          <button
+            onClick={handleExportCsv}
+            className="px-3.5 py-2 bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-bold flex items-center gap-2 cursor-pointer"
+          >
+            <Download className="w-4 h-4" />
+            CSV
+          </button>
+
           {/* Print / PDF */}
           <button
             onClick={handlePrint}
             className="px-3.5 py-2 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-bold flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
           >
             <Printer className="w-4 h-4" />
-            Imprimir / PDF (A4 Horizontal)
+            Vista PDF / Imprimir
           </button>
 
           {/* Close measurement button (if draft) */}
@@ -363,7 +431,7 @@ export const CertificateExcelPreview: React.FC<CertificateExcelPreviewProps> = (
               className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold flex items-center gap-2 shadow-xs transition-colors cursor-pointer"
             >
               <Lock className="w-4 h-4" />
-              {closing ? "Cerrando..." : "Cerrar Medición y Generar Certificado"}
+              {closing ? "Enviando..." : "Enviar a revisión"}
             </button>
           )}
 
@@ -375,7 +443,7 @@ export const CertificateExcelPreview: React.FC<CertificateExcelPreviewProps> = (
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold flex items-center gap-2 shadow-sm transition-all cursor-pointer"
             >
               <CheckCircle2 className="w-4 h-4" />
-              {approving ? "Procesando..." : "Aprobar Certificado (Three-Way Match)"}
+              {approving ? "Procesando..." : "Aprobar"}
             </button>
           )}
         </div>
@@ -395,7 +463,7 @@ export const CertificateExcelPreview: React.FC<CertificateExcelPreviewProps> = (
               <p className="text-xs text-emerald-700">
                 N° Factura: <strong className="font-mono">{linkedInvoice.numeroFactura}</strong> |
                 Tipo: <strong>{linkedInvoice.tipo === "RECIBIDA" ? "Cuentas por Pagar (Subcontrato)" : "Cuentas por Cobrar (Cliente)"}</strong> |
-                Monto: <strong>{Number(linkedInvoice.total).toLocaleString("es-PY")} Gs.</strong> |
+                Monto: <strong>{formatGs(Number(linkedInvoice.total))} Gs.</strong> |
                 Condición: <strong>{linkedInvoice.condicionVenta}</strong>
               </p>
             </div>
@@ -425,7 +493,7 @@ export const CertificateExcelPreview: React.FC<CertificateExcelPreviewProps> = (
                 CERTIFICADO DE AVANCE DE OBRA N° {String(certification.numero).padStart(2, "0")}
               </h1>
               <p className="text-xs text-slate-500 font-medium mt-0.5">
-                Emisión bajo normas de control presupuestario vial y obras civiles
+                Emisión bajo normas de control presupuestario de obra
               </p>
             </div>
             <div className="text-right">
@@ -447,7 +515,7 @@ export const CertificateExcelPreview: React.FC<CertificateExcelPreviewProps> = (
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-5 pt-4 border-t border-slate-200 text-xs">
             <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                Obra / Tramo Vial
+                Obra
               </span>
               <div className="font-bold text-slate-800 text-sm mt-0.5 flex items-center gap-1.5">
                 <Building2 className="w-4 h-4 text-slate-600" />
@@ -464,7 +532,7 @@ export const CertificateExcelPreview: React.FC<CertificateExcelPreviewProps> = (
                 {certification.partner ? "Subcontratista Ejecutor" : "Comitente / Propietario de Obra"}
               </span>
               <div className="font-bold text-slate-800 text-sm mt-0.5">
-                {certification.partner ? certification.partner.name : certification.project?.clientName || "MOPC"}
+                {certification.partner ? certification.partner.name : certification.project?.clientName || "—"}
               </div>
               <div className="text-slate-500 text-[11px] mt-1">
                 {certification.partner ? (
@@ -480,137 +548,99 @@ export const CertificateExcelPreview: React.FC<CertificateExcelPreviewProps> = (
                 Resumen Financiero del Período
               </span>
               <div className="font-black text-emerald-700 text-base mt-0.5 font-mono">
-                {totalMontoPresente.toLocaleString("es-PY")} Gs.
+                {formatGs(totalMontoPresente)} Gs.
               </div>
               <div className="text-slate-500 text-[11px] mt-1">
-                Acumulado a la fecha: <strong className="text-slate-700">{totalMontoAcumulado.toLocaleString("es-PY")} Gs.</strong>
+                Acumulado a la fecha: <strong className="text-slate-700">{formatGs(totalMontoAcumulado)} Gs.</strong>
               </div>
             </div>
           </div>
         </div>
 
-        {/* 10-Column Strict Financial Table */}
+        {/* Planilla del certificado */}
         <div className="overflow-x-auto rounded-lg border border-slate-300">
           <table className="w-full text-left text-xs border-collapse print-table">
             <thead>
-              <tr className="bg-slate-800 text-white font-bold text-[11px] tracking-wide border-b border-slate-900">
-                <th className="py-2.5 px-2 text-center w-12 border-r border-slate-700">1. Ítem</th>
-                <th className="py-2.5 px-3 min-w-[220px] border-r border-slate-700">2. Descripción del Rubro</th>
-                <th className="py-2.5 px-2 text-center w-12 border-r border-slate-700">3. Unid.</th>
-                <th className="py-2.5 px-3 text-right w-28 border-r border-slate-700">4. P. Unitario (Gs.)</th>
-                <th className="py-2.5 px-2.5 text-right w-24 bg-slate-700/80 border-r border-slate-600">5. Cant. Anterior</th>
-                <th className="py-2.5 px-2.5 text-right w-24 bg-blue-900/80 border-r border-blue-800 text-blue-100">6. Cant. Presente</th>
-                <th className="py-2.5 px-2.5 text-right w-24 bg-slate-700/80 border-r border-slate-600">7. Cant. Total</th>
-                <th className="py-2.5 px-3 text-right w-32 bg-slate-700/80 border-r border-slate-600">8. Monto Anterior (Gs.)</th>
-                <th className="py-2.5 px-3 text-right w-32 bg-emerald-900/90 border-r border-emerald-800 text-emerald-100">9. Monto Presente (Gs.)</th>
-                <th className="py-2.5 px-3 text-right w-32 bg-slate-900 text-amber-300 font-black">10. Monto Total (Gs.)</th>
+              <tr className="bg-slate-800 text-white font-bold text-[11px]">
+                <th className="py-2 px-2 text-center w-14 border-r border-slate-700">Ítem</th>
+                <th className="py-2 px-3 min-w-[220px] border-r border-slate-700">Descripción</th>
+                <th className="py-2 px-2 text-center w-12 border-r border-slate-700">Un.</th>
+                <th className="py-2 px-2 text-right w-28 border-r border-slate-700">P.U.</th>
+                <th className="py-2 px-2 text-right w-32 border-r border-slate-700">Monto contractual</th>
+                <th className="py-2 px-2 text-right w-32 border-r border-slate-700">Acum. anterior</th>
+                <th className="py-2 px-2 text-right w-32 border-r border-slate-700 bg-emerald-900">Este cert.</th>
+                <th className="py-2 px-2 text-right w-32 border-r border-slate-700">Acum. actual</th>
+                <th className="py-2 px-2 text-right w-32">Saldo</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200 font-mono text-[11px]">
-              {certification.items.map((item, idx) => {
-                const pu = Number(item.precioUnitario || 0);
-                const cantAnt = Number(item.cantidadAnterior || 0);
-                const cantPres = Number(item.cantidadPresente || 0);
-                const cantTot = cantAnt + cantPres;
-                const montoAnt = Math.round(cantAnt * pu);
-                const montoPres = Math.round(cantPres * pu);
-                const montoTot = montoAnt + montoPres;
-
+              {rows.map((row, idx) => {
+                const item = row.item;
                 const hasPhotos = item.photos && item.photos.length > 0;
                 const hasAux = item.auxiliaryCalculations && item.auxiliaryCalculations.length > 0;
                 const isAuxExpanded = expandedAuxItemId === item.id;
 
                 return (
                   <React.Fragment key={item.id || idx}>
-                    <tr className="hover:bg-slate-50 transition-colors">
-                      <td className="py-2.5 px-2 text-center font-bold text-slate-700 border-r border-slate-200">
-                        {item.budgetItem?.code || idx + 1}
-                      </td>
-                      <td className="py-2.5 px-3 font-sans font-medium text-slate-800 border-r border-slate-200">
-                        <div>{item.budgetItem?.name || "Rubro presupuestario"}</div>
-                        {/* Evidence Tags (no-print) */}
-                        <div className="no-print flex items-center gap-2 mt-1">
+                    <tr className={row.saldo < 0 ? "bg-red-50" : "hover:bg-slate-50"}>
+                      <td className="py-2 px-2 text-center font-bold text-slate-700 border-r border-slate-200">{row.code}</td>
+                      <td className="py-2 px-3 font-sans text-slate-800 border-r border-slate-200">
+                        <div>{row.name}</div>
+                        <div className="text-[10px] text-slate-500 font-mono">
+                          {formatQty(row.cantAnt)} + <strong className="text-blue-800">{formatQty(row.cantPres)}</strong> ={" "}
+                          {formatQty(row.cantAnt + row.cantPres)} {row.unit}
+                          {row.cantContrato > 0 && ` de ${formatQty(row.cantContrato)}`}
+                        </div>
+                        <div className="no-print flex items-center gap-2 mt-0.5">
                           {hasAux && (
                             <button
                               type="button"
-                              onClick={() => setExpandedAuxItemId(isAuxExpanded ? null : (item.id || null))}
-                              className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-sm hover:bg-emerald-100 flex items-center gap-1 cursor-pointer"
+                              onClick={() => setExpandedAuxItemId(isAuxExpanded ? null : item.id || null)}
+                              className="text-[10px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 rounded-sm flex items-center gap-1 cursor-pointer"
                             >
-                              <Layers className="w-2.5 h-2.5" />
-                              {item.auxiliaryCalculations?.length} tramos auxiliar
+                              <Layers className="w-2.5 h-2.5" /> Cómputo ({item.auxiliaryCalculations?.length})
                             </button>
                           )}
                           {hasPhotos && (
                             <button
                               type="button"
                               onClick={() =>
-                                setActivePhotoModalItem({
-                                  code: item.budgetItem?.code || "",
-                                  name: item.budgetItem?.name || "",
-                                  photos: item.photos || [],
-                                })
+                                setActivePhotoModalItem({ code: row.code, name: row.name, photos: item.photos || [] })
                               }
-                              className="text-[10px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded-sm hover:bg-blue-100 flex items-center gap-1 cursor-pointer"
+                              className="text-[10px] font-semibold text-blue-700 bg-blue-50 border border-blue-200 px-1.5 rounded-sm flex items-center gap-1 cursor-pointer"
                             >
-                              <Camera className="w-2.5 h-2.5" />
-                              {item.photos?.length} fotos
+                              <Camera className="w-2.5 h-2.5" /> {item.photos?.length} fotos
                             </button>
                           )}
                         </div>
                       </td>
-                      <td className="py-2.5 px-2 text-center text-slate-600 font-sans border-r border-slate-200">
-                        {item.budgetItem?.unit || "un"}
-                      </td>
-                      <td className="py-2.5 px-3 text-right text-slate-700 border-r border-slate-200">
-                        {pu.toLocaleString("es-PY")}
-                      </td>
-                      <td className="py-2.5 px-2.5 text-right text-slate-600 bg-slate-50/50 border-r border-slate-200">
-                        {cantAnt.toLocaleString("es-PY", { maximumFractionDigits: 3 })}
-                      </td>
-                      <td className="py-2.5 px-2.5 text-right font-bold text-blue-800 bg-blue-50/40 border-r border-slate-200">
-                        {cantPres.toLocaleString("es-PY", { maximumFractionDigits: 3 })}
-                      </td>
-                      <td className="py-2.5 px-2.5 text-right text-slate-800 font-semibold bg-slate-50/50 border-r border-slate-200">
-                        {cantTot.toLocaleString("es-PY", { maximumFractionDigits: 3 })}
-                      </td>
-                      <td className="py-2.5 px-3 text-right text-slate-600 bg-slate-50/50 border-r border-slate-200">
-                        {montoAnt.toLocaleString("es-PY")}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-bold text-emerald-800 bg-emerald-50/50 border-r border-slate-200">
-                        {montoPres.toLocaleString("es-PY")}
-                      </td>
-                      <td className="py-2.5 px-3 text-right font-bold text-slate-900 bg-slate-100/70">
-                        {montoTot.toLocaleString("es-PY")}
+                      <td className="py-2 px-2 text-center font-sans text-slate-600 border-r border-slate-200">{row.unit}</td>
+                      <td className="py-2 px-2 text-right border-r border-slate-200">{formatGs(row.pu)}</td>
+                      <td className="py-2 px-2 text-right border-r border-slate-200">{row.contractual ? formatGs(row.contractual) : "—"}</td>
+                      <td className="py-2 px-2 text-right text-slate-600 border-r border-slate-200">{formatGs(row.montoAnt)}</td>
+                      <td className="py-2 px-2 text-right font-bold text-emerald-800 bg-emerald-50/60 border-r border-slate-200">{formatGs(row.montoPres)}</td>
+                      <td className="py-2 px-2 text-right font-semibold border-r border-slate-200">{formatGs(row.montoTot)}</td>
+                      <td className={`py-2 px-2 text-right ${row.saldo < 0 ? "text-red-700 font-bold" : "text-slate-600"}`}>
+                        {row.contractual ? formatGs(row.saldo) : "—"}
                       </td>
                     </tr>
 
-                    {/* Inline Auxiliary Calculation Preview if expanded */}
                     {isAuxExpanded && item.auxiliaryCalculations && (
-                      <tr className="no-print bg-slate-900 text-slate-200">
-                        <td colSpan={10} className="p-3">
-                          <div className="space-y-2">
-                            <div className="flex items-center justify-between text-xs font-bold text-emerald-400">
-                              <span>Cómputo Auxiliar de Campo para {item.budgetItem?.code}</span>
-                              <span className="text-[11px] text-slate-400">
-                                Total Sumado: {cantPres.toLocaleString("es-PY", { maximumFractionDigits: 3 })} {item.budgetItem?.unit}
-                              </span>
-                            </div>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
+                      <tr className="no-print bg-amber-50/50">
+                        <td colSpan={9} className="p-2 pl-16">
+                          <table className="text-[11px] font-mono">
+                            <tbody>
                               {item.auxiliaryCalculations.map((ac, acIdx) => (
-                                <div key={acIdx} className="bg-slate-800 p-2 rounded-sm border border-slate-700 flex justify-between items-center">
-                                  <div>
-                                    <span className="font-semibold text-white">{ac.descripcion}</span>
-                                    <span className="text-slate-400 ml-2 font-mono">
-                                      ({ac.largo}m × {ac.ancho}m × {ac.alto}m × {ac.factor_repeticion})
-                                    </span>
-                                  </div>
-                                  <span className="font-mono font-bold text-emerald-300">
-                                    {Number(ac.subtotal).toLocaleString("es-PY", { maximumFractionDigits: 3 })} {item.budgetItem?.unit}
-                                  </span>
-                                </div>
+                                <tr key={acIdx} className={ac.isDeduction ? "text-red-700" : "text-slate-700"}>
+                                  <td className="pr-4 font-sans">{ac.descripcion}</td>
+                                  <td className="pr-4">
+                                    {ac.largo} × {ac.ancho} × {ac.alto} × {ac.factor_repeticion}
+                                  </td>
+                                  <td className="text-right font-bold">{formatQty(Number(ac.subtotal))}</td>
+                                </tr>
                               ))}
-                            </div>
-                          </div>
+                            </tbody>
+                          </table>
                         </td>
                       </tr>
                     )}
@@ -619,23 +649,77 @@ export const CertificateExcelPreview: React.FC<CertificateExcelPreviewProps> = (
               })}
             </tbody>
             <tfoot>
-              <tr className="bg-slate-900 text-white font-black text-xs border-t-2 border-slate-950">
-                <td colSpan={7} className="py-3 px-4 text-right uppercase tracking-wider font-sans border-r border-slate-700">
-                  TOTALES GENERALES DEL CERTIFICADO:
-                </td>
-                <td className="py-3 px-3 text-right font-mono text-slate-300 border-r border-slate-700">
-                  {totalMontoAnterior.toLocaleString("es-PY")} Gs.
-                </td>
-                <td className="py-3 px-3 text-right font-mono text-emerald-300 bg-emerald-950/60 border-r border-slate-700 text-sm">
-                  {totalMontoPresente.toLocaleString("es-PY")} Gs.
-                </td>
-                <td className="py-3 px-3 text-right font-mono text-amber-300 text-sm">
-                  {totalMontoAcumulado.toLocaleString("es-PY")} Gs.
-                </td>
+              <tr className="bg-slate-900 text-white font-bold text-xs">
+                <td colSpan={4} className="py-2.5 px-3 text-right uppercase font-sans">Totales</td>
+                <td className="py-2.5 px-2 text-right font-mono">{formatGs(totalContractual)}</td>
+                <td className="py-2.5 px-2 text-right font-mono text-slate-300">{formatGs(totalMontoAnterior)}</td>
+                <td className="py-2.5 px-2 text-right font-mono text-emerald-300">{formatGs(totalMontoPresente)}</td>
+                <td className="py-2.5 px-2 text-right font-mono">{formatGs(totalMontoAcumulado)}</td>
+                <td className="py-2.5 px-2 text-right font-mono text-amber-300">{formatGs(totalContractual - totalMontoAcumulado)}</td>
               </tr>
             </tfoot>
           </table>
         </div>
+
+        {/* Pie: deducciones y neto */}
+        <div className="flex justify-end">
+          <table className="text-xs w-full max-w-md border border-slate-300 print-table">
+            <tbody className="font-mono">
+              <tr>
+                <td className="px-3 py-1.5 font-sans">Monto de este certificado</td>
+                <td className="px-3 py-1.5 text-right font-bold">{formatGs(totalMontoPresente)}</td>
+              </tr>
+              <tr>
+                <td className="px-3 py-1.5 font-sans">
+                  (−) Fondo de reparo{" "}
+                  {hasStoredRetention ? (
+                    <span className="text-slate-500">({Number(certification.retentionPct || 0)}%)</span>
+                  ) : (
+                    <span className="inline-flex items-center gap-0.5">
+                      <NumCell
+                        value={reparoPct}
+                        onValue={setReparoPct}
+                        disabled={isApproved}
+                        className="w-12 border border-slate-300 rounded px-1 text-right"
+                      />
+                      <span className="text-slate-500">%</span>
+                    </span>
+                  )}
+                </td>
+                <td className="px-3 py-1.5 text-right text-red-700">{formatGs(fondoReparo)}</td>
+              </tr>
+              <tr>
+                <td className="px-3 py-1.5 font-sans">(−) Descuento de anticipo</td>
+                <td className="px-3 py-1.5 text-right text-red-700">
+                  <NumCell
+                    value={anticipo}
+                    onValue={setAnticipo}
+                    disabled={isApproved}
+                    className="w-32 border border-slate-300 rounded px-1 text-right disabled:border-transparent disabled:bg-transparent"
+                  />
+                </td>
+              </tr>
+              <tr>
+                <td className="px-3 py-1.5 font-sans">(−) Materiales provistos</td>
+                <td className="px-3 py-1.5 text-right text-red-700">
+                  <NumCell
+                    value={materiales}
+                    onValue={setMateriales}
+                    disabled={isApproved}
+                    className="w-32 border border-slate-300 rounded px-1 text-right disabled:border-transparent disabled:bg-transparent"
+                  />
+                </td>
+              </tr>
+              <tr className="bg-slate-900 text-white">
+                <td className="px-3 py-2.5 font-sans font-black uppercase">Neto a pagar</td>
+                <td className="px-3 py-2.5 text-right font-black text-base">{formatGs(netoAPagar)} Gs.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p className="no-print text-[10px] text-slate-500 text-right -mt-4">
+          Anticipo y materiales son informativos para la planilla impresa y el CSV; la aprobación factura según la lógica actual.
+        </p>
 
         {/* Signature Blocks for Printing and Formal Approval */}
         <div className="pt-10 mt-10 border-t border-slate-300 grid grid-cols-3 gap-6 text-center text-xs">

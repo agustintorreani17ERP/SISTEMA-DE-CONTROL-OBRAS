@@ -208,7 +208,7 @@ async function evaluateThreeWayMatch(params: {
       calculatedStatus: "EN_REVISION" as const,
     };
   } else {
-    // FACTURAS EMITIDAS A CLIENTES (MOPC / Comitentes)
+    // FACTURAS EMITIDAS A CLIENTES (Comitentes)
     if (certificacionId) {
       const cert = await prisma.certificacion.findUnique({
         where: { id: certificacionId },

@@ -1,4 +1,5 @@
 import React, { useState, useMemo } from "react";
+import { PageHeader } from "../ui";
 import {
   FileCheck,
   ClipboardCheck,
@@ -83,34 +84,7 @@ export const EjecucionCertificacionesTab: React.FC<EjecucionCertificacionesTabPr
       if (saved) return JSON.parse(saved);
     } catch {}
 
-    // Seed realistic field measurement acts
-    return [
-      {
-        id: 101,
-        projectId: project?.id || 1,
-        budgetItemId: budgetItems[0]?.id || 1,
-        rubro: budgetItems[0]?.name || "Excavación en zanjas para cimientos",
-        unidad: budgetItems[0]?.unit || "m³",
-        cantidad_medida: 145.5,
-        monto_total: 18915000,
-        estado: "APROBADA",
-        evidencia: "https://images.unsplash.com/photo-1541888946425-d0fbb18615f3?w=600&auto=format&fit=crop&q=80",
-        esAdenda: false,
-        createdAt: "2026-09-15T14:30:00.000Z",
-      },
-      {
-        id: 102,
-        projectId: project?.id || 1,
-        budgetItemId: budgetItems[1]?.id || 2,
-        rubro: budgetItems[1]?.name || "Hormigón de limpieza y nivelación",
-        unidad: budgetItems[1]?.unit || "m³",
-        cantidad_medida: 42.0,
-        monto_total: 29400000,
-        estado: "EN_REVISION",
-        esAdenda: false,
-        createdAt: "2026-09-18T10:15:00.000Z",
-      },
-    ];
+    return [];
   });
 
   const saveActas = (newActas: Certificacion[]) => {
@@ -128,20 +102,7 @@ export const EjecucionCertificacionesTab: React.FC<EjecucionCertificacionesTabPr
       if (saved) return JSON.parse(saved);
     } catch {}
 
-    return [
-      {
-        id: 1,
-        number: "CERT-OBRA-01",
-        period: "Mes 1 - Trabajos Preliminares y Estructura",
-        issueDate: "2026-08-31",
-        fiscalStatus: "APROBADO_POR_FISCAL",
-        grossAmount: 185000000,
-        advanceAmortization: 18500000,
-        retentionAmount: 9250000,
-        netPayable: 157250000,
-        notes: "Aprobado por el Fiscal de Obra del MOPC sin objeciones.",
-      },
-    ];
+    return [];
   });
 
   const saveClientCerts = (newCerts: any[]) => {
@@ -254,9 +215,10 @@ export const EjecucionCertificacionesTab: React.FC<EjecucionCertificacionesTabPr
   };
 
   return (
-    <div className="space-y-6 pb-12 text-slate-800">
+    <div className="mx-auto w-full max-w-7xl space-y-6 pb-12 text-slate-800">
+      <PageHeader title="Certificados" help="Medí el avance, certificalo al cliente y controlá lo que certifican los subcontratistas." />
       {/* Header Banner */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-end gap-2 [&>div:first-child]:hidden">
         <div>
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center border border-blue-100">
@@ -533,7 +495,7 @@ export const EjecucionCertificacionesTab: React.FC<EjecucionCertificacionesTabPr
           <div className="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200 flex items-start justify-between gap-4">
             <div className="text-xs text-slate-700 leading-relaxed">
               <strong className="text-emerald-900">Certificaciones Oficiales al Cliente:</strong> Aquí se emiten los
-              certificados mensuales presentados a la fiscalización del contratante (ej. MOPC, Itaipú). Cada certificado
+              certificados mensuales presentados a la fiscalización del contratante (comitente). Cada certificado
               descuenta la amortización de anticipo y la retención del 5% de fondo de reparo.
             </div>
           </div>
@@ -561,7 +523,7 @@ export const EjecucionCertificacionesTab: React.FC<EjecucionCertificacionesTabPr
                     </div>
                     <div>
                       Cliente:{" "}
-                      <strong className="text-slate-800">{project?.clientName || "MOPC"}</strong>
+                      <strong className="text-slate-800">{project?.clientName || "Comitente"}</strong>
                     </div>
                     <div>
                       Contrato N°:{" "}

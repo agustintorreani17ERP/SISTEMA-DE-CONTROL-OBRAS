@@ -4,6 +4,8 @@ import { prisma } from "../../lib/prisma";
 import { asyncHandler } from "../../middleware/asyncHandler";
 import { ok } from "../../http/respond";
 import { moneyNumber } from "../../lib/money";
+import { DomainError } from "../../errors/domain";
+import { portfolio, projectOverview } from "./overview.service";
 
 export const dashboardRouter = Router();
 
@@ -19,7 +21,8 @@ dashboardRouter.get(
       prisma.project.findMany({
         where: projectId ? { id: projectId, deletedAt: null } : { deletedAt: null },
       }),
-      prisma.budgetItem.findMany({ where: projectFilter }),
+      // Solo hojas: rubros y subrubros no tienen monto propio (sería contar dos veces)
+      prisma.budgetItem.findMany({ where: { ...projectFilter, nodeKind: "ITEM" }, orderBy: { sortOrder: "asc" } }),
       prisma.purchaseOrder.findMany({
         where: {
           ...projectFilter,
@@ -51,14 +54,18 @@ dashboardRouter.get(
 
     const globalBudget = projects.reduce((acc, p) => acc + moneyNumber(p.globalBudget), 0);
     const original = items.reduce((acc, i) => acc + moneyNumber(i.originalAmount), 0);
-    const committed = items.reduce((acc, i) => acc + moneyNumber(i.committedAmount), 0);
-    const executed = items.reduce((acc, i) => acc + moneyNumber(i.executedAmount), 0);
+    const committed = items.reduce((acc, i) => acc + moneyNumber(i.costCommittedAmount), 0);
+    const executed = items.reduce((acc, i) => acc + moneyNumber(i.costActualAmount), 0);
+    const certified = items.reduce((acc, i) => acc + moneyNumber(i.certifiedAmount), 0);
+    const generalExpenses = items
+      .filter((i) => i.isSystem)
+      .reduce((acc, i) => acc + moneyNumber(i.costCommittedAmount), 0);
     const contractualAmount = projects.reduce(
       (acc, project) => acc + (moneyNumber(project.montoContractualManual) || moneyNumber(project.globalBudget)),
       0
     );
     const realUpdated = projects.reduce((acc, project) => acc + moneyNumber(project.montoRealActualizado), 0) || original;
-    const totalSpent = moneyNumber(spentOrders._sum.totalAmount ?? 0) + moneyNumber(paidCertificates._sum.amount ?? 0);
+    const totalSpent = executed;
 
     const issuedCount = await prisma.purchaseOrder.count({
       where: {
@@ -82,6 +89,10 @@ dashboardRouter.get(
         realUpdated,
         totalSpent,
         availableReal: realUpdated - totalSpent,
+        certifiedToClient: certified,
+        generalExpensesShare: committed > 0 ? generalExpenses / committed : 0,
+        purchaseOrdersAmount: moneyNumber(spentOrders._sum.totalAmount ?? 0),
+        subcontractPaidCertificates: moneyNumber(paidCertificates._sum.amount ?? 0),
       },
       budgetByItem: items.map((i) => ({
         id: i.id,
@@ -89,9 +100,10 @@ dashboardRouter.get(
         name: i.name,
         category: i.category,
         original: moneyNumber(i.originalAmount),
-        committed: moneyNumber(i.committedAmount),
-        executed: moneyNumber(i.executedAmount),
-        remaining: moneyNumber(i.originalAmount) - moneyNumber(i.committedAmount),
+        committed: moneyNumber(i.costCommittedAmount),
+        executed: moneyNumber(i.costActualAmount),
+        certified: moneyNumber(i.certifiedAmount),
+        remaining: moneyNumber(i.originalAmount) - moneyNumber(i.costCommittedAmount),
       })),
       issuedOrders,
       subcontractors: contracts.map((c) => ({
@@ -107,5 +119,26 @@ dashboardRouter.get(
       })),
       recentCertificates: certificates,
     });
+  })
+);
+
+/** Rutas del dashboard nuevo (se montan en /api). */
+export const overviewRouter = Router();
+
+/** GET /api/portfolio — todas las obras con sus indicadores y semáforo. */
+overviewRouter.get(
+  "/portfolio",
+  asyncHandler(async (_req, res) => {
+    ok(res, await portfolio());
+  })
+);
+
+/** GET /api/projects/:id/overview — resumen de una obra para el jefe. */
+overviewRouter.get(
+  "/projects/:id/overview",
+  asyncHandler(async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) throw new DomainError("INVALID_PROJECT", "Identificador de obra inválido");
+    ok(res, await projectOverview(id));
   })
 );

@@ -47,8 +47,8 @@ export const BudgetItemsTab: React.FC<BudgetItemsTabProps> = ({
   });
 
   const totalOriginal = budgetItems.reduce((acc, i) => acc + Number(i.originalAmount || 0), 0);
-  const totalCommitted = budgetItems.reduce((acc, i) => acc + Number(i.committedAmount || 0), 0);
-  const totalExecuted = budgetItems.reduce((acc, i) => acc + Number(i.executedAmount || 0), 0);
+  const totalCommitted = budgetItems.reduce((acc, i) => acc + Number(i.costCommittedAmount || 0), 0);
+  const totalExecuted = budgetItems.reduce((acc, i) => acc + Number(i.certifiedAmount || 0), 0);
   const totalAvailable = Math.max(0, totalOriginal - (totalCommitted + totalExecuted));
   const globalPct = totalOriginal > 0 ? ((totalCommitted + totalExecuted) / totalOriginal) * 100 : 0;
 
@@ -202,8 +202,8 @@ export const BudgetItemsTab: React.FC<BudgetItemsTabProps> = ({
               ) : (
                 filteredItems.map((item) => {
                   const orig = Number(item.originalAmount || 0);
-                  const comm = Number(item.committedAmount || 0);
-                  const exec = Number(item.executedAmount || 0);
+                  const comm = Number(item.costCommittedAmount || 0);
+                  const exec = Number(item.certifiedAmount || 0);
                   const spent = comm + exec;
                   const available = Math.max(0, orig - spent);
                   const pct = orig > 0 ? (spent / orig) * 100 : 0;

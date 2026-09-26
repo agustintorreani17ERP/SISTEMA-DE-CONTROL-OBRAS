@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { formatMoney, formatDate } from "../utils/format";
 
+import { formatGs } from "../utils/numbers";
 interface ThreeWayMatchModalProps {
   invoice: any;
   project?: any;
@@ -127,7 +128,7 @@ export const ThreeWayMatchModal: React.FC<ThreeWayMatchModalProps> = ({
                   Regla de Negocio: Tolerancia del 0.00%
                 </span>
                 <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-white/80 font-bold border border-slate-200">
-                  Delta: ₲ {diff.toLocaleString("es-PY")}
+                  Delta: ₲ {formatGs(diff)}
                 </span>
               </div>
               <p className="text-xs text-slate-700 leading-relaxed">
@@ -231,12 +232,12 @@ export const ThreeWayMatchModal: React.FC<ThreeWayMatchModalProps> = ({
                 <div>
                   <span className="text-[10px] text-slate-500 font-semibold">Ubicación de Descarga:</span>
                   <p className="font-medium text-slate-800">
-                    {project?.name || "Duplicación Ruta PY02"} (Frente 1 / Campamento)
+                    {project?.name || ""} (Frente 1 / Campamento)
                   </p>
                 </div>
                 <div>
                   <span className="text-[10px] text-slate-500 font-semibold">Responsable de Recepción:</span>
-                  <p className="font-medium text-slate-700">Sr. Jorge Duarte (Almacén / Pañol)</p>
+                  <p className="font-medium text-slate-700">Almacén / Pañol</p>
                 </div>
                 <div>
                   <span className="text-[10px] text-slate-500 font-semibold">Estado de Control Físico:</span>

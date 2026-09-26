@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { formatMoney, formatDate } from "../utils/format";
 
+import { formatGs } from "../utils/numbers";
 interface RegisterPaymentModalProps {
   invoice: any;
   onClose: () => void;
@@ -83,7 +84,7 @@ export const RegisterPaymentModal: React.FC<RegisterPaymentModalProps> = ({
       }
 
       showToast(
-        `Pago de ₲ ${monto.toLocaleString("es-PY")} registrado exitosamente (${data.data.invoiceStatus})`,
+        `Pago de ₲ ${formatGs(monto)} registrado exitosamente (${data.data.invoiceStatus})`,
         "success"
       );
       onPaymentSuccess();
@@ -145,19 +146,19 @@ export const RegisterPaymentModal: React.FC<RegisterPaymentModalProps> = ({
           <div className="flex justify-between">
             <span className="text-slate-500">Total Facturado:</span>
             <span className="font-mono font-bold text-slate-800">
-              ₲ {totalAmount.toLocaleString("es-PY")}
+              ₲ {formatGs(totalAmount)}
             </span>
           </div>
           <div className="flex justify-between">
             <span className="text-slate-500">Pagado Acumulado:</span>
             <span className="font-mono text-slate-600">
-              ₲ {totalPaid.toLocaleString("es-PY")}
+              ₲ {formatGs(totalPaid)}
             </span>
           </div>
           <div className="flex justify-between pt-1 border-t border-slate-200">
             <span className="font-bold text-slate-700">Saldo Pendiente:</span>
             <span className="font-mono font-black text-sm text-emerald-700">
-              ₲ {remainingBalance.toLocaleString("es-PY")}
+              ₲ {formatGs(remainingBalance)}
             </span>
           </div>
         </div>

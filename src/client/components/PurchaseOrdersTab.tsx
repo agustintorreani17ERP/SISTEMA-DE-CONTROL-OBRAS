@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   Receipt,
   Plus,
@@ -27,6 +27,7 @@ import {
 import { formatMoney, formatDate, formatDateTime } from "../utils/format";
 import { getStatusBadge } from "../utils/statusBadges";
 import { api } from "../api";
+import { BudgetItemSelect } from "./BudgetItemSelect";
 
 interface PurchaseOrdersTabProps {
   project?: Project | null;
@@ -77,6 +78,12 @@ export const PurchaseOrdersTab: React.FC<PurchaseOrdersTabProps> = ({
   const currentReq = eligibleRequests.find((r) => r.id === selectedRequestId) || selectedRequestForNewPO;
   const currentDetail = currentReq?.details?.[0];
 
+  // Rubro de destino de la OC: por defecto el del pedido; si no tiene, es obligatorio elegirlo.
+  const [budgetItemId, setBudgetItemId] = useState<number | "">("");
+  useEffect(() => {
+    setBudgetItemId(currentDetail?.budgetItemId ?? "");
+  }, [currentDetail?.id, currentDetail?.budgetItemId]);
+
   const filteredOrders = purchaseOrders.filter((po) => {
     const matchesSearch =
       po.number.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -105,8 +112,9 @@ export const PurchaseOrdersTab: React.FC<PurchaseOrdersTabProps> = ({
   const handleIssue = async (id: number) => {
     setActionLoading(id);
     try {
-      await api.issuePurchaseOrder(id);
-      showToast(`Orden #${id} emitida al proveedor y comprometida`);
+      const res = await api.issuePurchaseOrder(id);
+      showToast(`Orden #${id} emitida y descontada del presupuesto`);
+      res.budgetWarnings?.forEach((w) => showToast(`Sobrecosto: ${w.message}`, "info"));
       onRefresh();
     } catch (err: any) {
       showToast(err.message || "Error al emitir orden", "error");
@@ -152,6 +160,10 @@ export const PurchaseOrdersTab: React.FC<PurchaseOrdersTabProps> = ({
       showToast("El precio unitario debe ser mayor a 0", "error");
       return;
     }
+    if (!budgetItemId) {
+      showToast("Elegí el rubro al que se imputa la compra (o Gastos Generales)", "error");
+      return;
+    }
 
     setSubmitting(true);
     try {
@@ -162,6 +174,7 @@ export const PurchaseOrdersTab: React.FC<PurchaseOrdersTabProps> = ({
         details: [
           {
             requestDetailId: currentDetail.id,
+            budgetItemId: Number(budgetItemId),
             quantity: Number(currentDetail.quantity),
             unitPrice: Number(unitPrice),
           },
@@ -181,7 +194,7 @@ export const PurchaseOrdersTab: React.FC<PurchaseOrdersTabProps> = ({
   return (
     <div className="space-y-6 pb-12 text-slate-900">
       {/* Top Banner */}
-      <div className="bg-white rounded-2xl p-5 border border-slate-200 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-end gap-2 [&>div:first-child]:hidden">
         <div>
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600">
@@ -485,6 +498,19 @@ export const PurchaseOrdersTab: React.FC<PurchaseOrdersTabProps> = ({
                     className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2 text-xs text-slate-900 font-medium outline-none focus:border-blue-500"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  Rubro de destino (se descuenta del presupuesto al emitir)
+                </label>
+                <BudgetItemSelect
+                  projectId={project?.id}
+                  value={budgetItemId}
+                  onChange={setBudgetItemId}
+                  currency={currency}
+                  required
+                />
               </div>
 
               {currentDetail && (

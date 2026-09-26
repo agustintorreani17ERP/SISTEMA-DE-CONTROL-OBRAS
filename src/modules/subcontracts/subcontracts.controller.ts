@@ -7,7 +7,7 @@ import { ok } from "../../http/respond";
 import { DomainError, NotFoundError } from "../../errors/domain";
 import { assertMutableSubcontract, assertSubTransition } from "../../domain/lifecycle";
 import { audit, nextNumber } from "../../domain/audit";
-import { commitBudget, executeBudget } from "../../domain/budget";
+import { assertImputableItem, postCost, reverseMovements, type BudgetWarning } from "../../domain/budget";
 import { toDecimal } from "../../lib/money";
 import { recalculateProjectFinancials } from "../../domain/projectFinancials";
 
@@ -39,6 +39,8 @@ const contractSchema = z.object({
   budgetItemId: z.number().int(),
   description: z.string().min(5),
   contractAmount: z.coerce.number().positive(),
+  /** Fondo de reparo por defecto de sus certificados (%). */
+  retentionPct: z.coerce.number().min(0).max(30).optional(),
   startDate: z.string().datetime().optional(),
   endDate: z.string().datetime().optional(),
 });
@@ -53,10 +55,7 @@ subcontractsRouter.post(
       if (partner.kind === "SUPPLIER") {
         throw new DomainError("INVALID_PARTNER", "El partner debe ser subcontratista o mixto");
       }
-      const item = await tx.budgetItem.findUnique({ where: { id: body.budgetItemId } });
-      if (!item || item.projectId !== body.projectId) {
-        throw new DomainError("BUDGET_ITEM_MISMATCH", "La partida no pertenece a la obra");
-      }
+      await assertImputableItem(tx, body.projectId, body.budgetItemId);
       const number = await nextNumber(tx, "SC", () => tx.subcontractorContract.count());
       const contract = await tx.subcontractorContract.create({
         data: {
@@ -79,30 +78,43 @@ subcontractsRouter.post(
   })
 );
 
-const certSchema = z.object({
-  contractId: z.number().int(),
-  periodFrom: z.string().datetime(),
-  periodTo: z.string().datetime(),
-  physicalProgressPct: z.coerce.number().gt(0).lte(100),
-  amount: z.coerce.number().positive(),
-});
+const certSchema = z
+  .object({
+    contractId: z.coerce.number().int().positive().optional(),
+    subcontractId: z.coerce.number().int().positive().optional(),
+    periodFrom: z.coerce.date().optional(),
+    periodTo: z.coerce.date().optional(),
+    physicalProgressPct: z.coerce.number().gt(0).lte(100).optional(),
+    advancePercentage: z.coerce.number().gt(0).lte(100).optional(),
+    /** Cantidad ejecutada por el subcontratista, en la unidad de la partida. */
+    quantity: z.coerce.number().nonnegative().optional(),
+    amount: z.coerce.number().positive(),
+  })
+  .refine((b) => b.contractId || b.subcontractId, { message: "El contrato es obligatorio" });
+
+const SUB_CERT = "SubcontractorCertificate";
 
 subcontractsRouter.post(
   "/certificados",
   asyncHandler(async (req, res) => {
     const body = certSchema.parse(req.body);
+    const contractId = (body.contractId ?? body.subcontractId)!;
     const created = await prisma.$transaction(async (tx) => {
-      const contract = await tx.subcontractorContract.findUnique({ where: { id: body.contractId } });
-      if (!contract) throw new NotFoundError("Contrato", body.contractId);
-      assertMutableSubcontract("Contrato de subcontratista", contract.status);
+      const contract = await tx.subcontractorContract.findUnique({ where: { id: contractId } });
+      if (!contract) throw new NotFoundError("Contrato", contractId);
+      if (contract.status === SubcontractStatus.CERRADO) {
+        throw new DomainError("CONTRACT_CLOSED", `El contrato ${contract.number} está cerrado`, 409);
+      }
       const number = await nextNumber(tx, "CERT", () => tx.subcontractorCertificate.count());
+      const now = new Date();
       return tx.subcontractorCertificate.create({
         data: {
           number,
           contractId: contract.id,
-          periodFrom: new Date(body.periodFrom),
-          periodTo: new Date(body.periodTo),
-          physicalProgressPct: body.physicalProgressPct,
+          periodFrom: body.periodFrom ?? now,
+          periodTo: body.periodTo ?? now,
+          physicalProgressPct: body.physicalProgressPct ?? body.advancePercentage ?? 0,
+          quantity: body.quantity,
           amount: body.amount,
         },
       });
@@ -111,65 +123,114 @@ subcontractsRouter.post(
   })
 );
 
+/** Certificar = aprobar el avance: descuenta costo (y cantidad) de la partida del contrato. */
+async function certifyCertificate(id: number) {
+  return prisma.$transaction(
+    async (tx) => {
+      const cert = await tx.subcontractorCertificate.findUnique({
+        where: { id },
+        include: { contract: true },
+      });
+      if (!cert) throw new NotFoundError("Certificado", id);
+      if (cert.status === SubcontractStatus.CERTIFICADO) return { ...cert, budgetWarnings: [] as BudgetWarning[] };
+      assertSubTransition(cert.status, SubcontractStatus.CERTIFICADO);
+
+      const remainingContract = toDecimal(cert.contract.contractAmount).minus(
+        toDecimal(cert.contract.certifiedAmount)
+      );
+      if (toDecimal(cert.amount).gt(remainingContract)) {
+        throw new DomainError(
+          "CONTRACT_CEILING_EXCEEDED",
+          `El certificado ${cert.number} excede el saldo del contrato ${cert.contract.number}`
+        );
+      }
+
+      const budgetWarnings = await postCost(tx, {
+        projectId: cert.contract.projectId,
+        budgetItemId: cert.contract.budgetItemId,
+        amount: cert.amount,
+        quantity: cert.quantity,
+        source: "SUBCONTRACT",
+        sourceType: SUB_CERT,
+        sourceId: cert.id,
+        sourceNumber: `${cert.number} / ${cert.contract.number}`,
+      });
+
+      const next = await tx.subcontractorCertificate.update({
+        where: { id },
+        data: { status: SubcontractStatus.CERTIFICADO, issuedAt: new Date() },
+      });
+      await tx.subcontractorContract.update({
+        where: { id: cert.contractId },
+        data: {
+          status: SubcontractStatus.CERTIFICADO,
+          certifiedAmount: { increment: cert.amount },
+        },
+      });
+      await recalculateProjectFinancials(tx, cert.contract.projectId);
+      await audit(tx, {
+        entity: SUB_CERT,
+        entityId: id,
+        action: "CERTIFY",
+        fromStatus: cert.status,
+        toStatus: next.status,
+      });
+      return { ...next, budgetWarnings };
+    },
+    { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+  );
+}
+
 subcontractsRouter.post(
   "/certificados/:id/certificar",
   asyncHandler(async (req, res) => {
+    ok(res, await certifyCertificate(Number(req.params.id)));
+  })
+);
+
+// La pantalla usa "aprobar" como paso previo al pago: equivale a certificar (idempotente).
+subcontractsRouter.post(
+  "/certificados/:id/aprobar",
+  asyncHandler(async (req, res) => {
+    ok(res, await certifyCertificate(Number(req.params.id)));
+  })
+);
+
+subcontractsRouter.post(
+  "/certificados/:id/anular",
+  asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
-    const updated = await prisma.$transaction(
-      async (tx) => {
-        const cert = await tx.subcontractorCertificate.findUnique({
-          where: { id },
-          include: { contract: true },
-        });
-        if (!cert) throw new NotFoundError("Certificado", id);
-        assertSubTransition(cert.status, SubcontractStatus.CERTIFICADO);
+    const updated = await prisma.$transaction(async (tx) => {
+      const cert = await tx.subcontractorCertificate.findUnique({ where: { id }, include: { contract: true } });
+      if (!cert) throw new NotFoundError("Certificado", id);
+      assertSubTransition(cert.status, SubcontractStatus.ANULADO);
 
-        const remainingContract = toDecimal(cert.contract.contractAmount).minus(
-          toDecimal(cert.contract.certifiedAmount)
-        );
-        if (toDecimal(cert.amount).gt(remainingContract)) {
-          throw new DomainError(
-            "CONTRACT_CEILING_EXCEEDED",
-            `El certificado ${cert.number} excede el saldo del contrato ${cert.contract.number}`
-          );
-        }
-
-        await commitBudget(tx, {
-          budgetItemId: cert.contract.budgetItemId,
-          amount: cert.amount,
-          kind: "SUBCONTRACT_CERTIFICATE",
-          sourceType: "SubcontractorCertificate",
-          sourceId: cert.id,
-          note: `Certificado ${cert.number} / ${cert.contract.number}`,
-        });
-
-        const next = await tx.subcontractorCertificate.update({
-          where: { id },
-          data: { status: SubcontractStatus.CERTIFICADO, issuedAt: new Date() },
-        });
+      if (cert.status === SubcontractStatus.CERTIFICADO) {
+        await reverseMovements(tx, { sourceType: SUB_CERT, sourceId: id, note: `Anulación ${cert.number}` });
         await tx.subcontractorContract.update({
           where: { id: cert.contractId },
-          data: {
-            status: SubcontractStatus.CERTIFICADO,
-            certifiedAmount: { increment: cert.amount },
-          },
+          data: { certifiedAmount: { decrement: cert.amount } },
         });
         await recalculateProjectFinancials(tx, cert.contract.projectId);
-        await audit(tx, {
-          entity: "SubcontractorCertificate",
-          entityId: id,
-          action: "CERTIFY",
-          fromStatus: cert.status,
-          toStatus: next.status,
-        });
-        return next;
-      },
-      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
-    );
+      }
+      const next = await tx.subcontractorCertificate.update({
+        where: { id },
+        data: { status: SubcontractStatus.ANULADO },
+      });
+      await audit(tx, {
+        entity: SUB_CERT,
+        entityId: id,
+        action: "VOID",
+        fromStatus: cert.status,
+        toStatus: next.status,
+      });
+      return next;
+    });
     ok(res, updated);
   })
 );
 
+// El pago es tesorería: no vuelve a tocar el presupuesto (ya se descontó al certificar).
 subcontractsRouter.post(
   "/certificados/:id/pagar",
   asyncHandler(async (req, res) => {
@@ -183,7 +244,6 @@ subcontractsRouter.post(
         if (!cert) throw new NotFoundError("Certificado", id);
         assertSubTransition(cert.status, SubcontractStatus.PAGADO);
 
-        await executeBudget(tx, cert.contract.budgetItemId, cert.amount);
         const next = await tx.subcontractorCertificate.update({
           where: { id },
           data: { status: SubcontractStatus.PAGADO, paidAt: new Date() },
@@ -196,7 +256,7 @@ subcontractsRouter.post(
           },
         });
         await audit(tx, {
-          entity: "SubcontractorCertificate",
+          entity: SUB_CERT,
           entityId: id,
           action: "PAY",
           fromStatus: cert.status,
