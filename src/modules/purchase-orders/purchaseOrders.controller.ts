@@ -7,8 +7,12 @@ import { ok } from "../../http/respond";
 import { DomainError, NotFoundError, TraceabilityError } from "../../errors/domain";
 import { assertDocTransition, assertMutableDocument } from "../../domain/lifecycle";
 import { audit, nextNumber } from "../../domain/audit";
-import { assertImputableItem, postMovement, reverseMovements, type BudgetWarning } from "../../domain/budget";
-import { receiveStock } from "../../domain/stock";
+import { postMovement, reverseMovements, type BudgetWarning } from "../../domain/budget";
+import { recordStockMovement } from "../../domain/stock";
+import { ledgerLines, resolveLineItem } from "../../domain/imputation";
+import { EVENTO, postAsientoDesdeRegla } from "../../domain/contabilidad";
+import { toDay } from "../../domain/prices";
+import { assertOpenPeriod } from "../../domain/progress";
 import { toDecimal } from "../../lib/money";
 import { recalculateProjectFinancials } from "../../domain/projectFinancials";
 
@@ -34,16 +38,19 @@ purchaseOrdersRouter.get(
   })
 );
 
+const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha AAAA-MM-DD");
+
 const createSchema = z.object({
   materialRequestId: z.number().int(),
   partnerId: z.number().int(),
+  fecha: dateSchema,
   expectedDate: z.string().datetime().optional(),
   details: z
     .array(
       z.object({
         requestDetailId: z.number().int(),
-        /** Rubro de destino; si no viene se usa el del pedido. */
-        budgetItemId: z.number().int().positive().optional(),
+        /** Ítem de destino (DIRECTO: obligatorio; si no viene se usa el del pedido). */
+        budgetItemId: z.number().int().positive().nullish(),
         quantity: z.coerce.number().positive(),
         unitPrice: z.coerce.number().positive(),
       })
@@ -69,6 +76,7 @@ purchaseOrdersRouter.post(
           );
         }
 
+        await assertOpenPeriod(tx, request.projectId, body.fecha, "La orden de compra");
         const partner = await tx.partner.findUnique({ where: { id: body.partnerId } });
         if (!partner) throw new NotFoundError("Proveedor", body.partnerId);
         if (partner.kind === "SUBCONTRACTOR") {
@@ -99,13 +107,13 @@ purchaseOrdersRouter.post(
               `Cantidad supera el pedido ${request.number} para el insumo ${reqLine.materialId}`
             );
           }
-          const budgetItemId = line.budgetItemId ?? reqLine.budgetItemId;
-          if (!budgetItemId) {
-            throw new TraceabilityError(
-              `Elegí el rubro de destino (o Gastos Generales) para el insumo ${reqLine.materialId}`
-            );
-          }
-          await assertImputableItem(tx, request.projectId, budgetItemId);
+          const material = await tx.material.findUniqueOrThrow({ where: { id: reqLine.materialId } });
+          const budgetItemId = await resolveLineItem(tx, {
+            projectId: request.projectId,
+            material,
+            explicitItemId: line.budgetItemId,
+            inheritedItemId: reqLine.budgetItemId,
+          });
           const unitPrice = toDecimal(line.unitPrice);
           const subtotal = qty.times(unitPrice).toDecimalPlaces(2);
           total = total.plus(subtotal);
@@ -113,6 +121,7 @@ purchaseOrdersRouter.post(
             materialId: reqLine.materialId,
             requestDetailId: reqLine.id,
             budgetItemId,
+            tipo: material.tipo,
             quantity: qty,
             unitPrice,
             subtotal,
@@ -126,6 +135,7 @@ purchaseOrdersRouter.post(
             projectId: request.projectId,
             partnerId: body.partnerId,
             materialRequestId: request.id,
+            fecha: toDay(body.fecha),
             expectedDate: body.expectedDate ? new Date(body.expectedDate) : undefined,
             totalAmount: total,
             details: { create: lines },
@@ -189,17 +199,16 @@ purchaseOrdersRouter.post(
           throw new TraceabilityError("La OC no está vinculada a un Pedido de Material");
         }
         assertDocTransition(order.status, DocumentStatus.EMITIDA);
+        await assertOpenPeriod(tx, order.projectId, order.fecha, "La orden de compra");
 
-        const byItem = new Map<number, ReturnType<typeof toDecimal>>();
-        for (const d of order.details) {
-          const prev = byItem.get(d.budgetItemId) ?? toDecimal(0);
-          byItem.set(d.budgetItemId, prev.plus(d.subtotal));
-        }
+        // DIRECTO (y TIEMPO con ítem) a su ítem; COMÚN y TIEMPO sin ítem al pozo "a distribuir".
+        const lines = await ledgerLines(tx, order.projectId, order.details);
         const budgetWarnings: BudgetWarning[] = [];
-        for (const [budgetItemId, amount] of byItem) {
+        for (const { budgetItemId, insumoId, amount } of lines) {
           const { warnings } = await postMovement(tx, {
             projectId: order.projectId,
             budgetItemId,
+            insumoId,
             amount,
             source: "PURCHASE_ORDER",
             stage: "COMMITTED",
@@ -207,6 +216,7 @@ purchaseOrdersRouter.post(
             sourceId: order.id,
             sourceNumber: order.number,
             note: `Compromiso OC ${order.number}`,
+            fecha: order.fecha,
           });
           budgetWarnings.push(...warnings);
         }
@@ -239,10 +249,18 @@ purchaseOrdersRouter.post(
   })
 );
 
+const receiveSchema = z.object({
+  fecha: dateSchema,
+  /** Número de remito / nota de remisión del proveedor. */
+  remito: z.string().trim().max(60).optional(),
+});
+
 purchaseOrdersRouter.post(
   "/:id/recibir",
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
+    const body = receiveSchema.parse(req.body ?? {});
+    const fecha = toDay(body.fecha);
     const updated = await prisma.$transaction(
       async (tx) => {
         const order = await tx.purchaseOrder.findUnique({
@@ -251,36 +269,67 @@ purchaseOrdersRouter.post(
         });
         if (!order) throw new NotFoundError("Orden de compra", id);
         assertDocTransition(order.status, DocumentStatus.RECIBIDO);
+        await assertOpenPeriod(tx, order.projectId, fecha, "La recepción");
+        if (fecha < order.fecha) {
+          throw new DomainError("RECEIPT_BEFORE_ORDER", "La recepción no puede ser anterior a la fecha de la OC", 422);
+        }
 
-        const byItem = new Map<number, ReturnType<typeof toDecimal>>();
         for (const d of order.details) {
-          await receiveStock(tx, {
+          if (d.tipo === "TIEMPO") continue; // servicios y alquileres: no pasan por el depósito
+          const base = {
             projectId: order.projectId,
             materialId: d.materialId,
-            quantity: d.quantity,
+            fecha,
             sourceType: "PurchaseOrder",
             sourceId: order.id,
-          });
-          byItem.set(d.budgetItemId, (byItem.get(d.budgetItemId) ?? toDecimal(0)).plus(d.subtotal));
+            unitCost: d.unitPrice,
+            note: body.remito ? `Remito ${body.remito}` : null,
+          };
+          await recordStockMovement(tx, { ...base, kind: "RECEIPT", quantity: d.quantity });
+          // DIRECTO: entra y sale en el mismo acto hacia su ítem (hormigón por remito, acero, etc.).
+          if (d.tipo === "DIRECTO") {
+            await recordStockMovement(tx, {
+              ...base,
+              kind: "DIRECT_ISSUE",
+              quantity: toDecimal(d.quantity).negated(),
+              budgetItemId: d.budgetItemId,
+            });
+          }
         }
+        const lines = await ledgerLines(tx, order.projectId, order.details);
         // El compromiso ya existe desde la emisión: aquí solo pasa a costo incurrido.
-        for (const [budgetItemId, amount] of byItem) {
+        for (const { budgetItemId, insumoId, amount } of lines) {
           await postMovement(tx, {
             projectId: order.projectId,
             budgetItemId,
+            insumoId,
             amount,
             source: "PURCHASE_ORDER",
             stage: "ACTUAL",
             sourceType: "PurchaseOrder",
             sourceId: order.id,
             sourceNumber: order.number,
-            note: `Recepción OC ${order.number}`,
+            note: `Recepción OC ${order.number}${body.remito ? ` · remito ${body.remito}` : ""}`,
+            fecha,
+          });
+        }
+        const totalLines = lines.reduce((acc, l) => acc.plus(l.amount), toDecimal(0));
+        if (totalLines.gt(0)) {
+          await postAsientoDesdeRegla(tx, {
+            evento: EVENTO.OC_RECIBIDA,
+            projectId: order.projectId,
+            concepto: `OC ${order.number} recibida${body.remito ? ` · remito ${body.remito}` : ""}`,
+            sourceType: "PurchaseOrder",
+            sourceId: order.id,
+            fecha,
+            debe: lines.map((l) => ({ monto: l.amount, budgetItemId: l.budgetItemId })),
+            haber: [{ monto: totalLines, partnerId: order.partnerId }],
           });
         }
 
         const next = await tx.purchaseOrder.update({
           where: { id },
-          data: { status: DocumentStatus.RECIBIDO, stockRegistered: true },
+          data: { status: DocumentStatus.RECIBIDO, stockRegistered: true, receivedDate: fecha, receiptNumber: body.remito || null },
           include: poInclude,
         });
         await tx.materialRequest.update({

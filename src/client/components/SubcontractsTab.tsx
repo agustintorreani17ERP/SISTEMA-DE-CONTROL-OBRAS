@@ -28,6 +28,7 @@ import { formatMoney, formatDate, formatPercent } from "../utils/format";
 import { getStatusBadge } from "../utils/statusBadges";
 import { api } from "../api";
 import { SubcontractorsScheduleTab } from "./SubcontractorsScheduleTab";
+import { todayIso } from "../insumos/labels";
 
 interface SubcontractsTabProps {
   project?: Project | null;
@@ -158,8 +159,9 @@ export const SubcontractsTab: React.FC<SubcontractsTabProps> = ({
 
   const handleCertify = async (certId: number) => {
     try {
-      await api.certifySubcontractCertificate(certId);
+      const res = await api.certifySubcontractCertificate(certId);
       showToast("Certificado validado y computado");
+      res?.measurementWarnings?.forEach((w: string) => showToast(`Supera la medición oficial: ${w}`, "error"));
       onRefresh();
     } catch (err: any) {
       showToast(err.message || "Error al certificar", "error");
@@ -380,8 +382,8 @@ export const SubcontractsTab: React.FC<SubcontractsTabProps> = ({
                             advancePercentage: 15,
                             quantity: "",
                             notes: "",
-                            periodFrom: new Date().toISOString().slice(0, 10),
-                            periodTo: new Date().toISOString().slice(0, 10),
+                            periodFrom: todayIso(),
+                            periodTo: todayIso(),
                           });
                           setShowCertModal(true);
                         }}

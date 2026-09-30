@@ -15,3 +15,8 @@ function mount() {
 }
 
 mount();
+
+// La app abre sin conexión en el celular (el navegador solo lo permite en https o localhost)
+if ("serviceWorker" in navigator && window.isSecureContext) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => undefined));
+}

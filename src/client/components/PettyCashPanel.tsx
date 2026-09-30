@@ -1,9 +1,13 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Banknote, CheckCircle2, Plus, XCircle } from "lucide-react";
 import { api } from "../api";
-import { PettyCashFund, Project } from "../types";
+import { Insumo, PettyCashFund, Project } from "../types";
 import { formatDate, formatMoney, parseFlexibleNumber } from "../utils/format";
 import { BudgetItemSelect, useImputableItems } from "./BudgetItemSelect";
+import { SearchPick } from "../partes/SearchPick";
+import { todayIso } from "../insumos/labels";
+
+const TIPO_LABEL = { DIRECTO: "Directo", COMUN: "Común", TIEMPO: "Tiempo" } as const;
 
 interface PettyCashPanelProps {
   project?: Project | null;
@@ -53,10 +57,16 @@ export const PettyCashPanel: React.FC<PettyCashPanelProps> = ({ project, currenc
 
   const settle = async () => {
     if (!fund) return;
-    if (!window.confirm(`¿Cerrar la rendición? ${fund.expenses.filter((e) => e.status === "PENDIENTE_RENDICION").length} comprobante(s) quedan rendidos y el fondo se repone.`)) return;
+    if (
+      !window.confirm(
+        `¿Aprobar la rendición? ${fund.expenses.filter((e) => e.status === "PENDIENTE_RENDICION").length} comprobante(s) pasan a costo con la fecha de cada gasto, los insumos comunes entran al stock y el fondo se repone.`
+      )
+    )
+      return;
     try {
       const res = await api.settlePettyCashFund(fund.id);
-      showToast(`Rendición cerrada: ${res.settled} comprobante(s)`);
+      showToast(`Rendición aprobada: ${res.settled} comprobante(s) pasan a costo incurrido`);
+      res.avisos.forEach((a) => showToast(a, "info"));
       changed();
     } catch (err: any) {
       showToast(err.message || "No se pudo cerrar la rendición", "error");
@@ -154,7 +164,23 @@ export const PettyCashPanel: React.FC<PettyCashPanelProps> = ({ project, currenc
                     <p className="font-semibold">{e.supplierName}</p>
                     <p className="text-slate-500">{e.concept}</p>
                   </td>
-                  <td className="px-3 py-2">{e.budgetItem ? `${e.budgetItem.code} · ${e.budgetItem.name}` : "—"}</td>
+                  <td className="px-3 py-2">
+                    {e.insumo && (
+                      <p>
+                        <span className="font-mono">{e.insumo.code}</span> {e.insumo.description}
+                        {e.quantity ? ` · ${e.quantity} ${e.insumo.unit}` : ""}
+                      </p>
+                    )}
+                    <p className="text-slate-500">
+                      {e.budgetItem
+                        ? `${e.budgetItem.code} · ${e.budgetItem.name}`
+                        : e.insumo?.tipo === "COMUN"
+                        ? "Stock de obra (el motor lo reparte por ACU)"
+                        : e.insumo
+                        ? "A distribuir por tiempo"
+                        : "—"}
+                    </p>
+                  </td>
                   <td className="px-3 py-2 text-right font-mono font-bold">{formatMoney(e.amount, currency)}</td>
                   <td className="px-3 py-2">
                     <span className={`rounded border px-1.5 py-0.5 text-[10px] font-bold ${STATUS_LABEL[e.status].style}`} title={e.rejectionReason ?? undefined}>
@@ -162,7 +188,7 @@ export const PettyCashPanel: React.FC<PettyCashPanelProps> = ({ project, currenc
                     </span>
                   </td>
                   <td className="px-3 py-2 text-right">
-                    {e.status !== "RECHAZADO" && (
+                    {e.status === "PENDIENTE_RENDICION" && (
                       <button onClick={() => reject(e.id)} className="text-slate-400 hover:text-rose-600" title="Rechazar y revertir">
                         <XCircle className="h-4 w-4" />
                       </button>
@@ -257,7 +283,7 @@ function ExpenseForm({
   showToast: PettyCashPanelProps["showToast"];
 }) {
   const [form, setForm] = useState({
-    date: new Date().toISOString().slice(0, 10),
+    date: todayIso(),
     receiptNumber: "",
     supplierName: "",
     concept: "",
@@ -265,14 +291,36 @@ function ExpenseForm({
     responsibleName: fund.responsibleName,
   });
   const [budgetItemId, setBudgetItemId] = useState<number | "">("");
+  const [insumos, setInsumos] = useState<Insumo[]>([]);
+  const [insumoId, setInsumoId] = useState<number | null>(null);
+  const [cantidad, setCantidad] = useState("");
   const amount = parseFlexibleNumber(form.amount);
+  const qty = parseFlexibleNumber(cantidad);
+  useEffect(() => {
+    api
+      .getInsumos({})
+      .then(setInsumos)
+      .catch((e) => showToast(e.message, "error"));
+  }, [showToast]);
+  const insumo = insumos.find((i) => i.id === insumoId) ?? null;
+  const pickOpts = useMemo(() => insumos.map((i) => ({ id: i.id, code: i.code, label: i.description, sub: `${TIPO_LABEL[i.tipo]} · ${i.unit}` })), [insumos]);
+  // Regla de imputación: DIRECTO exige ítem, COMÚN va al stock (sin ítem, con cantidad), TIEMPO ítem opcional
+  const faltaItem = insumo?.tipo === "DIRECTO" && !budgetItemId;
+  const faltaCantidad = insumo?.tipo === "COMUN" && !(qty > 0);
 
   const save = async () => {
-    if (!budgetItemId) return;
+    if (!insumo) return;
     try {
-      const res = await api.createPettyCashExpense({ fundId: fund.id, budgetItemId, ...form, amount });
+      const res = await api.createPettyCashExpense({
+        fundId: fund.id,
+        insumoId: insumo.id,
+        budgetItemId: insumo.tipo === "COMUN" ? null : budgetItemId || null,
+        quantity: qty > 0 ? qty : null,
+        ...form,
+        amount,
+      });
       res.budgetWarnings.forEach((w) => showToast(w.message, "info"));
-      showToast("Gasto registrado y descontado del presupuesto");
+      showToast("Gasto registrado: compromete ahora y entra al costo con la rendición");
       onSaved();
     } catch (err: any) {
       showToast(err.message || "No se pudo registrar el gasto", "error");
@@ -288,20 +336,35 @@ function ExpenseForm({
       <input value={form.supplierName} onChange={(e) => setForm({ ...form, supplierName: e.target.value })} placeholder="Proveedor" className={inputClass} />
       <input value={form.concept} onChange={(e) => setForm({ ...form, concept: e.target.value })} placeholder="Concepto" className={inputClass} />
       <div>
-        <p className="mb-1 font-semibold text-slate-700">Rubro al que se imputa</p>
-        <BudgetItemSelect projectId={projectId} items={items} value={budgetItemId} onChange={setBudgetItemId} currency={currency} />
+        <p className="mb-1 font-semibold text-slate-700">Insumo</p>
+        <SearchPick options={pickOpts} value={insumoId} onChange={setInsumoId} placeholder="Elegí el insumo…" />
       </div>
-      <div className="grid grid-cols-2 gap-2">
-        <input value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="Monto" className={inputClass} />
+      {insumo && insumo.tipo !== "COMUN" && (
+        <div>
+          <p className="mb-1 font-semibold text-slate-700">Ítem {insumo.tipo === "DIRECTO" ? "(obligatorio)" : "(opcional: sin ítem se reparte por tiempo)"}</p>
+          <BudgetItemSelect projectId={projectId} items={items} value={budgetItemId} onChange={setBudgetItemId} currency={currency} />
+        </div>
+      )}
+      {insumo?.tipo === "COMUN" && <p className="text-slate-600">Insumo común: entra al stock de la obra con la rendición; el motor lo reparte por ACU.</p>}
+      <div className="grid grid-cols-3 gap-2">
+        <input value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="Monto sin IVA" className={inputClass} />
+        <input
+          value={cantidad}
+          onChange={(e) => setCantidad(e.target.value)}
+          placeholder={`Cantidad${insumo ? ` (${insumo.unit})` : ""}${insumo?.tipo === "COMUN" ? " *" : ""}`}
+          className={inputClass}
+        />
         <input value={form.responsibleName} onChange={(e) => setForm({ ...form, responsibleName: e.target.value })} placeholder="Quién gastó" className={inputClass} />
       </div>
+      {faltaItem && <p className="text-[11px] font-semibold text-red-600">Insumo DIRECTO: elegí el ítem al que va.</p>}
+      {faltaCantidad && <p className="text-[11px] font-semibold text-red-600">Insumo COMÚN: indicá la cantidad que entra al stock.</p>}
       {amount > fund.currentBalance && (
         <p className="text-[11px] font-semibold text-amber-700">El monto supera el disponible del fondo ({formatMoney(fund.currentBalance, currency)}).</p>
       )}
       <Actions
         onClose={onClose}
         onSave={save}
-        disabled={!budgetItemId || amount <= 0 || !form.receiptNumber.trim() || !form.supplierName.trim() || form.concept.trim().length < 2}
+        disabled={!insumo || faltaItem || faltaCantidad || amount <= 0 || !form.receiptNumber.trim() || !form.supplierName.trim() || form.concept.trim().length < 2}
       />
     </Modal>
   );

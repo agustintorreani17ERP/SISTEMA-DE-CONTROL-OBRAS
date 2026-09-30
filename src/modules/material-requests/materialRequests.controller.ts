@@ -8,7 +8,8 @@ import { DomainError, NotFoundError } from "../../errors/domain";
 import { assertDocTransition, assertMutableDocument } from "../../domain/lifecycle";
 import { audit, nextNumber } from "../../domain/audit";
 import { toDecimal } from "../../lib/money";
-import { assertImputableItem } from "../../domain/budget";
+import { resolveLineItem } from "../../domain/imputation";
+import { toDay } from "../../domain/prices";
 
 export const materialRequestsRouter = Router();
 
@@ -33,13 +34,14 @@ const createSchema = z.object({
   projectId: z.number().int(),
   workFrontId: z.number().int().positive().optional().nullable(),
   requestedById: z.number().int().positive().optional().nullable(),
-  requestedDate: z.coerce.date().optional(),
+  /** Fecha del pedido (obligatoria). */
+  requestedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}/, "Indicá la fecha del pedido (AAAA-MM-DD)"),
   notes: z.string().optional(),
   details: z
     .array(
       z.object({
         materialId: z.number().int(),
-        budgetItemId: z.number().int().optional(),
+        budgetItemId: z.number().int().positive().nullish(),
         quantity: z.coerce.number().positive(),
       })
     )
@@ -62,19 +64,24 @@ materialRequestsRouter.post(
         if (!requester) throw new NotFoundError("Personal", body.requestedById);
       }
 
-      // El rubro es opcional en el pedido; si falta, se exige al armar la OC.
+      const project = await tx.project.findUnique({ where: { id: body.projectId }, select: { id: true } });
+      if (!project) throw new NotFoundError("Obra", body.projectId);
+
+      // Ítem obligatorio solo para insumos DIRECTOS; los COMUNES van al stock de la obra.
       const validatedDetails = [];
       for (const line of body.details) {
         const material = await tx.material.findUnique({ where: { id: line.materialId } });
         if (!material) {
           throw new NotFoundError("Material", line.materialId);
         }
-        if (line.budgetItemId) {
-          await assertImputableItem(tx, body.projectId, line.budgetItemId);
-        }
+        const budgetItemId = await resolveLineItem(tx, {
+          projectId: body.projectId,
+          material,
+          explicitItemId: line.budgetItemId,
+        });
         validatedDetails.push({
           materialId: line.materialId,
-          budgetItemId: line.budgetItemId ?? null,
+          budgetItemId,
           quantity: line.quantity,
         });
       }
@@ -86,7 +93,7 @@ materialRequestsRouter.post(
           projectId: body.projectId,
           workFrontId: body.workFrontId ?? null,
           requestedById: body.requestedById ?? null,
-          requestedDate: body.requestedDate || new Date(),
+          requestedDate: toDay(body.requestedDate.slice(0, 10)),
           notes: body.notes,
           details: {
             create: validatedDetails.map((d) => ({

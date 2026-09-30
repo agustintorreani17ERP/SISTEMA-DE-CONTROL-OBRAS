@@ -14,6 +14,8 @@ export interface SeriesDef {
   label: string;
   color: string; // clase de trazo, ej. "stroke-emerald-500"
   fill: string; // clase de relleno para la leyenda, ej. "bg-emerald-500"
+  /** Trazo discontinuo (ej. "6 4") para distinguir series sin usar color. */
+  dash?: string;
 }
 
 const MONTHS = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
@@ -29,11 +31,14 @@ export function LineChart({
   series,
   format,
   height = 220,
+  labelFormat = monthLabel,
 }: {
   points: SeriesPoint[];
   series: SeriesDef[];
   format: (v: number) => string;
   height?: number;
+  /** Texto del eje X a partir de la etiqueta del punto (por defecto "sep 26"). */
+  labelFormat?: (label: string) => string;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const width = 640;
@@ -68,6 +73,7 @@ export function LineChart({
             strokeWidth={2.5}
             strokeLinejoin="round"
             strokeLinecap="round"
+            strokeDasharray={s.dash}
             className={s.color}
             points={points.map((p, i) => `${x(i)},${y(p.values[s.key] ?? 0)}`).join(" ")}
           />
@@ -84,7 +90,7 @@ export function LineChart({
             />
             {(points.length <= 12 || i % Math.ceil(points.length / 12) === 0) && (
               <text x={x(i)} y={height - 8} textAnchor="middle" className="fill-slate-400 text-[11px]">
-                {monthLabel(p.label)}
+                {labelFormat(p.label)}
               </text>
             )}
           </g>

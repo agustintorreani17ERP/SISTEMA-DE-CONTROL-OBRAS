@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Plus } from "lucide-react";
 import { api } from "../api";
-import { MaterialRequest, Partner, Project, PurchaseOrder } from "../types";
+import { InsumoTipo, MaterialRequest, Partner, Project, PurchaseOrder } from "../types";
 import { Button, EmptyState, Field, inputClass, Modal } from "../ui";
 import { Stepper } from "../ui/actions";
-import { BudgetItemSelect, useImputableItems } from "../components/BudgetItemSelect";
+import { useImputableItems } from "../components/BudgetItemSelect";
+import { ImputacionCell, itemAllowed, itemRequired } from "./ImputacionCell";
+import { todayIso } from "../insumos/labels";
 import { formatMoney } from "../utils/format";
 import { fmtQty } from "./status";
 
@@ -17,6 +19,7 @@ interface OrderLine {
   quantity: string;
   unitPrice: string;
   budgetItemId: number | "";
+  tipo?: InsumoTipo;
 }
 
 interface OrderFormProps {
@@ -52,6 +55,7 @@ export function OrderForm({
   const [partnerId, setPartnerId] = useState<number | "">(suppliers[0]?.id ?? "");
   const [newSupplier, setNewSupplier] = useState<{ name: string; taxId: string } | null>(null);
   const [expectedDate, setExpectedDate] = useState("");
+  const [fecha, setFecha] = useState(todayIso());
   const [lines, setLines] = useState<OrderLine[]>([]);
   const [saving, setSaving] = useState(false);
   const { items: imputable } = useImputableItems(project.id);
@@ -85,7 +89,9 @@ export function OrderForm({
           pending,
           quantity: String(pending),
           unitPrice: String(Number(d.material?.estimatedCost || 0) || ""),
-          budgetItemId: d.budgetItemId ?? "",
+          // Un insumo COMÚN va al stock: el rubro que traía el pedido no se usa.
+          budgetItemId: itemAllowed(d.material?.tipo) ? d.budgetItemId ?? "" : "",
+          tipo: d.material?.tipo,
         };
       })
     );
@@ -93,7 +99,7 @@ export function OrderForm({
 
   const active = lines.filter((l) => Number(l.quantity) > 0);
   const total = active.reduce((acc, l) => acc + Number(l.quantity) * Number(l.unitPrice || 0), 0);
-  const missing = active.filter((l) => !Number(l.unitPrice) || !l.budgetItemId).length;
+  const missing = active.filter((l) => !Number(l.unitPrice) || (itemRequired(l.tipo) && !l.budgetItemId)).length;
   const update = (id: number, patch: Partial<OrderLine>) => setLines((prev) => prev.map((l) => (l.requestDetailId === id ? { ...l, ...patch } : l)));
 
   const createSupplier = async () => {
@@ -111,17 +117,20 @@ export function OrderForm({
 
   const save = async (approve: boolean) => {
     if (!request || !partnerId) return;
+    if (!fecha) return showToast("Indicá la fecha de la orden", "error");
+    if (missing) return showToast(`Falta precio o ítem (insumo DIRECTO) en ${missing} línea(s)`, "error");
     setSaving(true);
     try {
       const order = await api.createPurchaseOrder({
         materialRequestId: request.id,
         partnerId: Number(partnerId),
+        fecha,
         expectedDate: expectedDate ? new Date(expectedDate).toISOString() : undefined,
         details: active.map((l) => ({
           requestDetailId: l.requestDetailId,
           quantity: Number(l.quantity),
           unitPrice: Number(l.unitPrice),
-          budgetItemId: Number(l.budgetItemId),
+          budgetItemId: l.budgetItemId && itemAllowed(l.tipo) ? Number(l.budgetItemId) : null,
         })),
       });
       if (approve) await api.approvePurchaseOrder(order.id);
@@ -239,6 +248,9 @@ export function OrderForm({
                 </div>
               )}
             </Field>
+            <Field label="Fecha de la orden">
+              <input type="date" required value={fecha} onChange={(e) => setFecha(e.target.value)} className={inputClass} />
+            </Field>
             <Field label="Entrega estimada">
               <input type="date" value={expectedDate} onChange={(e) => setExpectedDate(e.target.value)} className={inputClass} />
             </Field>
@@ -252,7 +264,7 @@ export function OrderForm({
                   <th className="px-3 py-2 text-right">Pendiente</th>
                   <th className="w-24 px-3 py-2">Cantidad</th>
                   <th className="w-32 px-3 py-2">P. unitario</th>
-                  <th className="w-56 px-3 py-2">Rubro</th>
+                  <th className="w-56 px-3 py-2">Imputación</th>
                   <th className="px-3 py-2 text-right">Subtotal</th>
                 </tr>
               </thead>
@@ -288,13 +300,14 @@ export function OrderForm({
                       />
                     </td>
                     <td className="px-3 py-2">
-                      <BudgetItemSelect
+                      <ImputacionCell
+                        tipo={l.tipo}
                         projectId={project.id}
                         items={imputable}
                         value={l.budgetItemId}
                         onChange={(v) => update(l.requestDetailId, { budgetItemId: v })}
                         currency={currency}
-                        placeholder="Elegí el rubro…"
+                        showError={Number(l.quantity) > 0}
                       />
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums">{formatMoney(Number(l.quantity) * Number(l.unitPrice || 0), currency)}</td>
@@ -311,7 +324,11 @@ export function OrderForm({
               </tfoot>
             </table>
           </div>
-          {missing > 0 && <p className="text-xs text-amber-700">Falta precio o rubro en {missing} línea(s). Cada compra se descuenta del rubro elegido al emitirla.</p>}
+          {missing > 0 && <p className="text-xs font-semibold text-red-600">Falta precio o ítem (insumo DIRECTO) en {missing} línea(s).</p>}
+          <p className="text-xs text-slate-500">
+            Al emitir: los DIRECTOS se descuentan de su ítem; los COMUNES van a "Costos a distribuir › stock de obra"; los de TIEMPO sin ítem, a
+            "Costos a distribuir › tiempo".
+          </p>
         </>
       )}
     </Modal>

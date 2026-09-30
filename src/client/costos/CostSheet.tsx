@@ -12,6 +12,7 @@ interface CostSheetProps {
   collapsed: Set<number>;
   onToggle: (id: number) => void;
   onOpenItem: (node: CostNode) => void;
+  onOpenAcu?: (node: CostNode) => void;
 }
 
 const num = "px-3 py-1.5 text-right font-mono tabular-nums whitespace-nowrap";
@@ -33,12 +34,14 @@ function Progress({ value, exceeded }: { value: number | null; exceeded: boolean
  * Planilla técnica de cómputo y presupuesto: cantidades previstas vs. ejecutadas
  * (certificado al cliente aprobado), saldos y avance físico, con rubros colapsables.
  */
-export function CostSheet({ rows, nodes, filtered, collapsed, onToggle, onOpenItem }: CostSheetProps) {
+const share = (v: number | null) => (v === null ? "" : formatPct(v, 0));
+
+export function CostSheet({ rows, nodes, filtered, collapsed, onToggle, onOpenItem, onOpenAcu }: CostSheetProps) {
   const totals = sheetTotals(rows, nodes, filtered);
 
   return (
     <div className="max-h-[70vh] overflow-auto rounded-2xl border border-slate-200 bg-white">
-      <table className="w-full min-w-[1280px] border-separate border-spacing-0 text-[13px]">
+      <table className="w-full min-w-[1980px] border-separate border-spacing-0 text-[13px]">
         <thead>
           <tr className="text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             {[
@@ -53,6 +56,13 @@ export function CostSheet({ rows, nodes, filtered, collapsed, onToggle, onOpenIt
               ["Total previsto (Gs.)", "text-right"],
               ["Total ejecutado (Gs.)", "text-right"],
               ["Saldo (Gs.)", "text-right"],
+              ["Costo meta unit.", "text-right border-l border-slate-300"],
+              ["Costo meta total", "text-right"],
+              ["% Mat.", "text-right"],
+              ["% MO", "text-right"],
+              ["% Eq.", "text-right"],
+              ["Margen previsto (Gs.)", "text-right"],
+              ["Margen %", "text-right"],
             ].map(([label, cls]) => (
               <th key={label} className={cx("sticky top-0 z-20 border-b border-slate-200 bg-slate-50 px-3 py-2.5", cls)}>
                 {label}
@@ -73,7 +83,14 @@ export function CostSheet({ rows, nodes, filtered, collapsed, onToggle, onOpenIt
                 onClick={() => (r.hasChildren ? onToggle(n.id) : r.isItem && onOpenItem(n))}
                 className={cx("cursor-pointer hover:brightness-[0.98]", rubro && "font-semibold text-slate-900")}
               >
-                <td className={cx("sticky left-0 z-10 border-b border-slate-100 px-3 py-1.5 font-mono text-xs text-slate-500", bg)}>{n.code}</td>
+                <td className={cx("sticky left-0 z-10 border-b border-slate-100 px-3 py-1.5 font-mono text-xs text-slate-500", bg)}>
+                  {n.code}
+                  {r.isItem && n.pareto && (
+                    <span className="ml-1 text-slate-900" title="Pareto: entre los ítems que suman el 80 % del monto">
+                      ●
+                    </span>
+                  )}
+                </td>
                 <td className={cx("sticky left-24 z-10 border-b border-slate-100 py-1.5 pr-3", bg)} style={{ paddingLeft: 12 + r.depth * 16 }}>
                   <span className="flex items-center gap-1">
                     {r.hasChildren ? (
@@ -98,12 +115,56 @@ export function CostSheet({ rows, nodes, filtered, collapsed, onToggle, onOpenIt
                 <td className={cx(num, "border-b border-slate-100", bg)}>{formatGs(r.plannedTotal)}</td>
                 <td className={cx(num, "border-b border-slate-100", bg)}>{formatGs(r.executedTotal)}</td>
                 <td className={cx(num, "border-b border-slate-100", bg, r.balanceTotal < 0 && "text-rose-600")}>{formatGs(r.balanceTotal)}</td>
+                <td
+                  className={cx(num, "border-b border-l border-slate-100 border-l-slate-300", bg, n.acuSuperaOferta && "font-semibold text-red-600", r.isItem && onOpenAcu && "underline decoration-dotted underline-offset-2")}
+                  onClick={(e) => {
+                    if (!r.isItem || !onOpenAcu) return;
+                    e.stopPropagation();
+                    onOpenAcu(n);
+                  }}
+                  title={
+                    !r.isItem
+                      ? undefined
+                      : n.costoMetaFuente === "ACU"
+                      ? n.acuSuperaOferta
+                        ? "El ACU supera el costo de la oferta (PU ÷ K) · abrir ACU"
+                        : "Costo meta según ACU · abrir ACU"
+                      : n.costoMetaFuente === "K"
+                      ? "Sin ACU: PU ÷ K · abrir ACU para cargarlo"
+                      : "Sin ACU ni K de la obra · abrir ACU"
+                  }
+                >
+                  {r.isItem ? (
+                    r.costoMetaUnit === null ? (
+                      <span className="text-slate-400">—</span>
+                    ) : (
+                      <>
+                        {formatGs(r.costoMetaUnit)}
+                        {n.costoMetaFuente === "K" && <span className="ml-1 text-[10px] text-slate-400">÷K</span>}
+                      </>
+                    )
+                  ) : (
+                    ""
+                  )}
+                </td>
+                <td className={cx(num, "border-b border-slate-100", bg)} title={!r.isItem && n.itemsSinCostoMeta ? `${n.itemsSinCostoMeta} ítem(s) sin costo meta` : undefined}>
+                  {r.costoMetaTotal === null ? <span className="text-slate-400">—</span> : formatGs(r.costoMetaTotal)}
+                </td>
+                <td className={cx(num, "border-b border-slate-100", bg)}>{share(r.shareMaterial)}</td>
+                <td className={cx(num, "border-b border-slate-100", bg)}>{share(r.shareManoObra)}</td>
+                <td className={cx(num, "border-b border-slate-100", bg)}>{share(r.shareEquipo)}</td>
+                <td className={cx(num, "border-b border-slate-100", bg, (r.margenPrevisto ?? 0) < 0 && "text-red-600")}>
+                  {r.margenPrevisto === null ? "" : formatGs(r.margenPrevisto)}
+                </td>
+                <td className={cx(num, "border-b border-slate-100", bg, (r.margenPct ?? 0) < 0 && "font-semibold text-red-600")}>
+                  {r.margenPct === null ? "" : formatPct(r.margenPct)}
+                </td>
               </tr>
             );
           })}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={11} className="px-4 py-10 text-center text-slate-400">
+              <td colSpan={18} className="px-4 py-10 text-center text-slate-400">
                 No hay partidas con esos filtros.
               </td>
             </tr>
@@ -119,6 +180,13 @@ export function CostSheet({ rows, nodes, filtered, collapsed, onToggle, onOpenIt
             <td className={cx(num, "sticky bottom-0 z-10 bg-slate-800 py-2.5")}>{formatGs(totals.planned)}</td>
             <td className={cx(num, "sticky bottom-0 z-10 bg-slate-800 py-2.5")}>{formatGs(totals.executed)}</td>
             <td className={cx(num, "sticky bottom-0 z-10 bg-slate-800 py-2.5")}>{formatGs(totals.balance)}</td>
+            <td className="sticky bottom-0 z-10 bg-slate-800" />
+            <td className={cx(num, "sticky bottom-0 z-10 bg-slate-800 py-2.5")}>{formatGs(totals.costoMeta)}</td>
+            <td className={cx(num, "sticky bottom-0 z-10 bg-slate-800 py-2.5")}>{share(totals.shareMaterial)}</td>
+            <td className={cx(num, "sticky bottom-0 z-10 bg-slate-800 py-2.5")}>{share(totals.shareManoObra)}</td>
+            <td className={cx(num, "sticky bottom-0 z-10 bg-slate-800 py-2.5")}>{share(totals.shareEquipo)}</td>
+            <td className={cx(num, "sticky bottom-0 z-10 bg-slate-800 py-2.5")}>{formatGs(totals.margen)}</td>
+            <td className={cx(num, "sticky bottom-0 z-10 bg-slate-800 py-2.5")}>{totals.margenPct === null ? "" : formatPct(totals.margenPct)}</td>
           </tr>
         </tfoot>
       </table>

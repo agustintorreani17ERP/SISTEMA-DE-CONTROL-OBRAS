@@ -2,6 +2,7 @@ import React from "react";
 import { Material, Project, StockMovement, WarehouseStock, WorkFront } from "../types";
 import { Page, PageHeader, Stat, StatGrid } from "../ui";
 import { StockWarehouseTab } from "../components/StockWarehouseTab";
+import { todayIso } from "../insumos/labels";
 
 interface StockPageProps {
   project: Project;
@@ -16,17 +17,14 @@ interface StockPageProps {
 
 /** Stock de materiales de la obra: existencias, salidas a obra y ajustes. */
 export function StockPage({ project, stock, movements, materials, workFronts, intent, onRefresh, showToast }: StockPageProps) {
-  const now = new Date();
+  const month = todayIso().slice(0, 7);
   const withStock = stock.filter((s) => Number(s.currentStock) > 0).length;
   const low = stock.filter((s) => Number(s.currentStock) <= 5).length;
-  const monthMoves = movements.filter((m) => {
-    const d = new Date(m.createdAt);
-    return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-  }).length;
+  const monthMoves = movements.filter((m) => (m.fecha ?? "").startsWith(month)).length;
 
   return (
     <Page>
-      <PageHeader title="Stock" help="Lo que hay en depósito. Entra al recibir una orden de compra y sale con cada salida a obra." />
+      <PageHeader title="Stock" help="Stock de la obra por insumo, con movimientos fechados: compras, salidas, transferencias, ajustes y conteos." />
       <StatGrid>
         <Stat label="Materiales con existencia" value={withStock} hint={`${stock.length} materiales registrados`} />
         <Stat label="Sin stock o bajo" value={low} tone={low > 0 ? "warn" : "good"} hint="5 unidades o menos" />

@@ -66,6 +66,8 @@ export class BudgetImportService {
           );
         }
 
+        let planSnapshot: Prisma.AvancePlanificadoGetPayload<{ include: { budgetItem: { select: { path: true } } } }>[] = [];
+        let acuSnapshot: Prisma.ComponenteItemGetPayload<{ include: { budgetItem: { select: { path: true } } } }>[] = [];
         const oldItems = await tx.budgetItem.findMany({
           where: { projectId: project.id, isSystem: false },
           select: { id: true },
@@ -73,22 +75,35 @@ export class BudgetImportService {
         const oldIds = oldItems.map((i) => i.id);
         if (oldIds.length) {
           const where = { budgetItemId: { in: oldIds } };
-          const [requests, orders, subcontracts, certs, certItems, petty] = await Promise.all([
+          const [requests, orders, subcontracts, certs, certItems, petty, stockIssues, avances, partesEq] = await Promise.all([
             tx.materialRequestDetail.count({ where }),
             tx.purchaseOrderDetail.count({ where }),
             tx.subcontractorContract.count({ where }),
             tx.certificacion.count({ where }),
             tx.certificationItem.count({ where }),
             tx.pettyCashExpense.count({ where }),
+            tx.stockMovement.count({ where }),
+            tx.avanceItem.count({ where }),
+            tx.parteEquipo.count({ where }),
           ]);
-          const refs = requests + orders + subcontracts + certs + certItems + petty;
+          const [horasPers, viajes] = await Promise.all([tx.parteHoraPersonal.count({ where }), tx.viajeCamion.count({ where })]);
+          const refs = requests + orders + subcontracts + certs + certItems + petty + stockIssues + avances + partesEq + horasPers + viajes;
           if (refs > 0) {
             throw new DomainError(
               "BUDGET_HAS_REFERENCES",
-              `Hay ${refs} documento(s) (pedidos, OC, subcontratos, certificados o caja chica) que usan partidas del presupuesto actual. Anulalos o usá una adenda.`,
+              `Hay ${refs} documento(s) (pedidos, OC, subcontratos, certificados, caja chica, salidas de stock o avance) que usan partidas del presupuesto actual. Anulalos o usá una adenda.`,
               409
             );
           }
+          // Los ACU son planificación: se reenganchan a los ítems nuevos con el mismo path.
+          acuSnapshot = await tx.componenteItem.findMany({
+            where: { budgetItemId: { in: oldIds } },
+            include: { budgetItem: { select: { path: true } } },
+          });
+          planSnapshot = await tx.avancePlanificado.findMany({
+            where: { budgetItemId: { in: oldIds } },
+            include: { budgetItem: { select: { path: true } } },
+          });
           await tx.budgetItem.updateMany({ where: { id: { in: oldIds } }, data: { parentId: null } });
           await tx.budgetItem.deleteMany({ where: { id: { in: oldIds } } });
         }
@@ -145,6 +160,35 @@ export class BudgetImportService {
           for (const c of created) idByPath.set(c.path, c.id);
         }
 
+        const itemPaths = new Set(build.nodes.filter((n) => n.kind === "ITEM").map((n) => n.path));
+        const acuToRestore = acuSnapshot.filter((c) => itemPaths.has(c.budgetItem.path));
+        if (acuToRestore.length) {
+          await tx.componenteItem.createMany({
+            data: acuToRestore.map((c) => ({
+              budgetItemId: idByPath.get(c.budgetItem.path)!,
+              insumoId: c.insumoId,
+              consumo: c.consumo,
+              desperdicioPct: c.desperdicioPct,
+              sortOrder: c.sortOrder,
+              nota: c.nota,
+            })),
+          });
+        }
+        const planToRestore = planSnapshot.filter((p) => itemPaths.has(p.budgetItem.path));
+        if (planToRestore.length) {
+          await tx.avancePlanificado.createMany({
+            data: planToRestore.map((p) => ({
+              projectId: project.id,
+              budgetItemId: idByPath.get(p.budgetItem.path)!,
+              fecha: p.fecha,
+              cantidad: p.cantidad,
+            })),
+          });
+        }
+        const acuItems = (list: typeof acuSnapshot) => new Set(list.map((c) => c.budgetItem.path)).size;
+        const acuKept = acuItems(acuToRestore);
+        const acuLost = acuItems(acuSnapshot) - acuKept;
+
         await ensureGeneralExpenses(tx, project.id);
 
         await tx.project.update({
@@ -167,7 +211,10 @@ export class BudgetImportService {
           itemsCount: build.counts.items,
           totalBudgetAmount: rec.budgetTotal,
           reconciliation: rec,
-          message: `Presupuesto importado: ${build.counts.items} ítems en ${build.counts.rubros} rubros y ${build.counts.subrubros} subrubros.`,
+          message:
+            `Presupuesto importado: ${build.counts.items} ítems en ${build.counts.rubros} rubros y ${build.counts.subrubros} subrubros.` +
+            (acuKept ? ` Se conservó el ACU de ${acuKept} ítem(s).` : "") +
+            (acuLost ? ` ${acuLost} ACU se perdieron porque su ítem ya no está en la planilla.` : ""),
         };
       },
       { timeout: 120_000, maxWait: 10_000 }

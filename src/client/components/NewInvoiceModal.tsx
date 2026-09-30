@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { Partner, PurchaseOrder } from "../types";
 import { formatMoney } from "../utils/format";
+import { todayIso } from "../insumos/labels";
 
 import { formatGs } from "../utils/numbers";
 interface NewInvoiceModalProps {
@@ -39,7 +40,7 @@ export const NewInvoiceModal: React.FC<NewInvoiceModalProps> = ({
   const [numeroFactura, setNumeroFactura] = useState("");
   const [timbrado, setTimbrado] = useState("");
   const [fechaEmision, setFechaEmision] = useState(
-    new Date().toISOString().split("T")[0]
+    todayIso()
   );
   const [fechaVencimiento, setFechaVencimiento] = useState(
     new Date(Date.now() + 30 * 86400000).toISOString().split("T")[0]
@@ -48,7 +49,7 @@ export const NewInvoiceModal: React.FC<NewInvoiceModalProps> = ({
   const [concepto, setConcepto] = useState("");
   const [remisionNumber, setRemisionNumber] = useState("");
   const [remisionDate, setRemisionDate] = useState(
-    new Date().toISOString().split("T")[0]
+    todayIso()
   );
 
   // Line items

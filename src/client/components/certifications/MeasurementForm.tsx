@@ -20,6 +20,7 @@ import { ItemPhotoModal } from "./ItemPhotoModal";
 import { NumCell, cellInputCls, focusCell, gridKeyDown, parseNum, readPastedMatrix } from "./sheetGrid";
 
 import { formatGs, formatQty } from "../../utils/numbers";
+import { todayIso } from "../../insumos/labels";
 interface FormRubroRow {
   budgetItemId: number;
   code: string;
@@ -75,7 +76,7 @@ export const MeasurementForm: React.FC<MeasurementFormProps> = ({
   );
   const [tipo, setTipo] = useState<"OBRA_CLIENTE" | "SUBCONTRATISTA">("OBRA_CLIENTE");
   const [selectedPartnerId, setSelectedPartnerId] = useState<number | null>(null);
-  const [fecha, setFecha] = useState<string>(new Date().toISOString().split("T")[0]);
+  const [fecha, setFecha] = useState<string>(todayIso());
   const [notes, setNotes] = useState<string>("");
 
   // Autonumeración inteligente

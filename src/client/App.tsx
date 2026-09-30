@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { AlertCircle, Menu, RefreshCw } from "lucide-react";
+import { AlertCircle, RefreshCw } from "lucide-react";
 import { Sidebar, ActiveTab, SuministrosSubTab } from "./components/Sidebar";
+import { SidebarProvider, SidebarInset, SidebarTrigger } from "./ui/sidebar";
 import { CentroCostosTab } from "./components/CentroCostosTab";
 import { SuministrosTab } from "./components/SuministrosTab";
 import { PartesDiariosFrentesTab } from "./components/PartesDiariosFrentesTab";
@@ -11,6 +12,7 @@ import { CreateProjectModal } from "./components/CreateProjectModal";
 import { ToastContainer, ToastMessage } from "./components/Toast";
 import { PortfolioPage } from "./pages/PortfolioPage";
 import { OverviewPage } from "./pages/OverviewPage";
+import { DashboardHome } from "./dashboard/DashboardHome";
 import { ConfigPage } from "./pages/ConfigPage";
 import { StockPage } from "./pages/StockPage";
 import { CertificadosPage, CertificadosIntent } from "./certificados/CertificadosPage";
@@ -33,6 +35,7 @@ import {
 } from "./types";
 import { api } from "./api";
 import { cx } from "./ui";
+import { cacheGetJson, cacheSetJson, flushOutbox } from "./offline/outbox";
 
 type FinanzasSubTab = "facturas" | "auditoria-match" | "cuentas-pagar" | "cuentas-cobrar" | "caja-chica";
 
@@ -44,7 +47,6 @@ export function App() {
   const [refreshing, setRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
-  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [openImporterTrigger, setOpenImporterTrigger] = useState(false);
   const [showCreateProject, setShowCreateProject] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -64,7 +66,8 @@ export function App() {
   });
 
   // Datos de la obra seleccionada
-  const [projects, setProjects] = useState<Project[]>([]);
+  // Última lista conocida: sin conexión se puede elegir la obra y cargar el parte diario
+  const [projects, setProjects] = useState<Project[]>(() => cacheGetJson<Project[]>("infratrack_projects") ?? []);
   const [selectedProjectId, setSelectedProjectId] = useState<number | undefined>(undefined);
   const [budgetItems, setBudgetItems] = useState<BudgetItem[]>([]);
   const [workFronts, setWorkFronts] = useState<WorkFront[]>([]);
@@ -89,7 +92,9 @@ export function App() {
       if (isRefresh) setRefreshing(true);
       setError(null);
       try {
-        setProjects(await api.getProjects());
+        const list = await api.getProjects();
+        setProjects(list);
+        cacheSetJson("infratrack_projects", list);
         const targetId = projId ?? selectedProjectId;
         if (!targetId) return;
 
@@ -133,23 +138,41 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Partes guardados sin conexión: se envían al abrir la app, al volver la señal y cada 2 minutos
+  useEffect(() => {
+    const sync = () => {
+      if (!navigator.onLine) return;
+      flushOutbox()
+        .then((r) => {
+          if (r.enviados.length) showToast(`${r.enviados.length} parte(s) guardados sin conexión fueron enviados`, "success");
+          for (const e of r.enviados) for (const a of e.avisos) showToast(a, "error");
+          if (r.rechazados.length) showToast(`${r.rechazados.length} parte(s) fueron rechazados: revisalos en Campo › Parte diario`, "error");
+        })
+        .catch(() => undefined);
+    };
+    sync();
+    window.addEventListener("online", sync);
+    const t = setInterval(sync, 120_000);
+    return () => {
+      window.removeEventListener("online", sync);
+      clearInterval(t);
+    };
+  }, [showToast]);
+
   const openProject = (id: number) => {
     setSelectedProjectId(id);
     setActiveTab("dashboard");
-    setSidebarOpen(false);
     fetchData(id);
   };
 
   const goPortfolio = () => {
     setSelectedProjectId(undefined);
-    setSidebarOpen(false);
     fetchData(undefined, true);
   };
 
   const navigate = (tab: ActiveTab) => {
     setActiveTab(tab);
     setOpenImporterTrigger(false);
-    setSidebarOpen(false);
   };
 
   const navigateFromOverview = (tab: PendingItem["tab"], subTab?: string) => {
@@ -248,33 +271,21 @@ export function App() {
     );
   }
 
-  const sidebar = (
-    <Sidebar
-      activeTab={activeTab}
-      onNavigate={navigate}
-      onGoPortfolio={goPortfolio}
-      project={project}
-      currentUser={currentUser}
-      onLogout={handleLogout}
-      badges={badges}
-    />
-  );
-
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-50 text-slate-900">
-      <div className="hidden shrink-0 md:flex">{sidebar}</div>
-      {sidebarOpen && (
-        <div className="fixed inset-0 z-40 flex md:hidden">
-          <div className="fixed inset-0 bg-slate-900/40" onClick={() => setSidebarOpen(false)} />
-          <div className="relative z-10">{sidebar}</div>
-        </div>
-      )}
+    <SidebarProvider className="bg-slate-50 text-slate-900">
+      <Sidebar
+        activeTab={activeTab}
+        onNavigate={navigate}
+        onGoPortfolio={goPortfolio}
+        project={project}
+        currentUser={currentUser}
+        onLogout={handleLogout}
+        badges={badges}
+      />
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <SidebarInset>
         <header className="flex h-14 shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-4">
-          <button onClick={() => setSidebarOpen(true)} className="rounded-lg p-1.5 text-slate-600 hover:bg-slate-100 md:hidden" aria-label="Menú">
-            <Menu className="h-5 w-5" />
-          </button>
+          <SidebarTrigger />
           {projects.length > 0 && (
             <select
               value={selectedProjectId ?? ""}
@@ -336,16 +347,22 @@ export function App() {
           )}
 
           {project && activeTab === "dashboard" && (
-            <OverviewPage
+            <DashboardHome
               project={project}
-              currency={currency}
-              onNavigate={navigateFromOverview}
-              onImportBudget={() => {
-                setActiveTab("centro-costos");
-                setOpenImporterTrigger(true);
-              }}
-              refreshKey={refreshKey}
               showToast={showToast}
+              overview={
+                <OverviewPage
+                  project={project}
+                  currency={currency}
+                  onNavigate={navigateFromOverview}
+                  onImportBudget={() => {
+                    setActiveTab("centro-costos");
+                    setOpenImporterTrigger(true);
+                  }}
+                  refreshKey={refreshKey}
+                  showToast={showToast}
+                />
+              }
             />
           )}
 
@@ -437,14 +454,12 @@ export function App() {
             <ConfigPage
               materials={materials}
               partners={partners}
-              stock={stock}
-              currency={currency}
               onRefresh={handleRefresh}
               showToast={showToast}
             />
           )}
         </main>
-      </div>
+      </SidebarInset>
 
       {showCreateProject && (
         <CreateProjectModal
@@ -456,7 +471,7 @@ export function App() {
         />
       )}
       <ToastContainer toasts={toasts} onDismiss={dismissToast} />
-    </div>
+    </SidebarProvider>
   );
 }
 

@@ -19,11 +19,20 @@ export interface SheetRow {
   executedTotal: number;
   balanceTotal: number;
   exceeded: boolean;
+  costoMetaUnit: number | null;
+  costoMetaTotal: number | null;
+  /** Participación en el costo meta (fracción); null si no hay desglose por ACU. */
+  shareMaterial: number | null;
+  shareManoObra: number | null;
+  shareEquipo: number | null;
+  margenPrevisto: number | null;
+  margenPct: number | null;
 }
 
 export interface SheetFilters {
   rubroId?: number | null;
   onlyDeviation?: boolean;
+  onlyPareto?: boolean;
   search?: string;
 }
 
@@ -34,6 +43,9 @@ export function toRow(node: CostNode, depth: number, hasChildren: boolean): Shee
   const isItem = node.nodeKind === "ITEM";
   const planned = node.totalQuantity;
   const executed = node.executedQuantity;
+  const hasMeta = isItem ? node.costoMetaFuente !== null : node.costoMetaTotal > 0;
+  const acuPart = node.metaMaterial + node.metaManoObra + node.metaEquipo;
+  const share = (v: number) => (acuPart > 0 && node.costoMetaTotal > 0 ? v / node.costoMetaTotal : null);
   return {
     node,
     depth,
@@ -48,6 +60,13 @@ export function toRow(node: CostNode, depth: number, hasChildren: boolean): Shee
     executedTotal: node.executedAmount,
     balanceTotal: node.budget - node.executedAmount,
     exceeded: node.quantityExceeded,
+    costoMetaUnit: isItem ? node.costoMetaUnit : null,
+    costoMetaTotal: hasMeta ? node.costoMetaTotal : null,
+    shareMaterial: share(node.metaMaterial),
+    shareManoObra: share(node.metaManoObra),
+    shareEquipo: share(node.metaEquipo),
+    margenPrevisto: hasMeta ? node.margenPrevisto : null,
+    margenPct: node.margenPct,
   };
 }
 
@@ -61,7 +80,7 @@ export function buildSheetRows(nodes: CostNode[], filters: SheetFilters = {}, co
   const byId = new Map(nodes.map((n) => [n.id, n]));
 
   const q = filters.search?.trim().toLowerCase() ?? "";
-  const filtering = Boolean(q || filters.onlyDeviation || filters.rubroId);
+  const filtering = Boolean(q || filters.onlyDeviation || filters.onlyPareto || filters.rubroId);
   let keep: Set<number> | null = null;
   if (filtering) {
     keep = new Set();
@@ -77,8 +96,9 @@ export function buildSheetRows(nodes: CostNode[], filters: SheetFilters = {}, co
     for (const n of nodes) {
       const matchesSearch = !q || `${n.code} ${n.name}`.toLowerCase().includes(q);
       const matchesDeviation = !filters.onlyDeviation || (n.nodeKind === "ITEM" && hasDeviation(n));
-      if (!(matchesSearch && matchesDeviation && inRubro(n))) continue;
-      if (filters.onlyDeviation && n.nodeKind !== "ITEM") continue;
+      const matchesPareto = !filters.onlyPareto || (n.nodeKind === "ITEM" && n.pareto);
+      if (!(matchesSearch && matchesDeviation && matchesPareto && inRubro(n))) continue;
+      if ((filters.onlyDeviation || filters.onlyPareto) && n.nodeKind !== "ITEM") continue;
       let cur: CostNode | undefined = n;
       while (cur) {
         keep.add(cur.id);
@@ -105,5 +125,24 @@ export function sheetTotals(rows: SheetRow[], nodes: CostNode[], filtered: boole
   const leaves = filtered ? rows.filter((r) => r.isItem).map((r) => r.node) : nodes.filter((n) => n.nodeKind === "ITEM");
   const planned = leaves.reduce((acc, n) => acc + n.budget, 0);
   const executed = leaves.reduce((acc, n) => acc + n.executedAmount, 0);
-  return { planned, executed, balance: planned - executed, progress: planned > 0 ? executed / planned : null };
+  const withMeta = leaves.filter((n) => n.costoMetaFuente !== null);
+  const costoMeta = withMeta.reduce((acc, n) => acc + n.costoMetaTotal, 0);
+  const venta = withMeta.reduce((acc, n) => acc + n.ventaSinIva, 0);
+  const margen = withMeta.reduce((acc, n) => acc + n.margenPrevisto, 0);
+  const acu = (k: "metaMaterial" | "metaManoObra" | "metaEquipo") => {
+    const v = leaves.reduce((acc, n) => acc + n[k], 0);
+    return costoMeta > 0 && v > 0 ? v / costoMeta : null;
+  };
+  return {
+    planned,
+    executed,
+    balance: planned - executed,
+    progress: planned > 0 ? executed / planned : null,
+    costoMeta,
+    shareMaterial: acu("metaMaterial"),
+    shareManoObra: acu("metaManoObra"),
+    shareEquipo: acu("metaEquipo"),
+    margen,
+    margenPct: venta > 0 ? margen / venta : null,
+  };
 }

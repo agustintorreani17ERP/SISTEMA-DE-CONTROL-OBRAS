@@ -6,3 +6,6 @@ generated
 *.log
 mock-db-store.json
 uploads
+
+# Salidas de scripts de migración (datos del negocio)
+prisma/scripts/out/

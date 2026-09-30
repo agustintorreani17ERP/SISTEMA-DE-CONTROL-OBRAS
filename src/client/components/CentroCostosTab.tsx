@@ -26,6 +26,10 @@ import { MoreMenu } from "../ui/actions";
 import { CostSheet } from "../costos/CostSheet";
 import { buildSheetRows } from "../costos/sheetModel";
 import { exportCostSheet } from "../costos/exportCostSheet";
+import { AcuPanel } from "../costos/AcuPanel";
+import { AvancePanel } from "../costos/AvancePanel";
+import { CostoRealPanel } from "../costos/CostoRealPanel";
+import { CostParamsBar } from "../costos/CostParamsBar";
 
 import { formatPct, formatQty } from "../utils/numbers";
 interface CentroCostosTabProps {
@@ -40,7 +44,7 @@ interface CentroCostosTabProps {
   laborImportNonce?: number;
 }
 
-type SubTab = "control" | "mano-obra" | "adendas" | "importer";
+type SubTab = "control" | "acu" | "avance" | "costo-real" | "mano-obra" | "adendas" | "importer";
 
 export const SOURCE_LABEL: Record<BudgetMovementSource, string> = {
   PURCHASE_ORDER: "Órdenes de compra",
@@ -48,6 +52,9 @@ export const SOURCE_LABEL: Record<BudgetMovementSource, string> = {
   PETTY_CASH: "Caja chica",
   MANUAL_ADJUSTMENT: "Ajustes manuales",
   CLIENT_CERTIFICATE: "Certificado al cliente",
+  LABOR_COST: "Personal propio",
+  STOCK_TRANSFER: "Transferencias de stock",
+  INVOICE: "Facturas sin OC",
 };
 
 const SOURCE_COLOR: Record<BudgetMovementSource, string> = {
@@ -56,6 +63,9 @@ const SOURCE_COLOR: Record<BudgetMovementSource, string> = {
   PETTY_CASH: "bg-teal-500",
   MANUAL_ADJUSTMENT: "bg-stone-400",
   CLIENT_CERTIFICATE: "bg-emerald-500",
+  LABOR_COST: "bg-slate-600",
+  STOCK_TRANSFER: "bg-slate-400",
+  INVOICE: "bg-slate-800",
 };
 
 const qty = (v: number) => formatQty(v);
@@ -76,6 +86,8 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState("");
   const [onlyOver, setOnlyOver] = useState(false);
+  const [onlyPareto, setOnlyPareto] = useState(false);
+  const [acuItemId, setAcuItemId] = useState<number | null>(null);
   const [view, setView] = useState<"tecnica" | "costos">("tecnica");
   const [rubroFilter, setRubroFilter] = useState<number | "">("");
   const [collapsedSheet, setCollapsedSheet] = useState<Set<number>>(new Set());
@@ -118,11 +130,11 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
       setCollapseInit(true);
     }
   }, [headingIds, collapseInit]);
-  const sheetFilters = { rubroId: rubroFilter || null, onlyDeviation: onlyOver, search };
-  const sheetFiltered = Boolean(rubroFilter || onlyOver || search.trim());
+  const sheetFilters = { rubroId: rubroFilter || null, onlyDeviation: onlyOver, onlyPareto, search };
+  const sheetFiltered = Boolean(rubroFilter || onlyOver || onlyPareto || search.trim());
   const sheetRows = useMemo(
-    () => buildSheetRows(data?.nodes ?? [], { rubroId: rubroFilter || null, onlyDeviation: onlyOver, search }, collapsedSheet),
-    [data, rubroFilter, onlyOver, search, collapsedSheet]
+    () => buildSheetRows(data?.nodes ?? [], { rubroId: rubroFilter || null, onlyDeviation: onlyOver, onlyPareto, search }, collapsedSheet),
+    [data, rubroFilter, onlyOver, onlyPareto, search, collapsedSheet]
   );
 
   const children = useMemo(() => {
@@ -293,6 +305,9 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
         onChange={setSubTab}
         items={[
           { value: "control", label: "Control" },
+          { value: "acu", label: "ACU", count: data?.kpis.itemsConAcu },
+          { value: "avance", label: "Avance y cierres" },
+          { value: "costo-real", label: "Costo real" },
           { value: "mano-obra", label: "Precios de mano de obra" },
           { value: "adendas", label: "Adendas y extras" },
           { value: "importer", label: "Importar presupuesto" },
@@ -301,6 +316,15 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
 
       {subTab === "control" && (
         <>
+          {data && project && !empty && (
+            <CostParamsBar
+              projectId={project.id}
+              coeficienteK={data.project.coeficienteK}
+              ivaPct={data.project.ivaPct}
+              onSaved={load}
+              showToast={showToast}
+            />
+          )}
           {k && (
             <StatGrid>
               <Stat label="Total previsto" value={money(k.budget)} hint={`${data?.nodes.filter((n) => n.nodeKind === "ITEM" && !n.isSystem).length} partidas`} />
@@ -320,6 +344,39 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
                   tone={k.exceededItems > 0 ? "bad" : "good"}
                   hint={k.exceededItems > 0 ? "Ejecutado supera lo previsto · tocá para verlos" : "Ningún ítem supera lo previsto"}
                 />
+              </button>
+            </StatGrid>
+          )}
+          {k && !empty && (
+            <StatGrid>
+              <Stat
+                label="Costo meta (sin IVA)"
+                value={money(k.costoMeta)}
+                hint={`${k.itemsConAcu} ítems con ACU${k.itemsSinCostoMeta ? ` · ${k.itemsSinCostoMeta} sin costo meta` : ""}`}
+              />
+              <Stat
+                label="Margen previsto s/ venta sin IVA"
+                value={k.margenPct === null ? "—" : pct(k.margenPct)}
+                tone={k.margenPct !== null && k.margenPct < 0 ? "bad" : "neutral"}
+                hint={`${money(k.margenPrevisto)} sobre ${money(k.ventaSinIva)} de venta sin IVA`}
+              />
+              <button onClick={() => setSubTab("acu")} className="text-left" title="Ver los ACU">
+                <Stat
+                  label="ACU que superan la oferta"
+                  value={k.itemsSuperanOferta}
+                  tone={k.itemsSuperanOferta > 0 ? "bad" : "neutral"}
+                  hint={k.itemsSuperanOferta > 0 ? "Pierden margen antes de empezar · tocá para verlos" : "Ningún ACU supera PU ÷ K"}
+                />
+              </button>
+              <button
+                onClick={() => {
+                  setView("tecnica");
+                  setOnlyPareto(true);
+                }}
+                className="text-left"
+                title="Filtrar la planilla por Pareto"
+              >
+                <Stat label="Pareto 80 %" value={`${k.itemsPareto} ítems`} hint="Concentran el 80 % del monto · tocá para filtrar" />
               </button>
             </StatGrid>
           )}
@@ -377,6 +434,15 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
                     }`}
                   >
                     Solo con desvío
+                  </button>
+                  <button
+                    onClick={() => setOnlyPareto(!onlyPareto)}
+                    title="Ítems que suman el 80 % del monto previsto"
+                    className={`rounded-full border px-3 py-1.5 text-sm font-medium ${
+                      onlyPareto ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-600"
+                    }`}
+                  >
+                    Pareto 80 %
                   </button>
                 </div>
                 <div className="flex items-center gap-2">
@@ -437,6 +503,10 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
                     })
                   }
                   onOpenItem={openDetail}
+                  onOpenAcu={(n) => {
+                    setAcuItemId(n.id);
+                    setSubTab("acu");
+                  }}
                 />
               ) : (
                 <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
@@ -469,6 +539,20 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
           )}
         </>
       )}
+
+      {subTab === "acu" && project && data && (
+        <AcuPanel
+          project={project}
+          nodes={data.nodes}
+          selectedId={acuItemId}
+          onSelect={setAcuItemId}
+          onChanged={load}
+          showToast={showToast}
+        />
+      )}
+
+      {subTab === "avance" && project && <AvancePanel project={project} onChanged={load} showToast={showToast} />}
+      {subTab === "costo-real" && project && <CostoRealPanel project={project} showToast={showToast} />}
 
       {subTab === "mano-obra" && project && (
         <LaborPricesPanel project={project} currency={currency} showToast={showToast} openImport={laborImportNonce} />

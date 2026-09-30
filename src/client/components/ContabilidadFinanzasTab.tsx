@@ -30,6 +30,8 @@ import {
   FileCheck2,
   Truck,
   Loader2,
+  Scale,
+  Landmark,
 } from "lucide-react";
 import {
   Project,
@@ -46,9 +48,13 @@ import { ThreeWayMatchModal } from "./ThreeWayMatchModal";
 import { RegisterPaymentModal } from "./RegisterPaymentModal";
 import { NewInvoiceModal } from "./NewInvoiceModal";
 import { PettyCashPanel } from "./PettyCashPanel";
+import { BancosCajasPanel } from "./BancosCajasPanel";
+import { ConciliacionPanel } from "../contabilidad/ConciliacionPanel";
+import { ImputarFacturaModal } from "../contabilidad/ImputarFacturaModal";
 import { api } from "../api";
 
 import { formatGs } from "../utils/numbers";
+import { todayIso } from "../insumos/labels";
 interface ContabilidadFinanzasTabProps {
   project?: Project | null;
   budgetItems: BudgetItem[];
@@ -58,10 +64,19 @@ interface ContabilidadFinanzasTabProps {
   currency: "PYG" | "USD";
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
   onRefresh: () => void;
-  initialSubTab?: "facturas" | "auditoria-match" | "cuentas-pagar" | "cuentas-cobrar" | "caja-chica";
+  initialSubTab?: "facturas" | "auditoria-match" | "cuentas-pagar" | "cuentas-cobrar" | "caja-chica" | "bancos-cajas" | "conciliacion";
 }
 
-type SubTab = "facturas" | "auditoria-match" | "cuentas-pagar" | "cuentas-cobrar" | "caja-chica";
+type SubTab = "facturas" | "auditoria-match" | "cuentas-pagar" | "cuentas-cobrar" | "caja-chica" | "bancos-cajas" | "conciliacion";
+
+/** Factura recibida sin OC ni certificado que todavía no se imputó por renglón. */
+const needsImputation = (inv: any) =>
+  inv.tipo === "RECIBIDA" &&
+  !inv.purchaseOrderId &&
+  !inv.certificationId &&
+  !inv.certificacionId &&
+  inv.estado !== "ANULADA" &&
+  (inv.items ?? []).some((i: any) => !i.insumoId);
 
 export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = ({
   project,
@@ -87,6 +102,7 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
   const [selectedInvoiceMatch, setSelectedInvoiceMatch] = useState<any | null>(null);
   const [selectedInvoicePay, setSelectedInvoicePay] = useState<any | null>(null);
   const [showNewInvoiceModal, setShowNewInvoiceModal] = useState(false);
+  const [facturaImputar, setFacturaImputar] = useState<any | null>(null);
 
   // Local storage fallback / secondary modules
   const storageKeyClientCerts = `infratrack_fin_client_certs_${project?.id || 0}`;
@@ -156,7 +172,7 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
   const [clientCertForm, setClientCertForm] = useState({
     certificateNumber: `CERT-OBRA-0${clientCerts.length + 1}`,
     periodName: `Mes ${clientCerts.length + 1} - Avance Certificado`,
-    issueDate: new Date().toISOString().split("T")[0],
+    issueDate: todayIso(),
     dueDate: new Date(Date.now() + 30 * 86400000).toISOString().split("T")[0],
     clientName: project?.clientName || "",
     contractNumber: project?.contractNumber || "",
@@ -170,7 +186,7 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
   const [apFilter, setApFilter] = useState<"ALL" | "VENCIDAS" | "ESTA_SEMANA" | "PROX_15" | "MAS_30">("ALL");
 
   // Helper date calculations for Corrida de Pagos
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = todayIso();
   const next7DaysStr = new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0];
   const next15DaysStr = new Date(Date.now() + 15 * 86400000).toISOString().split("T")[0];
 
@@ -540,6 +556,28 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
             <Banknote className="w-4 h-4" />
             <span>Fondo Fijo / Caja Chica</span>
           </button>
+
+          <button
+            onClick={() => setSubTab("bancos-cajas")}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
+              subTab === "bancos-cajas"
+                ? "bg-blue-50 text-blue-700 border border-blue-200 shadow-xs"
+                : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
+            }`}
+          >
+            <Landmark className="w-4 h-4" />
+            <span>Bancos y cajas</span>
+          </button>
+
+          <button
+            onClick={() => setSubTab("conciliacion")}
+            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
+              subTab === "conciliacion" ? "border border-slate-900 text-slate-900" : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
+            }`}
+          >
+            <Scale className="w-4 h-4" />
+            <span>Conciliación con costos</span>
+          </button>
         </div>
       </div>
 
@@ -769,6 +807,16 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
                               >
                                 <ShieldCheck className="w-4 h-4" />
                               </button>
+
+                              {needsImputation(inv) && (
+                                <button
+                                  onClick={() => setFacturaImputar(inv)}
+                                  className="px-3 py-1 rounded-lg border border-slate-900 font-bold text-xs text-slate-900 cursor-pointer"
+                                  title="Sin OC ni certificado: imputá cada renglón a insumo e ítem para que entre a costos"
+                                >
+                                  Imputar
+                                </button>
+                              )}
 
                               {/* Pay Invoice Button */}
                               {!isPaid ? (
@@ -1283,6 +1331,25 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
       {/* VIEW 5: FONDO FIJO / CAJA CHICA (conectada al presupuesto) */}
       {subTab === "caja-chica" && (
         <PettyCashPanel project={project} currency={currency} showToast={showToast} onChanged={loadPettySummary} />
+      )}
+
+      {subTab === "bancos-cajas" && <BancosCajasPanel project={project} showToast={showToast} />}
+
+      {/* VIEW 6: CONCILIACIÓN DOCUMENTOS ↔ LIBRO MAYOR ↔ MOTOR DE COSTOS */}
+      {subTab === "conciliacion" && project && <ConciliacionPanel project={project} showToast={showToast} />}
+
+      {facturaImputar && project && (
+        <ImputarFacturaModal
+          invoice={facturaImputar}
+          project={project}
+          onClose={() => setFacturaImputar(null)}
+          onDone={() => {
+            setFacturaImputar(null);
+            fetchInvoices();
+            onRefresh();
+          }}
+          showToast={showToast}
+        />
       )}
 
       {/* MODAL 1: REGISTRAR NUEVA FACTURA LEGAL (API) */}

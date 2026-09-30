@@ -19,5 +19,10 @@ export const ORDER_STATUS: Record<DocStatus, { label: string; tone: Tone }> = {
   ANULADO: { label: "Anulada", tone: "bad" },
 };
 
-export const fmtDate = (d?: string | null) => (d ? new Date(d).toLocaleDateString("es-PY") : "—");
+/** Las fechas sin hora (columnas DATE) llegan como medianoche UTC: se muestran tal cual, sin huso. */
+export const fmtDate = (d?: string | null) => {
+  if (!d) return "—";
+  const day = /^(\d{4})-(\d{2})-(\d{2})(T00:00:00(\.000)?Z)?$/.exec(d);
+  return day ? `${day[3]}/${day[2]}/${day[1]}` : new Date(d).toLocaleDateString("es-PY", { timeZone: "America/Asuncion" });
+};
 export const fmtQty = (v: unknown) => formatQty(Number(v || 0));

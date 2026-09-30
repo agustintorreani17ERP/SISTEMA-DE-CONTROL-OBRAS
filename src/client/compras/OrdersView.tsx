@@ -2,7 +2,8 @@ import React, { useMemo, useState } from "react";
 import { Ban, Eye, Plus, Printer, ShoppingCart, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { Project, PurchaseOrder } from "../types";
-import { Badge, Button, Card, Drawer, EmptyState } from "../ui";
+import { Badge, Button, Card, Drawer, EmptyState, Field, Modal, inputClass } from "../ui";
+import { todayIso } from "../insumos/labels";
 import { ActionBar, MoreMenu, Timeline } from "../ui/actions";
 import { formatMoney } from "../utils/format";
 import { PrintableDocument } from "./PrintableDocument";
@@ -25,6 +26,8 @@ export function OrdersView({ project, orders, currency, onNew, onRefresh, showTo
   const [detail, setDetail] = useState<PurchaseOrder | null>(null);
   const [printing, setPrinting] = useState<PurchaseOrder | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
+  const [receiving, setReceiving] = useState<PurchaseOrder | null>(null);
+  const [receipt, setReceipt] = useState({ fecha: todayIso(), remito: "" });
   const money = (v: unknown) => formatMoney(Number(v || 0), currency);
 
   const count = (s: DocStatus) => orders.filter((o) => o.status === s).length;
@@ -57,8 +60,22 @@ export function OrdersView({ project, orders, currency, onNew, onRefresh, showTo
     const step: Partial<Record<DocStatus, { label: string; fn: () => Promise<unknown>; msg: string }>> = {
       BORRADOR: { label: "Aprobar", fn: () => api.approvePurchaseOrder(o.id), msg: `${o.number} aprobada` },
       APROBADO_PARA_COMPRA: { label: "Emitir", fn: () => api.issuePurchaseOrder(o.id), msg: `${o.number} emitida y descontada del presupuesto` },
-      EMITIDA: { label: "Recibir", fn: () => api.receivePurchaseOrder(o.id), msg: `${o.number} recibida: stock actualizado` },
     };
+    if (o.status === "EMITIDA") {
+      return (
+        <Button
+          size="sm"
+          variant="primary"
+          disabled={busy === o.id}
+          onClick={() => {
+            setReceipt({ fecha: todayIso(), remito: "" });
+            setReceiving(o);
+          }}
+        >
+          Recibir
+        </Button>
+      );
+    }
     const s = step[o.status];
     return s ? (
       <Button size="sm" variant="primary" disabled={busy === o.id} onClick={() => run(o.id, s.fn, s.msg)}>
@@ -194,9 +211,22 @@ export function OrdersView({ project, orders, currency, onNew, onRefresh, showTo
               <dd>{detail.materialRequest?.number ?? "—"}</dd>
             </div>
             <div>
+              <dt className="text-xs text-slate-500">Fecha de la orden</dt>
+              <dd>{fmtDate(detail.fecha)}</dd>
+            </div>
+            <div>
               <dt className="text-xs text-slate-500">Entrega estimada</dt>
               <dd>{fmtDate(detail.expectedDate)}</dd>
             </div>
+            {detail.receivedDate && (
+              <div>
+                <dt className="text-xs text-slate-500">Recibida</dt>
+                <dd>
+                  {fmtDate(detail.receivedDate)}
+                  {detail.receiptNumber ? ` · remito ${detail.receiptNumber}` : ""}
+                </dd>
+              </div>
+            )}
             <div>
               <dt className="text-xs text-slate-500">Total</dt>
               <dd className="font-semibold">{money(detail.totalAmount)}</dd>
@@ -208,7 +238,8 @@ export function OrdersView({ project, orders, currency, onNew, onRefresh, showTo
                 <div>
                   <p className="text-slate-800">{d.material?.description}</p>
                   <p className="text-xs text-slate-500">
-                    {fmtQty(d.quantity)} {d.material?.unit} × {money(d.unitPrice)} · {d.budgetItem ? `${d.budgetItem.code} ${d.budgetItem.name}` : "—"}
+                    {fmtQty(d.quantity)} {d.material?.unit} × {money(d.unitPrice)} ·{" "}
+                    {d.budgetItem ? `${d.budgetItem.code} ${d.budgetItem.name}` : d.tipo === "TIEMPO" ? "Tiempo: a distribuir" : "Stock de obra"}
                   </p>
                 </div>
                 <span className="shrink-0 tabular-nums">{money(d.subtotal)}</span>
@@ -220,7 +251,7 @@ export function OrdersView({ project, orders, currency, onNew, onRefresh, showTo
               { label: "Creada", done: true, date: detail.createdAt },
               { label: "Aprobada", done: detail.status !== "BORRADOR" && detail.status !== "ANULADO" },
               { label: "Emitida al proveedor (descuenta presupuesto)", done: detail.status === "EMITIDA" || detail.status === "RECIBIDO", date: detail.issueDate },
-              { label: "Recibida en depósito", done: detail.status === "RECIBIDO" },
+              { label: "Recibida", done: detail.status === "RECIBIDO", date: detail.receivedDate },
             ]}
           />
           <div className="flex gap-2">
@@ -235,6 +266,42 @@ export function OrdersView({ project, orders, currency, onNew, onRefresh, showTo
         </Drawer>
       )}
 
+      {receiving && (
+        <Modal
+          size="sm"
+          title={`Recibir ${receiving.number}`}
+          onClose={() => setReceiving(null)}
+          footer={
+            <>
+              <Button onClick={() => setReceiving(null)}>Cancelar</Button>
+              <Button
+                variant="primary"
+                disabled={!receipt.fecha || busy === receiving.id}
+                onClick={() => {
+                  const o = receiving;
+                  setReceiving(null);
+                  run(o.id, () => api.receivePurchaseOrder(o.id, { fecha: receipt.fecha, remito: receipt.remito.trim() || undefined }), `${o.number} recibida`);
+                }}
+              >
+                Registrar recepción
+              </Button>
+            </>
+          }
+        >
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Fecha de recepción">
+              <input type="date" required value={receipt.fecha} max={todayIso()} onChange={(e) => setReceipt({ ...receipt, fecha: e.target.value })} className={inputClass} />
+            </Field>
+            <Field label="N° de remito (opcional)">
+              <input value={receipt.remito} onChange={(e) => setReceipt({ ...receipt, remito: e.target.value })} className={inputClass} />
+            </Field>
+          </div>
+          <p className="text-xs text-slate-500">
+            Los insumos COMUNES entran al stock de la obra. Los DIRECTOS entran y salen en el acto a su ítem. Los de TIEMPO no pasan por el depósito.
+          </p>
+        </Modal>
+      )}
+
       {printing && (
         <PrintableDocument
           title="Orden de compra"
@@ -244,6 +311,7 @@ export function OrdersView({ project, orders, currency, onNew, onRefresh, showTo
             { label: "Obra", value: `${project.code} · ${project.name}` },
             { label: "Proveedor", value: `${printing.partner?.name ?? "—"}${printing.partner?.taxId ? ` (RUC ${printing.partner.taxId})` : ""}` },
             { label: "Pedido", value: printing.materialRequest?.number ?? "—" },
+            { label: "Fecha", value: fmtDate(printing.fecha) },
             { label: "Entrega", value: fmtDate(printing.expectedDate) },
           ]}
           lines={(printing.details ?? []).map((d) => ({

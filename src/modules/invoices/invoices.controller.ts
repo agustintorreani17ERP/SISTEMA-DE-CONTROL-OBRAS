@@ -5,6 +5,13 @@ import { asyncHandler } from "../../middleware/asyncHandler";
 import { ok } from "../../http/respond";
 import { DomainError, NotFoundError } from "../../errors/domain";
 import { audit } from "../../domain/audit";
+import { postCost } from "../../domain/budget";
+import { resolveExpenseLine } from "../../domain/imputation";
+import { fechaContable } from "../../domain/progress";
+import { recalculateProjectFinancials } from "../../domain/projectFinancials";
+import { recordStockMovement } from "../../domain/stock";
+import { EVENTO, postAsientoDesdeRegla } from "../../domain/contabilidad";
+import { toDecimal } from "../../lib/money";
 
 export const invoicesRouter = Router();
 
@@ -57,7 +64,12 @@ const invoiceInclude = {
       items: { include: { budgetItem: true } },
     },
   },
-  items: true,
+  items: {
+    include: {
+      insumo: { select: { id: true, code: true, description: true, unit: true, tipo: true } },
+      budgetItem: { select: { id: true, code: true, name: true } },
+    },
+  },
   payments: {
     orderBy: { fechaPago: "desc" as const },
   },
@@ -475,16 +487,131 @@ invoicesRouter.post(
 );
 
 // ----------------------------------------------------
+// POST /api/invoices/:id/imputar — factura recibida sin OC ni certificado
+// Cada renglón lleva insumo (e ítem si es DIRECTO); entra al libro mayor sin IVA con la fecha
+// de la factura (o el primer día abierto si su período ya cerró). COMÚN entra al stock.
+// ----------------------------------------------------
+const INVOICE_SOURCE = "Invoice";
+const VAT_RATE: Record<string, number> = { IVA10: 0.1, IVA5: 0.05, EXENTA: 0 };
+
+const imputarSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        id: z.coerce.number().int().positive(),
+        insumoId: z.coerce.number().int().positive(),
+        budgetItemId: z.coerce.number().int().positive().nullish(),
+      })
+    )
+    .min(1),
+});
+
+invoicesRouter.post(
+  "/:id/imputar",
+  asyncHandler(async (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const body = imputarSchema.parse(req.body);
+    const result = await prisma.$transaction(
+      async (tx) => {
+        const inv = await tx.invoice.findUnique({ where: { id }, include: { items: true } });
+        if (!inv) throw new NotFoundError("Factura", id);
+        if (inv.tipo !== "RECIBIDA") throw new DomainError("NOT_RECEIVED", "Solo se imputan facturas recibidas", 422);
+        if (inv.purchaseOrderId || inv.certificationId || inv.certificacionId) {
+          throw new DomainError("HAS_SOURCE_DOC", "La factura tiene OC o certificado: su costo entra por ese documento", 422);
+        }
+        if (inv.estado === "ANULADA") throw new DomainError("INVOICE_VOID", "La factura está anulada", 409);
+        if (await tx.budgetMovement.count({ where: { sourceType: INVOICE_SOURCE, sourceId: id } })) {
+          throw new DomainError("ALREADY_IMPUTED", "La factura ya está imputada", 409);
+        }
+        const porId = new Map(body.items.map((i) => [i.id, i]));
+        const faltan = inv.items.filter((i) => !porId.has(i.id));
+        if (faltan.length) throw new DomainError("LINES_MISSING", `Imputá todos los renglones (faltan ${faltan.length})`, 422);
+
+        const fc = await fechaContable(tx, inv.projectId, inv.fechaEmision);
+        const avisos: string[] = [];
+        if (fc.desplazada) avisos.push(`La factura es de un período cerrado: su costo entra el ${fc.fecha.toISOString().slice(0, 10).split("-").reverse().join("/")}`);
+        const debeAsiento: { monto: ReturnType<typeof toDecimal>; budgetItemId: number }[] = [];
+        for (const line of inv.items) {
+          const sel = porId.get(line.id)!;
+          const insumo = await tx.material.findUnique({ where: { id: sel.insumoId } });
+          if (!insumo) throw new NotFoundError("Insumo", sel.insumoId);
+          const { itemId, ledgerItemId } = await resolveExpenseLine(tx, inv.projectId, insumo, sel.budgetItemId);
+          const bruto = Number(line.quantity) * Number(line.unitPrice);
+          const sinIva = Math.round(bruto / (1 + (VAT_RATE[line.vatType] ?? 0.1)));
+          await tx.invoiceItem.update({ where: { id: line.id }, data: { insumoId: insumo.id, budgetItemId: itemId } });
+          await postCost(tx, {
+            projectId: inv.projectId,
+            budgetItemId: ledgerItemId,
+            insumoId: insumo.id,
+            amount: sinIva,
+            quantity: line.quantity,
+            source: "INVOICE",
+            sourceType: INVOICE_SOURCE,
+            sourceId: inv.id,
+            sourceNumber: inv.numeroFactura,
+            note: line.description,
+            fecha: fc.fecha,
+          });
+          debeAsiento.push({ monto: toDecimal(sinIva), budgetItemId: ledgerItemId });
+          if (insumo.tipo === "COMUN") {
+            await recordStockMovement(tx, {
+              projectId: inv.projectId,
+              materialId: insumo.id,
+              kind: "RECEIPT",
+              quantity: line.quantity,
+              fecha: fc.fecha,
+              sourceType: INVOICE_SOURCE,
+              sourceId: inv.id,
+              unitCost: Number(line.quantity) ? sinIva / Number(line.quantity) : 0,
+              note: `Factura ${inv.numeroFactura}`,
+            });
+          }
+        }
+        const totalAsiento = debeAsiento.reduce((acc, l) => acc.plus(l.monto), toDecimal(0));
+        if (totalAsiento.gt(0)) {
+          await postAsientoDesdeRegla(tx, {
+            evento: EVENTO.FACTURA_RECIBIDA,
+            projectId: inv.projectId,
+            concepto: `Factura ${inv.numeroFactura}`,
+            sourceType: INVOICE_SOURCE,
+            sourceId: inv.id,
+            fecha: fc.fecha,
+            debe: debeAsiento,
+            haber: [{ monto: totalAsiento, partnerId: inv.partnerId }],
+          });
+        }
+        const next = await tx.invoice.update({
+          where: { id },
+          data: {
+            estado: inv.estado === "PAGADA" ? "PAGADA" : "APROBADA",
+            matchNotes: `${inv.matchNotes ? `${inv.matchNotes} ` : ""}Imputada por renglón (sin OC ni certificado).`,
+          },
+          include: invoiceInclude,
+        });
+        await recalculateProjectFinancials(tx, inv.projectId);
+        await audit(tx, { entity: "INVOICE", entityId: id, action: "IMPUTE", fromStatus: inv.estado, toStatus: next.estado, payload: { lineas: inv.items.length } });
+        return { invoice: next, avisos };
+      },
+      { timeout: 60_000 }
+    );
+    ok(res, result);
+  })
+);
+
+// ----------------------------------------------------
 // POST /api/invoices/:id/payments (Registrar Pago)
 // Regla: No permite pagar si la Factura no está APROBADA
 // Si la suma de pagos alcanza el total, cambia a PAGADA
 // ----------------------------------------------------
 const paymentSchema = z.object({
+  cuentaFinancieraId: z.coerce.number().int().positive({ message: "Elegí la cuenta financiera del pago" }),
   montoPagado: z.coerce.number().positive("El monto pagado debe ser mayor a cero"),
   fechaPago: z.string().optional(),
   metodo: z.enum(["TRANSFERENCIA", "CHEQUE", "EFECTIVO"]).default("TRANSFERENCIA"),
   referenciaBanco: z.string().min(1, "La referencia bancaria o N° de recibo es obligatoria"),
   notas: z.string().optional(),
+  chequeNumero: z.string().trim().optional(),
+  chequeFechaPago: z.string().optional(),
 });
 
 invoicesRouter.post(
@@ -500,6 +627,15 @@ invoicesRouter.post(
 
     if (!invoice) {
       throw new NotFoundError("Factura", id);
+    }
+
+    const cuenta = await prisma.cuentaFinanciera.findUnique({ where: { id: body.cuentaFinancieraId } });
+    if (!cuenta) throw new NotFoundError("Cuenta financiera", body.cuentaFinancieraId);
+    if (cuenta.projectId !== invoice.projectId) {
+      throw new DomainError("ACCOUNT_PROJECT_MISMATCH", "La cuenta financiera no pertenece a la obra de la factura", 422);
+    }
+    if (body.metodo === "CHEQUE" && (!body.chequeNumero || !body.chequeFechaPago)) {
+      throw new DomainError("CHEQUE_DATA_REQUIRED", "Indicá el N° de cheque y su fecha de pago diferida", 422);
     }
 
     // Regla de Negocio: Restricción Three-Way Match para autorizar pagos
@@ -526,16 +662,63 @@ invoicesRouter.post(
     // Verificar si se cancela por completo
     const isFullyPaid = newTotalPaid >= invoiceTotal - 0.05; // 0% tolerancia con delta mínimo de redondeo
 
-    // Registrar el pago
-    const payment = await prisma.payment.create({
-      data: {
-        invoiceId: id,
-        montoPagado: body.montoPagado,
-        fechaPago: body.fechaPago ? new Date(body.fechaPago) : new Date(),
-        metodo: body.metodo,
-        referenciaBanco: body.referenciaBanco.trim(),
-        notas: body.notas || null,
-      },
+    // Registrar el pago y su asiento (debita Proveedores, acredita Bancos)
+    const payment = await prisma.$transaction(async (tx) => {
+      const fechaPago = body.fechaPago ? new Date(body.fechaPago) : new Date();
+      const created = await tx.payment.create({
+        data: {
+          invoiceId: id,
+          cuentaFinancieraId: cuenta.id,
+          montoPagado: body.montoPagado,
+          fechaPago,
+          metodo: body.metodo,
+          referenciaBanco: body.referenciaBanco.trim(),
+          notas: body.notas || null,
+        },
+      });
+
+      // El cheque diferido no mueve el saldo hasta acreditarse; los demás métodos mueven la
+      // cuenta ya (egreso si pagamos una factura recibida, ingreso si cobramos una emitida).
+      if (body.metodo === "CHEQUE") {
+        await tx.cheque.create({
+          data: {
+            cuentaFinancieraId: cuenta.id,
+            tipo: invoice.tipo === "RECIBIDA" ? "EMITIDO" : "RECIBIDO",
+            numero: body.chequeNumero!.trim(),
+            monto: body.montoPagado,
+            fechaEmision: fechaPago,
+            fechaPago: new Date(body.chequeFechaPago!),
+            partnerId: invoice.partnerId,
+            paymentId: created.id,
+            notas: `Pago factura ${invoice.numeroFactura}`,
+          },
+        });
+      } else {
+        await tx.movimientoCuentaFinanciera.create({
+          data: {
+            cuentaFinancieraId: cuenta.id,
+            fecha: fechaPago,
+            tipo: invoice.tipo === "RECIBIDA" ? "EGRESO" : "INGRESO",
+            monto: body.montoPagado,
+            concepto: `Pago factura ${invoice.numeroFactura} — ${created.referenciaBanco}`,
+            confirmado: true,
+            sourceType: "Payment",
+            sourceId: created.id,
+          },
+        });
+      }
+
+      await postAsientoDesdeRegla(tx, {
+        evento: EVENTO.PAGO_FACTURA,
+        projectId: invoice.projectId,
+        concepto: `Pago factura ${invoice.numeroFactura} — ${created.referenciaBanco}`,
+        sourceType: "Payment",
+        sourceId: created.id,
+        fecha: created.fechaPago,
+        debe: [{ monto: created.montoPagado, partnerId: invoice.partnerId }],
+        haber: [{ monto: created.montoPagado }],
+      });
+      return created;
     });
 
     // Actualizar estado de la factura si fue saldada por completo

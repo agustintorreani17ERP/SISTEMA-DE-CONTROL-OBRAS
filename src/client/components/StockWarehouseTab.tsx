@@ -1,27 +1,14 @@
-import React, { useEffect, useState } from "react";
-import {
-  Package,
-  ArrowUpRight,
-  SlidersHorizontal,
-  AlertTriangle,
-  CheckCircle2,
-  Search,
-  Filter,
-  Layers,
-  Clock,
-  HardHat,
-  X,
-} from "lucide-react";
-import {
-  WarehouseStock,
-  StockMovement,
-  Material,
-  WorkFront,
-  Project,
-} from "../types";
-import { formatDateTime } from "../utils/format";
-import { getMovementBadge } from "../utils/statusBadges";
+import React, { useEffect, useMemo, useState } from "react";
+import { ArrowLeftRight, ArrowUpRight, ClipboardCheck, SlidersHorizontal, Trash2 } from "lucide-react";
+import { ConteoInventario, Material, Project, StockMovement, StockMovementKind, WarehouseStock, WorkFront } from "../types";
 import { api } from "../api";
+import { Button, Field, Modal, cx, inputClass } from "../ui";
+import { formatQty } from "../utils/numbers";
+import { BudgetItemSelect, useImputableItems } from "./BudgetItemSelect";
+import { ImputacionCell, itemRequired, TIPO_HELP } from "../compras/ImputacionCell";
+import { fmtDate } from "../compras/status";
+import { todayIso } from "../insumos/labels";
+import { ConteoInventarioForm } from "../stock/ConteoInventarioForm";
 
 interface StockWarehouseTabProps {
   project?: Project | null;
@@ -31,548 +18,491 @@ interface StockWarehouseTabProps {
   workFronts: WorkFront[];
   onRefresh: () => void;
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
-  /** Abre "Salida a obra" o "Ajuste" desde el botón global Crear. */
+  /** Abre "Salida" o "Ajuste" desde el botón global Crear. */
   intent?: { action: "out" | "adjust"; nonce: number } | null;
 }
 
-export const StockWarehouseTab: React.FC<StockWarehouseTabProps> = ({
-  project,
-  stock,
-  movements,
-  materials,
-  workFronts,
-  onRefresh,
-  showToast,
-  intent,
-}) => {
-  const [searchTerm, setSearchTerm] = useState("");
-  const [movementFilter, setMovementFilter] = useState<string>("ALL");
-  const [showConsumptionModal, setShowConsumptionModal] = useState(false);
-  const [showAdjustmentModal, setShowAdjustmentModal] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+export const KIND_LABEL: Record<StockMovementKind, string> = {
+  RECEIPT: "Compra",
+  CONSUMPTION: "Salida a obra",
+  DIRECT_ISSUE: "Salida directa a ítem",
+  TRANSFER_OUT: "Transferencia enviada",
+  TRANSFER_IN: "Transferencia recibida",
+  ADJUSTMENT: "Ajuste manual",
+  INVENTORY_ADJUSTMENT: "Ajuste por conteo",
+  REVERSAL: "Reversión",
+};
+
+type Dialog = "out" | "adjust" | "transfer" | "count" | null;
+type View = "stock" | "movimientos" | "conteos";
+
+export const StockWarehouseTab: React.FC<StockWarehouseTabProps> = ({ project, stock, movements, materials, workFronts, onRefresh, showToast, intent }) => {
+  const [view, setView] = useState<View>("stock");
+  const [dialog, setDialog] = useState<Dialog>(null);
+  const [search, setSearch] = useState("");
+  const [kind, setKind] = useState<StockMovementKind | "ALL">("ALL");
+  const [fechaSaldo, setFechaSaldo] = useState("");
+  const [stockAtDate, setStockAtDate] = useState<WarehouseStock[] | null>(null);
+  const [conteos, setConteos] = useState<ConteoInventario[]>([]);
+
   useEffect(() => {
-    if (!intent) return;
-    if (intent.action === "out") setShowConsumptionModal(true);
-    else setShowAdjustmentModal(true);
+    if (intent) setDialog(intent.action === "out" ? "out" : "adjust");
   }, [intent?.nonce]);
 
-  // Consumption Form state
-  const [consumptionForm, setConsumptionForm] = useState({
-    materialId: materials[0]?.id || 1,
-    quantity: 5,
-    workFrontId: workFronts[0]?.id || 1,
-    note: "",
-  });
+  useEffect(() => {
+    if (!project?.id || !fechaSaldo) return setStockAtDate(null);
+    api.getStock(project.id, fechaSaldo).then(setStockAtDate).catch((e) => showToast(e.message, "error"));
+  }, [project?.id, fechaSaldo, stock, showToast]);
 
-  // Adjustment Form state
-  const [adjustmentForm, setAdjustmentForm] = useState({
-    materialId: materials[0]?.id || 1,
-    quantity: 0,
-    note: "",
-  });
+  const loadConteos = () => project?.id && api.getConteos(project.id).then(setConteos).catch((e) => showToast(e.message, "error"));
+  useEffect(() => {
+    loadConteos();
+  }, [project?.id, movements]);
 
-  const filteredStock = stock.filter((item) => {
-    const matName = item.material?.description || "";
-    const matCode = item.material?.code || "";
-    return (
-      matName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      matCode.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-  });
-
-  const filteredMovements = movements.filter((mov) => {
-    const matchesType = movementFilter === "ALL" || mov.movementType === movementFilter;
-    const matName = mov.material?.description || "";
-    const matchesSearch =
-      matName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (mov.note || "").toLowerCase().includes(searchTerm.toLowerCase());
-    return matchesType && matchesSearch;
-  });
-
-  const handleConsumptionSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!project?.id) {
-      showToast("Selecciona una obra primero", "error");
-      return;
-    }
-    if (consumptionForm.quantity <= 0) {
-      showToast("La cantidad debe ser mayor a 0", "error");
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      const selectedWf = workFronts.find((wf) => wf.id === Number(consumptionForm.workFrontId));
-      const fullNote = `${selectedWf ? `[${selectedWf.name}] ` : ""}${consumptionForm.note || "Despacho a obra"}`;
-
-      await api.registerConsumption(project.id, {
-        materialId: Number(consumptionForm.materialId),
-        quantity: Number(consumptionForm.quantity),
-        note: fullNote,
-      });
-      showToast("Salida de material a sector de obra registrada");
-      setShowConsumptionModal(false);
-      onRefresh();
-    } catch (err: any) {
-      showToast(err.message || "Error al registrar salida", "error");
-    } finally {
-      setSubmitting(false);
-    }
+  const q = search.trim().toLowerCase();
+  const matches = (m?: { code?: string; description?: string } | null) => !q || `${m?.code ?? ""} ${m?.description ?? ""}`.toLowerCase().includes(q);
+  const rows = (stockAtDate ?? stock).filter((s) => matches(s.material));
+  const movs = movements.filter((m) => (kind === "ALL" || m.kind === kind) && (matches(m.material) || (m.note ?? "").toLowerCase().includes(q)));
+  const done = () => {
+    setDialog(null);
+    onRefresh();
   };
 
-  const handleAdjustmentSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!project?.id) {
-      showToast("Selecciona una obra primero", "error");
-      return;
-    }
-    if (adjustmentForm.quantity === 0) {
-      showToast("El ajuste debe ser distinto de 0", "error");
-      return;
-    }
-    if (!adjustmentForm.note.trim()) {
-      showToast("Indica el motivo del ajuste físico", "error");
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      await api.registerAdjustment({
-        projectId: project.id,
-        materialId: Number(adjustmentForm.materialId),
-        quantity: Number(adjustmentForm.quantity),
-        note: adjustmentForm.note,
-      });
-      showToast("Ajuste de inventario aplicado");
-      setShowAdjustmentModal(false);
-      onRefresh();
-    } catch (err: any) {
-      showToast(err.message || "Error al aplicar ajuste", "error");
-    } finally {
-      setSubmitting(false);
-    }
-  };
+  if (!project) return null;
 
   return (
-    <div className="space-y-6 pb-12 text-slate-800">
-      {/* Header Banner */}
-      <div className="flex flex-wrap items-center justify-end gap-2 [&>div:first-child]:hidden">
-        <div>
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600">
-              <Package className="w-4 h-4" />
-            </div>
-            <div>
-              <h1 className="text-lg md:text-xl font-bold text-slate-900 tracking-tight">
-                Almacén Central & Stock de Obra
-              </h1>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Control físico de inventario, despacho a sectores de trabajo y ajustes de balance.
-              </p>
-            </div>
-          </div>
+    <div className="space-y-4 text-slate-900">
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="flex border-b border-slate-300">
+          {(
+            [
+              ["stock", "Existencias"],
+              ["movimientos", "Movimientos"],
+              ["conteos", "Conteos de inventario"],
+            ] as const
+          ).map(([v, l]) => (
+            <button key={v} onClick={() => setView(v)} className={cx("-mb-px border-b-2 px-3 py-2 text-sm", view === v ? "border-slate-900 font-semibold" : "border-transparent text-slate-500")}>
+              {l}
+            </button>
+          ))}
         </div>
-
-        <div className="flex items-center gap-2.5">
-          <button
-            id="btn-open-consumption-modal"
-            onClick={() => setShowConsumptionModal(true)}
-            className="flex items-center gap-1.5 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white rounded-xl text-xs font-bold shadow-xs transition cursor-pointer"
-          >
-            <ArrowUpRight className="w-4 h-4" />
-            <span>Salida a Sector de Obra</span>
-          </button>
-          <button
-            id="btn-open-adjustment-modal"
-            onClick={() => setShowAdjustmentModal(true)}
-            className="flex items-center gap-1.5 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 active:scale-95 text-slate-700 rounded-xl text-xs font-bold border border-slate-200 shadow-xs transition cursor-pointer"
-          >
-            <SlidersHorizontal className="w-4 h-4 text-blue-600" />
-            <span>Ajuste de Stock</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Search and Filters */}
-      <div className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="relative flex-1">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-          <input
-            type="text"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Buscar por código o descripción en almacén..."
-            className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 placeholder-slate-400 outline-none focus:border-blue-500 transition"
-          />
-        </div>
-      </div>
-
-      {/* Stock Cards Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {filteredStock.length === 0 ? (
-          <div className="col-span-4 bg-white rounded-2xl border border-slate-200 p-8 text-center text-slate-400 text-xs shadow-xs">
-            No hay existencias registradas en el almacén central.
-          </div>
-        ) : (
-          filteredStock.map((item) => {
-            const current = Number(item.currentStock || 0);
-            const reserved = Number(item.reservedStock || 0);
-            const isLow = current <= 5;
-
-            return (
-              <div
-                key={item.id}
-                className="bg-white rounded-2xl p-4 border border-slate-200 shadow-xs flex flex-col justify-between hover:border-blue-500/50 transition"
-              >
-                <div>
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-xs font-bold text-blue-700 px-2 py-0.5 rounded bg-blue-50 border border-blue-200">
-                      {item.material?.code}
-                    </span>
-                    {isLow ? (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-rose-700 bg-rose-50 border border-rose-200 px-2 py-0.5 rounded-full">
-                        <AlertTriangle className="w-3 h-3" /> Stock Bajo
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
-                        <CheckCircle2 className="w-3 h-3" /> Disponible
-                      </span>
-                    )}
-                  </div>
-                  <h3 className="font-bold text-slate-900 text-sm mt-2.5 line-clamp-2">
-                    {item.material?.description || "Material de Obra"}
-                  </h3>
-                  <div className="text-[11px] text-slate-500 mt-1">
-                    Categoría: {item.material?.category}
-                  </div>
-                </div>
-
-                <div className="mt-4 pt-3 border-t border-slate-100 flex items-baseline justify-between">
-                  <div>
-                    <span className="text-[10px] uppercase font-bold text-slate-500">
-                      Stock en Almacén
-                    </span>
-                    <div className="font-mono text-xl font-black text-slate-900">
-                      {current}{" "}
-                      <span className="text-xs font-normal text-slate-500">
-                        {item.material?.unit}
-                      </span>
-                    </div>
-                  </div>
-                  {reserved > 0 && (
-                    <div className="text-right">
-                      <span className="text-[10px] uppercase font-bold text-slate-500">
-                        Reservado
-                      </span>
-                      <div className="font-mono text-xs font-semibold text-amber-700">
-                        {reserved} {item.material?.unit}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })
+        <Field label="Buscar" className="w-56">
+          <input className={inputClass} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Código o descripción" />
+        </Field>
+        {view === "stock" && (
+          <Field label="Saldo al (vacío = hoy)" className="w-44">
+            <input type="date" className={inputClass} value={fechaSaldo} max={todayIso()} onChange={(e) => setFechaSaldo(e.target.value)} />
+          </Field>
         )}
+        {view === "movimientos" && (
+          <Field label="Tipo" className="w-52">
+            <select className={inputClass} value={kind} onChange={(e) => setKind(e.target.value as StockMovementKind | "ALL")}>
+              <option value="ALL">Todos</option>
+              {Object.entries(KIND_LABEL).map(([k, l]) => (
+                <option key={k} value={k}>
+                  {l}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
+        <div className="ml-auto flex flex-wrap gap-2">
+          <Button icon={<ClipboardCheck className="h-4 w-4" />} onClick={() => setDialog("count")}>
+            Conteo
+          </Button>
+          <Button icon={<ArrowLeftRight className="h-4 w-4" />} onClick={() => setDialog("transfer")}>
+            Transferir
+          </Button>
+          <Button icon={<SlidersHorizontal className="h-4 w-4" />} onClick={() => setDialog("adjust")}>
+            Ajuste
+          </Button>
+          <Button variant="primary" icon={<ArrowUpRight className="h-4 w-4" />} onClick={() => setDialog("out")}>
+            Salida
+          </Button>
+        </div>
       </div>
 
-      {/* Movements Ledger */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-        <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-50">
-          <div className="flex items-center gap-2">
-            <Clock className="w-4 h-4 text-blue-600" />
-            <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">
-              Libro de Movimientos de Inventario
-            </h3>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <Filter className="w-3.5 h-3.5 text-slate-500" />
-            <select
-              value={movementFilter}
-              onChange={(e) => setMovementFilter(e.target.value)}
-              className="border border-slate-200 rounded-xl px-2.5 py-1.5 text-xs font-medium text-slate-700 bg-white outline-none focus:border-blue-500 cursor-pointer"
-            >
-              <option value="ALL">Todos los Movimientos</option>
-              <option value="RECEIPT">Ingresos (Órdenes de Compra)</option>
-              <option value="CONSUMPTION">Salidas a Sector de Obra</option>
-              <option value="ADJUSTMENT">Ajustes de Inventario</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200 uppercase tracking-wider text-[11px]">
-              <tr>
-                <th className="p-3">Fecha & Hora</th>
-                <th className="p-3">Tipo Movimiento</th>
-                <th className="p-3">Material</th>
-                <th className="p-3 text-right">Cantidad</th>
-                <th className="p-3">Destino / Detalle</th>
+      {view === "stock" && (
+        <div className="overflow-x-auto border border-slate-300">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-300 text-left text-xs font-semibold">
+                <th className="px-3 py-2">Código</th>
+                <th className="px-3 py-2">Insumo</th>
+                <th className="px-3 py-2">Tipo</th>
+                <th className="px-3 py-2 text-right">{fechaSaldo ? `Saldo al ${fmtDate(fechaSaldo)}` : "Saldo actual"}</th>
+                <th className="px-3 py-2">Un.</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
-              {filteredMovements.length === 0 ? (
+            <tbody>
+              {rows.map((s) => {
+                const qty = Number(s.currentStock || 0);
+                return (
+                  <tr key={s.id} className="border-b border-slate-100">
+                    <td className="px-3 py-1.5 font-mono text-xs">{s.material?.code}</td>
+                    <td className="px-3 py-1.5">{s.material?.description}</td>
+                    <td className="px-3 py-1.5 text-xs text-slate-600">{s.material?.tipo ? TIPO_HELP[s.material.tipo].split(":")[0] : ""}</td>
+                    <td className={cx("px-3 py-1.5 text-right tabular-nums", qty < 0 && "font-semibold text-red-600")}>{formatQty(qty)}</td>
+                    <td className="px-3 py-1.5 text-slate-600">{s.material?.unit}</td>
+                  </tr>
+                );
+              })}
+              {rows.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="p-6 text-center text-slate-400">
-                    No se registran movimientos en el historial.
+                  <td colSpan={5} className="px-3 py-8 text-center text-slate-500">
+                    Sin existencias registradas.
                   </td>
                 </tr>
-              ) : (
-                filteredMovements.map((mov) => {
-                  const qty = Number(mov.quantity);
-
-                  return (
-                    <tr key={mov.id} className="hover:bg-blue-50/30 transition">
-                      <td className="p-3 text-slate-500 font-mono">
-                        {formatDateTime(mov.createdAt)}
-                      </td>
-                      <td className="p-3">{getMovementBadge(mov.movementType)}</td>
-                      <td className="p-3">
-                        <span className="font-semibold text-slate-900">
-                          {mov.material?.description || "Material"}
-                        </span>
-                        <span className="ml-1.5 font-mono text-[10px] text-blue-700">
-                          ({mov.material?.code})
-                        </span>
-                      </td>
-                      <td className="p-3 text-right font-mono font-bold">
-                        <span
-                          className={
-                            mov.movementType === "RECEIPT"
-                              ? "text-emerald-700"
-                              : mov.movementType === "CONSUMPTION"
-                              ? "text-amber-700"
-                              : "text-blue-700"
-                          }
-                        >
-                          {mov.movementType === "CONSUMPTION" ? "-" : "+"}
-                          {Math.abs(qty)} {mov.material?.unit}
-                        </span>
-                      </td>
-                      <td className="p-3 text-slate-600 text-[11px]">
-                        {mov.note || (mov.sourceType ? `Origen: ${mov.sourceType} #${mov.sourceId}` : "—")}
-                      </td>
-                    </tr>
-                  );
-                })
               )}
             </tbody>
           </table>
         </div>
-      </div>
+      )}
 
-      {/* Consumption Modal */}
-      {showConsumptionModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6 border border-slate-200 text-slate-900">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <ArrowUpRight className="w-5 h-5 text-blue-600" />
-                <h3 className="text-base font-bold text-slate-900">
-                  Registrar Salida / Despacho a Obra
-                </h3>
-              </div>
-              <button
-                onClick={() => setShowConsumptionModal(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleConsumptionSubmit} className="mt-4 space-y-4 text-xs">
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Insumo / Material a Despachar
-                </label>
-                <select
-                  value={consumptionForm.materialId}
-                  onChange={(e) =>
-                    setConsumptionForm({ ...consumptionForm, materialId: Number(e.target.value) })
-                  }
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-900 font-medium outline-none focus:border-blue-500 cursor-pointer"
-                >
-                  {materials.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.code} — {m.description} ({m.unit})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    Cantidad a Retirar
-                  </label>
-                  <input
-                    type="number"
-                    min="0.1"
-                    step="any"
-                    value={consumptionForm.quantity}
-                    onChange={(e) =>
-                      setConsumptionForm({
-                        ...consumptionForm,
-                        quantity: parseFloat(e.target.value) || 0,
-                      })
-                    }
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-900 font-mono font-bold outline-none focus:border-blue-500"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    Sector / Frente Receptor
-                  </label>
-                  <select
-                    value={consumptionForm.workFrontId}
-                    onChange={(e) =>
-                      setConsumptionForm({
-                        ...consumptionForm,
-                        workFrontId: Number(e.target.value),
-                      })
-                    }
-                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-900 font-medium outline-none focus:border-blue-500 cursor-pointer"
-                  >
-                    {workFronts.map((wf) => (
-                      <option key={wf.id} value={wf.id}>
-                        {wf.code} — {wf.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Destino / Observaciones de Salida
-                </label>
-                <input
-                  type="text"
-                  value={consumptionForm.note}
-                  onChange={(e) => setConsumptionForm({ ...consumptionForm, note: e.target.value })}
-                  placeholder="Ej: Despachado para fundaciones del Bloque B..."
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-900 placeholder-slate-400 outline-none focus:border-blue-500"
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-4 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setShowConsumptionModal(false)}
-                  className="px-4 py-2 border border-slate-200 text-slate-700 rounded-xl text-xs font-semibold hover:bg-slate-100 transition cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-xs transition disabled:opacity-50 cursor-pointer"
-                >
-                  {submitting ? "Registrando..." : "Confirmar Salida"}
-                </button>
-              </div>
-            </form>
-          </div>
+      {view === "movimientos" && (
+        <div className="overflow-x-auto border border-slate-300">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-300 text-left text-xs font-semibold">
+                <th className="px-3 py-2">Fecha</th>
+                <th className="px-3 py-2">Movimiento</th>
+                <th className="px-3 py-2">Insumo</th>
+                <th className="px-3 py-2 text-right">Cantidad</th>
+                <th className="px-3 py-2">Ítem / obra / detalle</th>
+              </tr>
+            </thead>
+            <tbody>
+              {movs.map((m) => {
+                const qty = Number(m.quantity);
+                return (
+                  <tr key={m.id} className="border-b border-slate-100 align-top">
+                    <td className="whitespace-nowrap px-3 py-1.5 tabular-nums">{fmtDate(m.fecha)}</td>
+                    <td className="px-3 py-1.5">{KIND_LABEL[m.kind] ?? m.kind}</td>
+                    <td className="px-3 py-1.5">
+                      <span className="font-mono text-xs">{m.material?.code}</span> {m.material?.description}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums">
+                      {qty > 0 ? "+" : ""}
+                      {formatQty(qty)} {m.material?.unit}
+                    </td>
+                    <td className="px-3 py-1.5 text-xs text-slate-600">
+                      {m.budgetItem && (
+                        <span className="text-slate-900">
+                          {m.budgetItem.code} {m.budgetItem.name}
+                          {m.note ? " · " : ""}
+                        </span>
+                      )}
+                      {m.counterpartProject && (
+                        <span className="text-slate-900">
+                          {m.kind === "TRANSFER_OUT" ? "a " : "desde "}
+                          {m.counterpartProject.code} {m.counterpartProject.name}
+                          {m.note ? " · " : ""}
+                        </span>
+                      )}
+                      {m.note}
+                    </td>
+                  </tr>
+                );
+              })}
+              {movs.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="px-3 py-8 text-center text-slate-500">
+                    Sin movimientos.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
       )}
 
-      {/* Adjustment Modal */}
-      {showAdjustmentModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs animate-in fade-in duration-150">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6 border border-slate-200 text-slate-900">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center gap-2">
-                <SlidersHorizontal className="w-5 h-5 text-blue-600" />
-                <h3 className="text-base font-bold text-slate-900">
-                  Ajuste de Inventario Físico
-                </h3>
-              </div>
-              <button
-                onClick={() => setShowAdjustmentModal(false)}
-                className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleAdjustmentSubmit} className="mt-4 space-y-4 text-xs">
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Material a Ajustar
-                </label>
-                <select
-                  value={adjustmentForm.materialId}
-                  onChange={(e) =>
-                    setAdjustmentForm({ ...adjustmentForm, materialId: Number(e.target.value) })
-                  }
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-900 font-medium outline-none focus:border-blue-500 cursor-pointer"
-                >
-                  {materials.map((m) => (
-                    <option key={m.id} value={m.id}>
-                      {m.code} — {m.description} ({m.unit})
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Cantidad del Ajuste (+ para sumar, - para restar)
-                </label>
-                <input
-                  type="number"
-                  step="any"
-                  value={adjustmentForm.quantity}
-                  onChange={(e) =>
-                    setAdjustmentForm({
-                      ...adjustmentForm,
-                      quantity: parseFloat(e.target.value) || 0,
-                    })
-                  }
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-900 font-mono font-bold outline-none focus:border-blue-500"
-                  placeholder="Ej: -2.5 o 5"
-                  required
-                />
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Motivo del Ajuste (Conteo físico, merma, rotura)
-                </label>
-                <textarea
-                  rows={2}
-                  value={adjustmentForm.note}
-                  onChange={(e) => setAdjustmentForm({ ...adjustmentForm, note: e.target.value })}
-                  placeholder="Justificación del conteo físico..."
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-900 placeholder-slate-400 outline-none focus:border-blue-500"
-                  required
-                />
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-4 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setShowAdjustmentModal(false)}
-                  className="px-4 py-2 border border-slate-200 text-slate-700 rounded-xl text-xs font-semibold hover:bg-slate-100 transition cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-xs transition disabled:opacity-50 cursor-pointer"
-                >
-                  {submitting ? "Aplicando..." : "Aplicar Ajuste"}
-                </button>
-              </div>
-            </form>
-          </div>
+      {view === "conteos" && (
+        <div className="overflow-x-auto border border-slate-300">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-300 text-left text-xs font-semibold">
+                <th className="px-3 py-2">Fecha</th>
+                <th className="px-3 py-2">Insumo</th>
+                <th className="px-3 py-2 text-right">Teórico</th>
+                <th className="px-3 py-2 text-right">Contado</th>
+                <th className="px-3 py-2 text-right">Diferencia</th>
+                <th className="px-3 py-2">Foto / nota</th>
+                <th className="w-8" />
+              </tr>
+            </thead>
+            <tbody>
+              {conteos
+                .filter((c) => matches(c.material))
+                .map((c) => (
+                  <tr key={c.id} className="border-b border-slate-100">
+                    <td className="px-3 py-1.5 tabular-nums">{fmtDate(c.fecha)}</td>
+                    <td className="px-3 py-1.5">
+                      <span className="font-mono text-xs">{c.material?.code}</span> {c.material?.description}
+                    </td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">{formatQty(c.stockTeorico)}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">{formatQty(c.cantidadContada)}</td>
+                    <td className={cx("px-3 py-1.5 text-right tabular-nums", c.diferencia < 0 && "font-semibold text-red-600")}>
+                      {c.diferencia > 0 ? "+" : ""}
+                      {formatQty(c.diferencia)}
+                    </td>
+                    <td className="px-3 py-1.5 text-xs">
+                      {c.fotoUrl && (
+                        <a href={c.fotoUrl} target="_blank" rel="noreferrer" className="underline">
+                          foto
+                        </a>
+                      )}
+                      {c.fotoUrl && c.nota ? " · " : ""}
+                      {c.nota}
+                    </td>
+                    <td className="px-1 text-center">
+                      <button
+                        className="p-1 text-slate-400 hover:text-slate-900"
+                        title="Borrar conteo (se recalculan los ajustes)"
+                        onClick={async () => {
+                          if (!window.confirm("¿Borrar este conteo? Se recalculan los ajustes de stock.")) return;
+                          try {
+                            await api.deleteConteo(c.id);
+                            showToast("Conteo borrado");
+                            onRefresh();
+                          } catch (e: any) {
+                            showToast(e.message, "error");
+                          }
+                        }}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              {conteos.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="px-3 py-8 text-center text-slate-500">
+                    Sin conteos. Un conteo fija el saldo a su fecha; la diferencia con el teórico queda como ajuste.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
+      )}
+
+      {dialog === "out" && <SalidaDialog project={project} materials={materials} onClose={() => setDialog(null)} onDone={done} showToast={showToast} />}
+      {dialog === "adjust" && <AjusteDialog project={project} materials={materials} onClose={() => setDialog(null)} onDone={done} showToast={showToast} />}
+      {dialog === "transfer" && <TransferDialog project={project} materials={materials} onClose={() => setDialog(null)} onDone={done} showToast={showToast} />}
+      {dialog === "count" && (
+        <ConteoInventarioForm
+          project={project}
+          materials={materials}
+          onClose={() => setDialog(null)}
+          onSaved={() => {
+            onRefresh();
+            loadConteos();
+          }}
+          showToast={showToast}
+        />
       )}
     </div>
   );
 };
+
+type DialogProps = {
+  project: Project;
+  materials: Material[];
+  onClose: () => void;
+  onDone: () => void;
+  showToast: (msg: string, type?: "success" | "error" | "info") => void;
+};
+
+function MaterialSelect({ materials, value, onChange }: { materials: Material[]; value: number | ""; onChange: (id: number | "") => void }) {
+  const sorted = useMemo(() => [...materials].filter((m) => m.tipo !== "TIEMPO").sort((a, b) => a.description.localeCompare(b.description)), [materials]);
+  return (
+    <select className={inputClass} value={value} onChange={(e) => onChange(e.target.value ? Number(e.target.value) : "")}>
+      <option value="">Elegí el insumo…</option>
+      {sorted.map((m) => (
+        <option key={m.id} value={m.id}>
+          {m.code} — {m.description} ({m.unit})
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function useSubmit(fn: () => Promise<unknown>, msg: string, onDone: () => void, showToast: DialogProps["showToast"]) {
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    setBusy(true);
+    try {
+      const r: any = await fn();
+      showToast(msg, "success");
+      r?.warnings?.forEach((w: string) => showToast(w, "info"));
+      onDone();
+    } catch (e: any) {
+      showToast(e.message || "No se pudo registrar", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { busy, submit };
+}
+
+function SalidaDialog({ project, materials, onClose, onDone, showToast }: DialogProps) {
+  const [f, setF] = useState({ fecha: todayIso(), materialId: "" as number | "", quantity: "", budgetItemId: "" as number | "", note: "" });
+  const { items } = useImputableItems(project.id);
+  const tipo = materials.find((m) => m.id === f.materialId)?.tipo;
+  const ok = f.fecha && f.materialId && Number(f.quantity) > 0 && (!itemRequired(tipo) || f.budgetItemId);
+  const { busy, submit } = useSubmit(
+    () =>
+      api.registerStockIssue(project.id, {
+        fecha: f.fecha,
+        materialId: Number(f.materialId),
+        quantity: Number(f.quantity),
+        budgetItemId: f.budgetItemId || null,
+        note: f.note || undefined,
+      }),
+    f.budgetItemId ? "Salida directa a ítem registrada" : "Salida a obra registrada",
+    onDone,
+    showToast
+  );
+  return (
+    <Modal
+      title="Salida de stock"
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancelar</Button>
+          <Button variant="primary" disabled={!ok || busy} onClick={submit}>
+            Registrar salida
+          </Button>
+        </>
+      }
+    >
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Fecha">
+          <input type="date" className={inputClass} value={f.fecha} max={todayIso()} onChange={(e) => setF({ ...f, fecha: e.target.value })} />
+        </Field>
+        <Field label="Cantidad">
+          <input type="number" min={0} step="any" className={inputClass} value={f.quantity} onChange={(e) => setF({ ...f, quantity: e.target.value })} />
+        </Field>
+        <Field label="Insumo" className="col-span-2">
+          <MaterialSelect materials={materials} value={f.materialId} onChange={(id) => setF({ ...f, materialId: id, budgetItemId: "" })} />
+        </Field>
+        <Field label={tipo === "COMUN" ? "Ítem (opcional: dato de control, el costo sale del ACU)" : "Ítem"} className="col-span-2">
+          {tipo === "COMUN" ? (
+            <BudgetItemSelect projectId={project.id} items={items} value={f.budgetItemId} onChange={(v) => setF({ ...f, budgetItemId: v })} placeholder="Sin ítem" />
+          ) : (
+            <ImputacionCell tipo={tipo} projectId={project.id} items={items} value={f.budgetItemId} onChange={(v) => setF({ ...f, budgetItemId: v })} currency="PYG" showError />
+          )}
+        </Field>
+        <Field label="Nota" className="col-span-2">
+          <input className={inputClass} value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} placeholder="Frente, destino…" />
+        </Field>
+      </div>
+    </Modal>
+  );
+}
+
+function AjusteDialog({ project, materials, onClose, onDone, showToast }: DialogProps) {
+  const [f, setF] = useState({ fecha: todayIso(), materialId: "" as number | "", quantity: "", note: "" });
+  const ok = f.fecha && f.materialId && Number(f.quantity) !== 0 && f.note.trim().length >= 3;
+  const { busy, submit } = useSubmit(
+    () => api.registerAdjustment({ projectId: project.id, materialId: Number(f.materialId), fecha: f.fecha, quantity: Number(f.quantity), note: f.note.trim() }),
+    "Ajuste registrado",
+    onDone,
+    showToast
+  );
+  return (
+    <Modal
+      title="Ajuste manual de stock"
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancelar</Button>
+          <Button variant="primary" disabled={!ok || busy} onClick={submit}>
+            Registrar ajuste
+          </Button>
+        </>
+      }
+    >
+      <p className="text-xs text-slate-500">Para correcciones puntuales (carga errónea, rotura). Si contaste el depósito, usá Conteo: fija el saldo y calcula la diferencia solo.</p>
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Fecha">
+          <input type="date" className={inputClass} value={f.fecha} max={todayIso()} onChange={(e) => setF({ ...f, fecha: e.target.value })} />
+        </Field>
+        <Field label="Cantidad (+ suma, − resta)">
+          <input type="number" step="any" className={inputClass} value={f.quantity} onChange={(e) => setF({ ...f, quantity: e.target.value })} />
+        </Field>
+        <Field label="Insumo" className="col-span-2">
+          <MaterialSelect materials={materials} value={f.materialId} onChange={(id) => setF({ ...f, materialId: id })} />
+        </Field>
+        <Field label="Motivo" className="col-span-2">
+          <input className={inputClass} value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} />
+        </Field>
+      </div>
+    </Modal>
+  );
+}
+
+function TransferDialog({ project, materials, onClose, onDone, showToast }: DialogProps) {
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [f, setF] = useState({ fecha: todayIso(), materialId: "" as number | "", quantity: "", toProjectId: "" as number | "", note: "" });
+  useEffect(() => {
+    api.getProjects().then((ps) => setProjects(ps.filter((p) => p.id !== project.id)));
+  }, [project.id]);
+  const ok = f.fecha && f.materialId && f.toProjectId && Number(f.quantity) > 0;
+  const { busy, submit } = useSubmit(
+    () =>
+      api.transferStock({
+        fromProjectId: project.id,
+        toProjectId: Number(f.toProjectId),
+        materialId: Number(f.materialId),
+        fecha: f.fecha,
+        quantity: Number(f.quantity),
+        note: f.note || undefined,
+      }),
+    "Transferencia registrada",
+    onDone,
+    showToast
+  );
+  return (
+    <Modal
+      title={`Transferir desde ${project.code}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancelar</Button>
+          <Button variant="primary" disabled={!ok || busy} onClick={submit}>
+            Transferir
+          </Button>
+        </>
+      }
+    >
+      <div className="grid grid-cols-2 gap-3">
+        <Field label="Fecha">
+          <input type="date" className={inputClass} value={f.fecha} max={todayIso()} onChange={(e) => setF({ ...f, fecha: e.target.value })} />
+        </Field>
+        <Field label="Cantidad">
+          <input type="number" min={0} step="any" className={inputClass} value={f.quantity} onChange={(e) => setF({ ...f, quantity: e.target.value })} />
+        </Field>
+        <Field label="Insumo" className="col-span-2">
+          <MaterialSelect materials={materials} value={f.materialId} onChange={(id) => setF({ ...f, materialId: id })} />
+        </Field>
+        <Field label="Obra de destino" className="col-span-2">
+          <select className={inputClass} value={f.toProjectId} onChange={(e) => setF({ ...f, toProjectId: e.target.value ? Number(e.target.value) : "" })}>
+            <option value="">Elegí la obra…</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.code} · {p.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="Nota" className="col-span-2">
+          <input className={inputClass} value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} />
+        </Field>
+      </div>
+      <p className="text-xs text-slate-500">
+        El valor del material (precio vigente a la fecha) pasa del stock de esta obra al de la de destino en "Costos a distribuir".
+      </p>
+    </Modal>
+  );
+}

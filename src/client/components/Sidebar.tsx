@@ -14,7 +14,20 @@ import {
   Users,
 } from "lucide-react";
 import { Project, User } from "../types";
-import { cx } from "../ui";
+import {
+  Sidebar as SidebarRoot,
+  SidebarContent,
+  SidebarFooter,
+  SidebarGroup,
+  SidebarGroupLabel,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuBadge,
+  SidebarMenuButton,
+  SidebarMenuItem,
+  SidebarRail,
+  useSidebar,
+} from "../ui/sidebar";
 
 export type ActiveTab =
   | "dashboard"
@@ -63,7 +76,7 @@ const isActive = (active: ActiveTab, id: ActiveTab) =>
   (id === "centro-costos" && active === "certificaciones") ||
   (id === "ejecucion-certificaciones" && active === "subcontratistas");
 
-/** Menú lateral: Inicio (cartera) y, dentro de la obra, sus módulos. */
+/** Menú lateral (shadcn Sidebar): Inicio (cartera) y, dentro de la obra, sus módulos. */
 export const Sidebar: React.FC<SidebarProps> = ({
   activeTab,
   onNavigate,
@@ -73,68 +86,117 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onLogout,
   badges = {},
 }) => {
-  const item = (active: boolean) =>
-    cx(
-      "flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition",
-      active ? "bg-brand-50 text-brand-700" : "text-slate-600 hover:bg-slate-100 hover:text-slate-900"
-    );
-
   return (
-    <aside className="flex h-full w-60 flex-col border-r border-slate-200 bg-white">
-      <div className="flex h-14 items-center gap-2.5 border-b border-slate-100 px-4">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-white">
-          <Building2 className="h-4 w-4" />
-        </div>
-        <div className="leading-tight">
-          <p className="text-sm font-semibold text-slate-900">InfraTrack</p>
-          <p className="text-[11px] text-slate-500">Control de obras</p>
-        </div>
-      </div>
+    <SidebarRoot>
+      <SidebarHeader>
+        <BrandMark />
+      </SidebarHeader>
 
-      <nav className="flex-1 space-y-6 overflow-y-auto px-3 py-4">
-        <button onClick={onGoPortfolio} className={item(!project)}>
-          <Home className="h-4 w-4" />
-          Todas las obras
-        </button>
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <NavButton icon={Home} isActive={!project} tooltip="Todas las obras" onClick={onGoPortfolio}>
+                Todas las obras
+              </NavButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroup>
 
         {project && (
-          <div className="space-y-1">
-            <p className="truncate px-3 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400" title={project.name}>
+          <SidebarGroup>
+            <SidebarGroupLabel title={project.name}>
               {project.code} · {project.name}
-            </p>
-            {PROJECT_MENU.map(({ id, label, icon: Icon, badge }) => (
-              <button key={id} onClick={() => onNavigate(id)} className={item(isActive(activeTab, id))}>
-                <Icon className="h-4 w-4" />
-                <span className="flex-1 text-left">{label}</span>
-                {badge && (badges[badge] ?? 0) > 0 && (
-                  <span className="rounded-full bg-amber-100 px-1.5 text-[11px] font-semibold text-amber-800">{badges[badge]}</span>
-                )}
-              </button>
-            ))}
-          </div>
+            </SidebarGroupLabel>
+            <SidebarMenu>
+              {PROJECT_MENU.map(({ id, label, icon, badge }) => (
+                <SidebarMenuItem key={id}>
+                  <NavButton
+                    icon={icon}
+                    isActive={isActive(activeTab, id)}
+                    tooltip={label}
+                    onClick={() => onNavigate(id)}
+                    badge={badge && (badges[badge] ?? 0) > 0 ? <SidebarMenuBadge>{badges[badge]}</SidebarMenuBadge> : undefined}
+                  >
+                    {label}
+                  </NavButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroup>
         )}
-      </nav>
+      </SidebarContent>
 
-      <div className="space-y-1 border-t border-slate-100 p-3">
+      <SidebarFooter>
         {project && (
-          <button onClick={() => onNavigate("configuracion")} className={item(activeTab === "configuracion")}>
-            <Settings className="h-4 w-4" />
-            Configuración
-          </button>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <NavButton icon={Settings} isActive={activeTab === "configuracion"} tooltip="Configuración" onClick={() => onNavigate("configuracion")}>
+                Configuración
+              </NavButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
         )}
-        <div className="flex items-center gap-2 px-3 py-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700">
-            {currentUser?.initials || "US"}
-          </div>
-          <div className="min-w-0 flex-1 leading-tight">
-            <p className="truncate text-sm font-medium text-slate-800">{currentUser?.fullName || "Usuario"}</p>
-            <p className="truncate text-[11px] text-slate-500">{currentUser?.roleLabel || currentUser?.role}</p>
-          </div>
-          <button onClick={onLogout} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700" title="Cerrar sesión">
-            <LogOut className="h-4 w-4" />
-          </button>
-        </div>
-      </div>
-    </aside>
+        <UserFooter currentUser={currentUser} onLogout={onLogout} />
+      </SidebarFooter>
+      <SidebarRail />
+    </SidebarRoot>
   );
 };
+
+/** Botón de navegación: en mobile, cierra el cajón del menú al elegir un destino. */
+function NavButton({ onClick, ...props }: React.ComponentProps<typeof SidebarMenuButton>) {
+  const { isMobile, setOpenMobile } = useSidebar();
+  return (
+    <SidebarMenuButton
+      {...props}
+      onClick={(e) => {
+        onClick?.(e);
+        if (isMobile) setOpenMobile(false);
+      }}
+    />
+  );
+}
+
+function BrandMark() {
+  const { state, isMobile } = useSidebar();
+  const collapsed = state === "collapsed" && !isMobile;
+  return (
+    <>
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-slate-900 text-white">
+        <Building2 className="h-4 w-4" />
+      </div>
+      {!collapsed && (
+        <div className="min-w-0 leading-tight">
+          <p className="truncate text-sm font-semibold text-slate-900">InfraTrack</p>
+          <p className="truncate text-[11px] text-slate-500">Control de obras</p>
+        </div>
+      )}
+    </>
+  );
+}
+
+function UserFooter({ currentUser, onLogout }: { currentUser?: User | null; onLogout: () => void }) {
+  const { state, isMobile } = useSidebar();
+  const collapsed = state === "collapsed" && !isMobile;
+  return (
+    <div className={collapsed ? "flex flex-col items-center gap-1 px-0 py-2" : "flex items-center gap-2 px-2.5 py-2"}>
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700">
+        {currentUser?.initials || "US"}
+      </div>
+      {!collapsed && (
+        <div className="min-w-0 flex-1 leading-tight">
+          <p className="truncate text-sm font-medium text-slate-800">{currentUser?.fullName || "Usuario"}</p>
+          <p className="truncate text-[11px] text-slate-500">{currentUser?.roleLabel || currentUser?.role}</p>
+        </div>
+      )}
+      <button
+        onClick={onLogout}
+        title="Cerrar sesión"
+        className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+      >
+        <LogOut className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}

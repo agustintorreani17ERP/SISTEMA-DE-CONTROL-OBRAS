@@ -6,6 +6,12 @@ import { ok } from "../../http/respond";
 import { DomainError, NotFoundError } from "../../errors/domain";
 import { toDecimal } from "../../lib/money";
 import { postCost, postMovement } from "../../domain/budget";
+import { assertOpenPeriod, fechaContable } from "../../domain/progress";
+import { today } from "../../domain/prices";
+import { invalidateCostCache } from "../../domain/costCache";
+import { costoHoraEmpleados } from "../../domain/labor";
+import { cargasPct } from "../../domain/laborCost";
+import { EVENTO, postAsientoDesdeRegla } from "../../domain/contabilidad";
 
 export const rrhhRouter = Router();
 
@@ -26,6 +32,9 @@ async function getConfig(projectId?: number) {
     horasDiasLaborales: toDecimal(8),
     bonificacionFamiliar: toDecimal(0),
     aguinaldoMeses: toDecimal(12),
+    pctVacaciones: toDecimal(4.17),
+    pctOtrasCargas: toDecimal(0),
+    diasLaboralesMes: toDecimal(26),
   };
 }
 
@@ -138,6 +147,7 @@ const EmpleadoSchema = z.object({
   notas: z.string().optional().nullable(),
   projectId: z.number().int().optional().nullable(),
   personnelId: z.number().int().optional().nullable(),
+  costoHoraManual: z.number().positive().optional().nullable(),
 });
 
 rrhhRouter.post(
@@ -168,7 +178,27 @@ rrhhRouter.put(
         ...(body.fechaIngreso !== undefined && { fechaIngreso: new Date(body.fechaIngreso) }),
       },
     });
+    invalidateCostCache();
     ok(res, e);
+  })
+);
+
+/** Costo hora con cargas de los empleados (de la obra, o todos). */
+rrhhRouter.get(
+  "/rrhh/costo-hora",
+  asyncHandler(async (req, res) => {
+    const projectId = req.query.projectId ? Number(req.query.projectId) : null;
+    const emps = await prisma.empleado.findMany({
+      where: projectId ? { projectId } : undefined,
+      select: { id: true, fullName: true, tipo: true, salarioBase: true },
+      orderBy: { fullName: "asc" },
+    });
+    const { cfg, map } = await costoHoraEmpleados(prisma, projectId, emps.map((e) => e.id));
+    ok(res, {
+      config: cfg,
+      cargas: cargasPct(cfg),
+      empleados: emps.map((e) => ({ id: e.id, fullName: e.fullName, tipo: e.tipo, salarioBase: Number(e.salarioBase), ...map.get(e.id)! })),
+    });
   })
 );
 
@@ -238,6 +268,8 @@ rrhhRouter.post(
   "/rrhh/asistencias",
   asyncHandler(async (req, res) => {
     const body = AsistenciaSchema.parse(req.body);
+    // La asistencia es llave de reparto del costo por tiempo: lo cerrado no se edita.
+    await assertOpenPeriod(prisma, body.projectId, body.fecha, "La asistencia");
     const a = await prisma.asistencia.upsert({
       where: { empleadoId_projectId_fecha: { empleadoId: body.empleadoId, projectId: body.projectId, fecha: new Date(body.fecha) } },
       create: {
@@ -265,6 +297,7 @@ rrhhRouter.post(
   "/rrhh/asistencias/batch",
   asyncHandler(async (req, res) => {
     const rows = z.array(AsistenciaSchema).parse(req.body);
+    for (const r of rows) await assertOpenPeriod(prisma, r.projectId, r.fecha, "La asistencia");
     const results = await prisma.$transaction(
       rows.map((body) =>
         prisma.asistencia.upsert({
@@ -465,16 +498,32 @@ rrhhRouter.post(
     }
 
     const updated = await prisma.$transaction(async (tx) => {
+      // Fecha del hecho: último día del mes liquidado (o el primer día abierto si ya se cerró)
+      const [y, m] = liq.periodo.split("-").map(Number);
+      const finDeMes = new Date(Date.UTC(y, m, 0));
+      const hoy = today();
+      const fc = await fechaContable(tx, liq.projectId, finDeMes > hoy ? hoy : finDeMes);
       const movement = await postMovement(tx, {
         projectId: liq.projectId,
         budgetItemId: liq.budgetItemId!,
         source: "LABOR_COST",
         stage: "ACTUAL",
+        fecha: fc.fecha,
         amount: liq.costoTotal,
         sourceType: "LiquidacionPersonal",
         sourceId: id,
         sourceNumber: `LIQ-${liq.periodo}-${String(id).padStart(4, "0")}`,
         note: `Liquidación ${liq.periodo} — ${liq.empleado.fullName}`,
+      });
+      await postAsientoDesdeRegla(tx, {
+        evento: EVENTO.LIQUIDACION_APROBADA,
+        projectId: liq.projectId,
+        concepto: `Liquidación ${liq.periodo} — ${liq.empleado.fullName}`,
+        sourceType: "LiquidacionPersonal",
+        sourceId: id,
+        fecha: fc.fecha,
+        debe: [{ monto: liq.costoTotal, budgetItemId: liq.budgetItemId! }],
+        haber: [{ monto: liq.costoTotal }],
       });
 
       return tx.liquidacionPersonal.update({
@@ -528,6 +577,9 @@ rrhhRouter.put(
         horasDiasLaborales: z.number().min(1),
         bonificacionFamiliar: z.number().min(0),
         aguinaldoMeses: z.number().min(1),
+        pctVacaciones: z.number().min(0).max(100).optional(),
+        pctOtrasCargas: z.number().min(0).max(100).optional(),
+        diasLaboralesMes: z.number().min(1).max(31).optional(),
       })
       .parse(req.body);
 
@@ -538,7 +590,11 @@ rrhhRouter.put(
       horasDiasLaborales: toDecimal(body.horasDiasLaborales),
       bonificacionFamiliar: toDecimal(body.bonificacionFamiliar),
       aguinaldoMeses: toDecimal(body.aguinaldoMeses),
+      ...(body.pctVacaciones !== undefined && { pctVacaciones: toDecimal(body.pctVacaciones) }),
+      ...(body.pctOtrasCargas !== undefined && { pctOtrasCargas: toDecimal(body.pctOtrasCargas) }),
+      ...(body.diasLaboralesMes !== undefined && { diasLaboralesMes: toDecimal(body.diasLaboralesMes) }),
     };
+    invalidateCostCache();
 
     if (projectId) {
       const cfg = await prisma.rRHHConfig.upsert({

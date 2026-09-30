@@ -1,6 +1,8 @@
 import { Prisma, type BudgetMovementSource, type BudgetMovementStage } from "@prisma/client";
 import { DomainError, NotFoundError } from "../errors/domain";
 import { toDecimal, type MoneyLike } from "../lib/money";
+import { assertOpenPeriod } from "./progress";
+import { today } from "./prices";
 
 /**
  * Libro mayor presupuestario.
@@ -28,6 +30,8 @@ export interface BudgetWarning {
 export interface PostMovementInput {
   projectId: number;
   budgetItemId: number;
+  /** Insumo del hecho, si se conoce (obra + ítem + insumo + fecha). */
+  insumoId?: number | null;
   source: BudgetMovementSource;
   stage: BudgetMovementStage;
   amount: MoneyLike;
@@ -37,6 +41,8 @@ export interface PostMovementInput {
   sourceNumber?: string;
   note?: string;
   createdBy?: string;
+  /** Fecha del hecho; por defecto hoy. */
+  fecha?: Date;
 }
 
 const COST_SOURCES: BudgetMovementSource[] = [
@@ -44,6 +50,7 @@ const COST_SOURCES: BudgetMovementSource[] = [
   "SUBCONTRACT",
   "PETTY_CASH",
   "MANUAL_ADJUSTMENT",
+  "INVOICE",
 ];
 
 export function isCostSource(source: BudgetMovementSource) {
@@ -96,6 +103,11 @@ export async function assertImputableItem(tx: Tx, projectId: number, budgetItemI
 
 export async function postMovement(tx: Tx, input: PostMovementInput) {
   const item = await assertImputableItem(tx, input.projectId, input.budgetItemId);
+  // Lo cerrado no se edita. El certificado al cliente es la excepción: se aprueba después de
+  // cerrar el período de su medición.
+  if (input.source !== "CLIENT_CERTIFICATE") {
+    await assertOpenPeriod(tx, input.projectId, input.fecha ?? today(), "El movimiento contable");
+  }
   const amount = toDecimal(input.amount);
   const quantity =
     input.quantity === undefined || input.quantity === null ? null : toDecimal(input.quantity);
@@ -130,6 +142,7 @@ export async function postMovement(tx: Tx, input: PostMovementInput) {
     data: {
       projectId: input.projectId,
       budgetItemId: item.id,
+      insumoId: input.insumoId ?? null,
       source: input.source,
       stage: input.stage,
       amount,
@@ -140,6 +153,8 @@ export async function postMovement(tx: Tx, input: PostMovementInput) {
       overBudget: warnings.length > 0,
       note: input.note,
       createdBy: input.createdBy,
+      // Sin fecha del hecho: hoy en Paraguay (el default de la base truncaría en UTC)
+      fecha: input.fecha ?? today(),
     },
   });
   await tx.budgetItem.update({
@@ -197,6 +212,7 @@ export async function reverseMovements(
       data: {
         projectId: m.projectId,
         budgetItemId: m.budgetItemId,
+        insumoId: m.insumoId,
         source: m.source,
         stage: m.stage,
         amount,
@@ -205,6 +221,7 @@ export async function reverseMovements(
         sourceId: m.sourceId,
         sourceNumber: m.sourceNumber,
         reversalOfId: m.id,
+        fecha: today(),
         note: params.note ?? `Reverso de movimiento ${m.id}`,
         createdBy: params.createdBy,
       },

@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Camera, X, Trash2, Plus, Image, Calendar, MessageSquare, ExternalLink } from "lucide-react";
 import { ItemPhoto } from "../../types";
+import { todayIso } from "../../insumos/labels";
 
 interface ItemPhotoModalProps {
   isOpen: boolean;
@@ -24,7 +25,7 @@ export const ItemPhotoModal: React.FC<ItemPhotoModalProps> = ({
   const [photoList, setPhotoList] = useState<ItemPhoto[]>(photos);
   const [newUrl, setNewUrl] = useState("");
   const [newComment, setNewComment] = useState("");
-  const [newDate, setNewDate] = useState(new Date().toISOString().split("T")[0]);
+  const [newDate, setNewDate] = useState(todayIso());
   const [selectedPreview, setSelectedPreview] = useState<string | null>(null);
 
   if (!isOpen) return null;

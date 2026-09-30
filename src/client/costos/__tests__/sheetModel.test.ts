@@ -24,6 +24,19 @@ const node = (p: Partial<CostNode> & { id: number; name: string }): CostNode => 
   executedQuantity: 0,
   executedAmount: 0,
   quantityExceeded: false,
+  costoMetaUnit: null,
+  costoMetaTotal: 0,
+  costoMetaFuente: null,
+  metaMaterial: 0,
+  metaManoObra: 0,
+  metaEquipo: 0,
+  ventaSinIva: 0,
+  margenPrevisto: 0,
+  margenPct: null,
+  acuComponentes: 0,
+  acuSuperaOferta: false,
+  itemsSinCostoMeta: 0,
+  pareto: false,
   ...p,
 });
 
@@ -64,5 +77,13 @@ describe("planilla técnica", () => {
     const t = sheetTotals(buildSheetRows(nodes), nodes, false);
     expect(t.planned).toBe(1_000_000);
     expect(t.executed).toBe(500_000);
+  });
+});
+
+describe("filtro Pareto", () => {
+  it("muestra solo los ítems marcados y sus rubros", () => {
+    const withPareto = nodes.map((n) => (n.id === 3 || n.id === 1 || n.id === 2 ? { ...n, pareto: true } : n));
+    const rows = buildSheetRows(withPareto, { onlyPareto: true });
+    expect(rows.map((r) => r.node.id)).toEqual([1, 2, 3]);
   });
 });

@@ -8,6 +8,7 @@ import { auxFormula, auxSubtotal, measuredQuantity } from "../../modules/certifi
 import { formatMoney } from "../utils/format";
 
 import { formatQty } from "../utils/numbers";
+import { todayIso } from "../insumos/labels";
 interface AuxRow {
   key: number;
   location: string;
@@ -60,7 +61,7 @@ export function MeasurementWizard({ project, partners, subcontracts, currency, o
   const [contractId, setContractId] = useState<number | "">("");
   const [newSub, setNewSub] = useState<{ name: string; taxId: string } | null>(null);
   const [periodFrom, setPeriodFrom] = useState("");
-  const [periodTo, setPeriodTo] = useState(new Date().toISOString().slice(0, 10));
+  const [periodTo, setPeriodTo] = useState(todayIso());
   const [nextLabel, setNextLabel] = useState("");
   const [catalog, setCatalog] = useState<MeasurableItem[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
@@ -574,11 +575,16 @@ function AddRubroModal({
             <p className="font-medium">{formatQty(selected.cantidadAnterior)}</p>
           </div>
           <div>
-            <p className="text-xs text-slate-500">{selected.priceSource === "MANO_DE_OBRA" ? "Precio MO" : "Precio venta"}</p>
+            <p className="text-xs text-slate-500">{selected.priceSource === "MANO_DE_OBRA" ? "Precio MO sugerido" : "Precio venta"}</p>
             {selected.missingPrice ? (
               <input type="number" min={0} value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Cargar precio" className={inputClass} />
             ) : (
-              <p className="font-medium">{formatMoney(selected.unitPrice, currency)}</p>
+              <>
+                <p className="font-medium">{formatMoney(selected.unitPrice, currency)}</p>
+                {selected.laborPriceSource && (
+                  <p className="text-xs text-slate-500">{selected.laborPriceSource === "LISTA_OBRA" ? "Lista de MO de la obra" : "MO del ACU (lista de MO)"}</p>
+                )}
+              </>
             )}
           </div>
         </div>

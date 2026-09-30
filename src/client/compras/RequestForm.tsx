@@ -3,7 +3,9 @@ import { Plus, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { Material, Personnel, Project, User, WorkFront } from "../types";
 import { Button, Field, inputClass, Modal } from "../ui";
-import { BudgetItemSelect, useImputableItems } from "../components/BudgetItemSelect";
+import { useImputableItems } from "../components/BudgetItemSelect";
+import { ImputacionCell, itemAllowed, itemRequired } from "./ImputacionCell";
+import { todayIso } from "../insumos/labels";
 
 interface Line {
   key: number;
@@ -46,13 +48,17 @@ export function RequestForm({
     personnel.find((p) => p.fullName === currentUser?.fullName)?.id ?? ""
   );
   const [notes, setNotes] = useState("");
+  const [fecha, setFecha] = useState(todayIso());
+  const [tried, setTried] = useState(false);
   const [lines, setLines] = useState<Line[]>([newLine()]);
   const [saving, setSaving] = useState(false);
   const [newFront, setNewFront] = useState<string | null>(null);
   const [newMaterial, setNewMaterial] = useState<{ lineKey: number; description: string; unit: string } | null>(null);
   const { items: imputable } = useImputableItems(project.id);
 
+  const tipoOf = (id: number | "") => catalog.find((m) => m.id === id)?.tipo;
   const valid = lines.filter((l) => l.materialId && Number(l.quantity) > 0);
+  const missingItem = valid.filter((l) => itemRequired(tipoOf(l.materialId)) && !l.budgetItemId);
   const materialsSorted = useMemo(() => [...catalog].sort((a, b) => a.description.localeCompare(b.description)), [catalog]);
   const update = (key: number, patch: Partial<Line>) => setLines((prev) => prev.map((l) => (l.key === key ? { ...l, ...patch } : l)));
 
@@ -89,17 +95,21 @@ export function RequestForm({
 
   const save = async (approve: boolean) => {
     if (!valid.length) return showToast("Agregá al menos un material con cantidad", "error");
+    setTried(true);
+    if (!fecha) return showToast("Indicá la fecha del pedido", "error");
+    if (missingItem.length) return showToast(`${missingItem.length} línea(s) con insumo DIRECTO sin ítem`, "error");
     setSaving(true);
     try {
       const created = await api.createMaterialRequest({
         projectId: project.id,
         workFrontId: workFrontId || null,
         requestedById: requestedById || null,
+        requestedDate: fecha,
         notes: notes || undefined,
         details: valid.map((l) => ({
           materialId: Number(l.materialId),
           quantity: Number(l.quantity),
-          budgetItemId: l.budgetItemId ? Number(l.budgetItemId) : undefined,
+          budgetItemId: l.budgetItemId && itemAllowed(tipoOf(l.materialId)) ? Number(l.budgetItemId) : null,
         })),
       });
       if (approve) await api.approveMaterialRequest(created.id);
@@ -129,7 +139,10 @@ export function RequestForm({
         </>
       }
     >
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <Field label="Fecha del pedido">
+          <input type="date" required value={fecha} onChange={(e) => setFecha(e.target.value)} className={inputClass} />
+        </Field>
         <Field label="Frente de obra (opcional)">
           {newFront === null ? (
             <div className="flex gap-2">
@@ -235,13 +248,14 @@ export function RequestForm({
                 className={`${inputClass} col-span-4 sm:col-span-2`}
               />
               <div className="col-span-7 sm:col-span-3">
-                <BudgetItemSelect
+                <ImputacionCell
+                  tipo={tipoOf(line.materialId)}
                   projectId={project.id}
                   items={imputable}
                   value={line.budgetItemId}
                   onChange={(v) => update(line.key, { budgetItemId: v })}
                   currency={currency}
-                  placeholder="Rubro (opcional)"
+                  showError={tried}
                 />
               </div>
               <button
@@ -254,7 +268,9 @@ export function RequestForm({
             </div>
           ))}
         </div>
-        <p className="text-xs text-slate-500">El rubro se puede dejar vacío: se elige al armar la orden de compra.</p>
+        <p className="text-xs text-slate-500">
+          Ítem obligatorio solo para insumos DIRECTOS. Los COMUNES van al stock de la obra; los de TIEMPO sin ítem se prorratean.
+        </p>
       </div>
 
       <Field label="Nota (opcional)">

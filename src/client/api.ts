@@ -18,11 +18,38 @@ import {
   ProjectOverview,
   PettyCashFund,
   PettyCashExpense,
+  CuentaFinanciera,
+  MovimientoCuentaFinanciera,
+  Cheque,
   MaterialRequest,
   PurchaseOrder,
   SubcontractorContract,
   WarehouseStock,
   StockMovement,
+  ConteoInventario,
+  ProgressReport,
+  AvanceHecho,
+  CierreResumen,
+  PlanPreview,
+  CostEngineData,
+  ParteEquipoRow,
+  ParteCatalogo,
+  ParteDiarioInput,
+  ParteDiarioRow,
+  CombustibleData,
+  ViajesData,
+  CostoHoraData,
+  ClientInvoicePreview,
+  ReconciliationData,
+  CostDashboardData,
+  ItemDrillData,
+  Insumo,
+  InsumoPrecio,
+  InsumoTipo,
+  InsumoCategoria,
+  MoImportPreview,
+  ItemAcuData,
+  AcuBibliotecaItem,
 } from "./types";
 import type {
   ArithmeticStrategy,
@@ -49,7 +76,8 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
       payload.error?.message ||
       payload.message ||
       (typeof payload.error === "string" ? payload.error : "Error en el servidor");
-    throw new Error(errorMsg);
+    // status: la cola sin conexión distingue "el servidor rechazó" (4xx) de "no hubo red"
+    throw Object.assign(new Error(errorMsg), { status: response.status });
   }
   return payload.data as T;
 }
@@ -207,11 +235,12 @@ export const api = {
     projectId: number;
     workFrontId?: number | null;
     requestedById?: number | null;
-    requestedDate?: string;
+    /** AAAA-MM-DD, obligatoria. */
+    requestedDate: string;
     notes?: string;
     details: {
       materialId: number;
-      budgetItemId?: number;
+      budgetItemId?: number | null;
       quantity: number;
     }[];
   }) =>
@@ -229,11 +258,13 @@ export const api = {
   createPurchaseOrder: (body: {
     materialRequestId: number;
     partnerId: number;
+    /** AAAA-MM-DD, obligatoria. */
+    fecha: string;
     expectedDate?: string;
     details: {
       requestDetailId: number;
-      /** Rubro de destino; si falta se usa el del pedido. */
-      budgetItemId?: number;
+      /** Ítem: obligatorio para insumos DIRECTOS, no va para COMUNES. */
+      budgetItemId?: number | null;
       quantity: number;
       unitPrice: number;
     }[];
@@ -246,8 +277,8 @@ export const api = {
     request<PurchaseOrder>(`/api/compras/${id}/aprobar`, { method: "POST" }),
   issuePurchaseOrder: (id: number) =>
     request<PurchaseOrder & { budgetWarnings?: BudgetWarning[] }>(`/api/compras/${id}/emitir`, { method: "POST" }),
-  receivePurchaseOrder: (id: number) =>
-    request<PurchaseOrder>(`/api/compras/${id}/recibir`, { method: "POST" }),
+  receivePurchaseOrder: (id: number, body: { fecha: string; remito?: string }) =>
+    request<PurchaseOrder>(`/api/compras/${id}/recibir`, { method: "POST", body: JSON.stringify(body) }),
   cancelPurchaseOrder: (id: number) =>
     request<PurchaseOrder>(`/api/compras/${id}/anular`, { method: "POST" }),
   deletePurchaseOrder: (id: number) =>
@@ -472,7 +503,9 @@ export const api = {
     request<PettyCashFund>(`/api/caja-chica/fondos/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   createPettyCashExpense: (body: {
     fundId: number;
-    budgetItemId: number;
+    insumoId: number;
+    budgetItemId: number | null;
+    quantity: number | null;
     date: string;
     receiptNumber: string;
     supplierName: string;
@@ -485,12 +518,44 @@ export const api = {
       body: JSON.stringify(body),
     }),
   settlePettyCashFund: (fundId: number) =>
-    request<{ settled: number }>(`/api/caja-chica/fondos/${fundId}/rendicion`, { method: "POST" }),
+    request<{ settled: number; avisos: string[] }>(`/api/caja-chica/fondos/${fundId}/rendicion`, { method: "POST", body: JSON.stringify({}) }),
   rejectPettyCashExpense: (id: number, reason: string) =>
     request<PettyCashExpense>(`/api/caja-chica/gastos/${id}/rechazar`, {
       method: "POST",
       body: JSON.stringify({ reason }),
     }),
+
+  // Bancos y cajas
+  getCuentasFinancieras: (projectId: number) => request<CuentaFinanciera[]>(`/api/cuentas-financieras?projectId=${projectId}`),
+  createCuentaFinanciera: (body: {
+    projectId: number;
+    nombre: string;
+    tipo: "BANCO" | "CAJA";
+    moneda?: string;
+    banco?: string;
+    numeroCuenta?: string;
+    cuentaContableId?: number | null;
+    saldoInicial?: number;
+  }) => request<CuentaFinanciera>("/api/cuentas-financieras", { method: "POST", body: JSON.stringify(body) }),
+  updateCuentaFinanciera: (
+    id: number,
+    body: Partial<{ nombre: string; banco: string; numeroCuenta: string; cuentaContableId: number | null; active: boolean; saldoInicial: number }>
+  ) => request<CuentaFinanciera>(`/api/cuentas-financieras/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  getMovimientosCuenta: (id: number, desde?: string, hasta?: string) => {
+    const params = new URLSearchParams();
+    if (desde) params.set("desde", desde);
+    if (hasta) params.set("hasta", hasta);
+    const qs = params.toString();
+    return request<{ cuenta: CuentaFinanciera; saldoInicialRango: number; movimientos: MovimientoCuentaFinanciera[]; saldoFinalRango: number }>(
+      `/api/cuentas-financieras/${id}/movimientos${qs ? `?${qs}` : ""}`
+    );
+  },
+  createTransferencia: (body: { cuentaOrigenId: number; cuentaDestinoId: number; monto: number; fecha: string; concepto?: string }) =>
+    request<{ id: number }>("/api/cuentas-financieras/transferencias", { method: "POST", body: JSON.stringify(body) }),
+  getCheques: (projectId: number, estado?: string) =>
+    request<Cheque[]>(`/api/cuentas-financieras/cheques?projectId=${projectId}${estado ? `&estado=${estado}` : ""}`),
+  updateChequeEstado: (id: number, estado: Cheque["estado"]) =>
+    request<Cheque>(`/api/cuentas-financieras/cheques/${id}/estado`, { method: "PATCH", body: JSON.stringify({ estado }) }),
 
 
   // Authentication
@@ -504,20 +569,40 @@ export const api = {
   logout: () => request<any>("/api/auth/logout", { method: "POST" }),
 
   // Warehouse Stock
-  getStock: (projectId?: number) =>
-    request<WarehouseStock[]>(`/api/stock${projectId ? `?projectId=${projectId}` : ""}`),
+  getStock: (projectId?: number, fecha?: string) => {
+    const qs = new URLSearchParams();
+    if (projectId) qs.set("projectId", String(projectId));
+    if (fecha) qs.set("fecha", fecha);
+    return request<WarehouseStock[]>(`/api/stock?${qs}`);
+  },
   getStockMovements: (projectId?: number) =>
     request<StockMovement[]>(`/api/stock/movimientos${projectId ? `?projectId=${projectId}` : ""}`),
-  registerConsumption: (projectId: number, body: { materialId: number; quantity: number; note?: string }) =>
-    request<WarehouseStock>(`/api/stock/${projectId}/consumos`, {
+  /** Salida de stock. Con ítem es salida directa (obligatorio si el insumo es DIRECTO). */
+  registerStockIssue: (
+    projectId: number,
+    body: { fecha: string; materialId: number; quantity: number; budgetItemId?: number | null; note?: string }
+  ) => request<StockMovement>(`/api/stock/${projectId}/salidas`, { method: "POST", body: JSON.stringify(body) }),
+  registerAdjustment: (body: { projectId: number; materialId: number; fecha: string; quantity: number; note: string }) =>
+    request<StockMovement>("/api/stock/ajustes", { method: "POST", body: JSON.stringify(body) }),
+  transferStock: (body: { fromProjectId: number; toProjectId: number; materialId: number; fecha: string; quantity: number; note?: string }) =>
+    request<{ warnings: string[] }>("/api/stock/transferencias", { method: "POST", body: JSON.stringify(body) }),
+  getStockTeorico: (projectId: number, materialId: number, fecha: string) =>
+    request<{ stockTeorico: number }>(`/api/stock/teorico?projectId=${projectId}&materialId=${materialId}&fecha=${fecha}`),
+  getConteos: (projectId: number) => request<ConteoInventario[]>(`/api/stock/conteos?projectId=${projectId}`),
+  createConteo: (body: {
+    projectId: number;
+    materialId: number;
+    fecha: string;
+    cantidadContada: number;
+    fotoUrl?: string | null;
+    nota?: string | null;
+    createdBy?: string | null;
+  }) =>
+    request<{ id: number; fecha: string; cantidadContada: number; stockTeorico: number; diferencia: number }>("/api/stock/conteos", {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  registerAdjustment: (body: { projectId: number; materialId: number; quantity: number; note: string }) =>
-    request<WarehouseStock>("/api/stock/ajustes", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+  deleteConteo: (id: number) => request<{ deleted: boolean }>(`/api/stock/conteos/${id}`, { method: "DELETE" }),
 
   // Advanced Certifications & Measurements
   getCertifications: (params?: { projectId?: number; partnerId?: number | null; estado?: string }) => {
@@ -556,7 +641,7 @@ export const api = {
       method: "POST",
     }),
   approveCertification: (id: number) =>
-    request<{ certification: any; invoice: any; budgetWarnings?: BudgetWarning[] }>(`/api/certifications/${id}/approve`, {
+    request<{ certification: any; invoice: any; budgetWarnings?: BudgetWarning[]; measurementWarnings?: string[] }>(`/api/certifications/${id}/approve`, {
       method: "POST",
     }),
   deleteCertification: (id: number) =>
@@ -613,5 +698,133 @@ export const api = {
       method: "PUT",
       body: JSON.stringify(body),
     }),
-};
+  // Catálogo de insumos
+  getInsumos: (params: { tipo?: InsumoTipo; categoria?: InsumoCategoria; q?: string; fecha?: string; inactivos?: boolean } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.tipo) qs.set("tipo", params.tipo);
+    if (params.categoria) qs.set("categoria", params.categoria);
+    if (params.q) qs.set("q", params.q);
+    if (params.fecha) qs.set("fecha", params.fecha);
+    if (params.inactivos) qs.set("inactivos", "true");
+    return request<Insumo[]>(`/api/insumos?${qs}`);
+  },
+  createInsumo: (body: {
+    code: string;
+    description: string;
+    unit: string;
+    category?: string;
+    tipo: InsumoTipo;
+    categoria: InsumoCategoria;
+    sector?: string | null;
+    toleranciaPct?: number;
+    precio: number;
+    vigenteDesde?: string;
+  }) => request<Insumo>("/api/insumos", { method: "POST", body: JSON.stringify(body) }),
+  updateInsumo: (
+    id: number,
+    body: Partial<Pick<Insumo, "code" | "description" | "unit" | "category" | "tipo" | "categoria" | "sector" | "toleranciaPct" | "consumoLh" | "active">>
+  ) => request<Insumo>(`/api/insumos/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  getInsumoPrecios: (id: number) => request<InsumoPrecio[]>(`/api/insumos/${id}/precios`),
+  addInsumoPrecio: (id: number, body: { precio: number; vigenteDesde: string }) =>
+    request<InsumoPrecio>(`/api/insumos/${id}/precios`, { method: "POST", body: JSON.stringify(body) }),
+  previewImportMO: async (data: { file?: File; pastedText?: string; vigenteDesde: string }) => {
+    const form = new FormData();
+    if (data.file) form.append("file", data.file);
+    if (data.pastedText) form.append("pastedText", data.pastedText);
+    form.append("vigenteDesde", data.vigenteDesde);
+    const response = await fetch("/api/insumos/import-mo/preview", { method: "POST", body: form });
+    const payload = await response.json();
+    if (!response.ok || payload.success === false) throw new Error(payload.error?.message || "No se pudo leer la planilla");
+    return payload.data as MoImportPreview;
+  },
+  commitImportMO: (body: {
+    vigenteDesde: string;
+    fileName?: string;
+    rows: { code: string; description: string; unit: string; price: number; sector: string | null }[];
+  }) =>
+    request<{ creados: number; actualizados: number; preciosNuevos: number }>("/api/insumos/import-mo/commit", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  // Centro de costos: K de la obra y ACU por ítem
+  saveCostParams: (projectId: number, body: { coeficienteK: number | null; ivaPct: number }) =>
+    request<{ id: number; coeficienteK: number | null; ivaPct: number }>(`/api/projects/${projectId}/parametros-costo`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  getItemAcu: (budgetItemId: number, fecha?: string) =>
+    request<ItemAcuData>(`/api/budget-items/${budgetItemId}/acu${fecha ? `?fecha=${fecha}` : ""}`),
+  saveItemAcu: (
+    budgetItemId: number,
+    componentes: { insumoId: number; consumo: number; desperdicioPct: number; nota?: string | null }[]
+  ) => request<unknown>(`/api/budget-items/${budgetItemId}/acu`, { method: "PUT", body: JSON.stringify({ componentes }) }),
+  getAcuBiblioteca: (params: { q?: string; projectId?: number } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.q) qs.set("q", params.q);
+    if (params.projectId) qs.set("projectId", String(params.projectId));
+    return request<AcuBibliotecaItem[]>(`/api/acu/biblioteca?${qs}`);
+  },
+  copyAcu: (body: { sourceItemId: number; targetItemIds: number[]; modo: "REEMPLAZAR" | "AGREGAR" }) =>
+    request<{ copiados: number; avisos: string[] }>("/api/acu/copiar", { method: "POST", body: JSON.stringify(body) }),
+  // Avance fechado, cronograma y cierres
+  getAvance: (projectId: number, params: { desde?: string; hasta?: string; oficial?: boolean } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.desde) qs.set("desde", params.desde);
+    if (params.hasta) qs.set("hasta", params.hasta);
+    if (params.oficial) qs.set("oficial", "true");
+    return request<ProgressReport>(`/api/projects/${projectId}/avance?${qs}`);
+  },
+  getAvanceHechos: (projectId: number, desde: string, hasta: string, budgetItemId?: number) =>
+    request<AvanceHecho[]>(
+      `/api/projects/${projectId}/avance/hechos?desde=${desde}&hasta=${hasta}${budgetItemId ? `&budgetItemId=${budgetItemId}` : ""}`
+    ),
+  savePartes: (projectId: number, body: { fecha: string; lineas: { budgetItemId: number; cantidad: number; nota?: string | null }[] }) =>
+    request<{ creados: number }>(`/api/projects/${projectId}/avance/partes`, { method: "POST", body: JSON.stringify(body) }),
+  deleteAvance: (id: number) => request<{ deleted: boolean }>(`/api/avance/${id}`, { method: "DELETE" }),
+  previewPlan: (projectId: number, texto: string) =>
+    request<PlanPreview>(`/api/projects/${projectId}/plan/preview`, { method: "POST", body: JSON.stringify({ texto }) }),
+  savePlan: (projectId: number, body: { modo: "REEMPLAZAR" | "COMBINAR"; lineas: { budgetItemId: number; fecha: string; cantidad: number }[] }) =>
+    request<{ guardados: number }>(`/api/projects/${projectId}/plan`, { method: "PUT", body: JSON.stringify(body) }),
+  getCierres: (projectId: number) => request<CierreResumen[]>(`/api/projects/${projectId}/cierres`),
+  getFacturaCierre: (cierreId: number) => request<ClientInvoicePreview>(`/api/cierres/${cierreId}/factura`),
+  createFacturaCierre: (cierreId: number, body: { numeroFactura?: string | null; timbrado?: string | null; fechaEmision?: string; diasVencimiento?: number }) =>
+    request<{ id: number; numeroFactura: string }>(`/api/cierres/${cierreId}/factura`, { method: "POST", body: JSON.stringify(body) }),
+  getCostDashboard: (projectId: number, desde: string | null, hasta: string) =>
+    request<CostDashboardData>(`/api/projects/${projectId}/dashboard?${desde ? `desde=${desde}&` : ""}hasta=${hasta}`),
+  getItemDrill: (projectId: number, itemId: number, desde: string, hasta: string) =>
+    request<ItemDrillData>(`/api/projects/${projectId}/dashboard/items/${itemId}?desde=${desde}&hasta=${hasta}`),
+  getConciliacion: (projectId: number, desde: string, hasta: string) =>
+    request<ReconciliationData>(`/api/projects/${projectId}/conciliacion?desde=${desde}&hasta=${hasta}`),
+  imputarFactura: (invoiceId: number, items: { id: number; insumoId: number; budgetItemId: number | null }[]) =>
+    request<{ invoice: any; avisos: string[] }>(`/api/invoices/${invoiceId}/imputar`, { method: "POST", body: JSON.stringify({ items }) }),
+  getCierre: (id: number) => request<{ id: number; desde: string; hasta: string; notas: string | null; snapshot: any }>(`/api/cierres/${id}`),
+  previewCierre: (projectId: number, body: { desde: string; hasta: string }) =>
+    request<{ blockers: string[]; avisos: string[]; report: ProgressReport }>(`/api/projects/${projectId}/cierres/preview`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  closePeriodo: (projectId: number, body: { desde: string; hasta: string; notas?: string }) =>
+    request<{ id: number; desde: string; hasta: string }>(`/api/projects/${projectId}/cierres`, { method: "POST", body: JSON.stringify(body) }),
+  // Motor de costos
+  getCostos: (projectId: number, desde: string, hasta: string, oficial?: boolean) =>
+    request<CostEngineData>(`/api/projects/${projectId}/costos?desde=${desde}&hasta=${hasta}${oficial === undefined ? "" : `&oficial=${oficial}`}`),
+  getPartesEquipo: (projectId: number, desde: string, hasta: string) =>
+    request<ParteEquipoRow[]>(`/api/projects/${projectId}/partes-equipo?desde=${desde}&hasta=${hasta}`),
+  savePartesEquipo: (
+    projectId: number,
+    body: { fecha: string; lineas: { insumoId: number; budgetItemId?: number | null; horas: number; nota?: string | null }[] }
+  ) => request<{ creados: number }>(`/api/projects/${projectId}/partes-equipo`, { method: "POST", body: JSON.stringify(body) }),
+  deleteParteEquipo: (id: number) => request<{ deleted: boolean }>(`/api/partes-equipo/${id}`, { method: "DELETE" }),
 
+  // Parte diario de obra
+  getParteCatalogo: (projectId: number) => request<ParteCatalogo>(`/api/projects/${projectId}/parte-diario/catalogo`),
+  getPartesDiarios: (projectId: number, desde: string, hasta: string) =>
+    request<ParteDiarioRow[]>(`/api/projects/${projectId}/partes-diarios?desde=${desde}&hasta=${hasta}`),
+  saveParteDiario: (projectId: number, body: ParteDiarioInput) =>
+    request<{ id: number; duplicado: boolean; avisos: string[] }>(`/api/projects/${projectId}/partes-diarios`, { method: "POST", body: JSON.stringify(body) }),
+  deleteParteDiario: (id: number) => request<{ deleted: boolean }>(`/api/partes-diarios/${id}`, { method: "DELETE" }),
+  getCombustible: (projectId: number, desde: string, hasta: string) =>
+    request<CombustibleData>(`/api/projects/${projectId}/combustible?desde=${desde}&hasta=${hasta}`),
+  getViajes: (projectId: number, desde: string, hasta: string) => request<ViajesData>(`/api/projects/${projectId}/viajes?desde=${desde}&hasta=${hasta}`),
+  getCostoHora: (projectId?: number) => request<CostoHoraData>(`/api/rrhh/costo-hora${projectId ? `?projectId=${projectId}` : ""}`),
+};

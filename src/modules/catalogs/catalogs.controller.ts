@@ -8,6 +8,7 @@ import { DomainError, NotFoundError } from "../../errors/domain";
 import { audit } from "../../domain/audit";
 import { ensureGeneralExpenses } from "../../domain/generalExpenses";
 import { recalculateProjectFinancials } from "../../domain/projectFinancials";
+import { recordEstimate } from "../../domain/prices";
 
 export const catalogsRouter = Router();
 
@@ -233,7 +234,12 @@ catalogsRouter.post(
   "/materials",
   asyncHandler(async (req, res) => {
     const body = materialSchema.parse(req.body);
-    ok(res, await prisma.material.create({ data: body }), 201);
+    const created = await prisma.$transaction(async (tx) => {
+      const m = await tx.material.create({ data: body });
+      await recordEstimate(tx, m.id, body.estimatedCost, "MANUAL");
+      return tx.material.findUniqueOrThrow({ where: { id: m.id } });
+    });
+    ok(res, created, 201);
   })
 );
 
@@ -454,7 +460,7 @@ catalogsRouter.put(
 /** Motivo por el que una partida no se puede borrar, o null si se puede. */
 async function budgetItemDeleteBlocker(tx: Prisma.TransactionClient, ids: number[]): Promise<string | null> {
   const where = { budgetItemId: { in: ids } };
-  const [movements, requests, orders, subcontracts, certs, certItems, petty] = await Promise.all([
+  const [movements, requests, orders, subcontracts, certs, certItems, petty, stockIssues, avances, partesEq] = await Promise.all([
     tx.budgetMovement.count({ where }),
     tx.materialRequestDetail.count({ where }),
     tx.purchaseOrderDetail.count({ where }),
@@ -462,8 +468,16 @@ async function budgetItemDeleteBlocker(tx: Prisma.TransactionClient, ids: number
     tx.certificacion.count({ where }),
     tx.certificationItem.count({ where }),
     tx.pettyCashExpense.count({ where }),
+    tx.stockMovement.count({ where }),
+    tx.avanceItem.count({ where }),
+    tx.parteEquipo.count({ where }),
   ]);
+  const [horasPers, viajes] = await Promise.all([tx.parteHoraPersonal.count({ where }), tx.viajeCamion.count({ where })]);
   if (movements) return "tiene movimientos imputados (OC, certificados o caja chica)";
+  if (stockIssues) return `tiene ${stockIssues} salida(s) de stock asignadas`;
+  if (avances) return `tiene ${avances} registro(s) de avance`;
+  if (partesEq) return `tiene ${partesEq} parte(s) de horas de equipo`;
+  if (horasPers || viajes) return `tiene ${horasPers + viajes} renglón(es) de parte diario (horas de personal o viajes)`;
   const refs = requests + orders + subcontracts + certs + certItems + petty;
   if (refs) return `la usan ${refs} documento(s) (pedidos, OC, subcontratos, certificados o caja chica)`;
   return null;
@@ -527,15 +541,18 @@ catalogsRouter.put(
     if (!existing) throw new NotFoundError("Material", id);
 
     const { code, description, unit, category, estimatedCost } = req.body;
-    const updated = await prisma.material.update({
-      where: { id },
-      data: {
-        ...(code ? { code: String(code).trim() } : {}),
-        ...(description ? { description: String(description).trim() } : {}),
-        ...(unit ? { unit: String(unit).trim() } : {}),
-        ...(category ? { category: String(category).trim() } : {}),
-        ...(estimatedCost !== undefined ? { estimatedCost: Number(estimatedCost) } : {}),
-      },
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.material.update({
+        where: { id },
+        data: {
+          ...(code ? { code: String(code).trim() } : {}),
+          ...(description ? { description: String(description).trim() } : {}),
+          ...(unit ? { unit: String(unit).trim() } : {}),
+          ...(category ? { category: String(category).trim() } : {}),
+        },
+      });
+      if (estimatedCost !== undefined) await recordEstimate(tx, id, Number(estimatedCost), "MANUAL");
+      return tx.material.findUniqueOrThrow({ where: { id } });
     });
     ok(res, updated);
   })
@@ -547,6 +564,16 @@ catalogsRouter.delete(
     const id = Number(req.params.id);
     const existing = await prisma.material.findUnique({ where: { id } });
     if (!existing) throw new NotFoundError("Material", id);
+    const [enAcu, enUso] = await Promise.all([
+      prisma.componenteItem.count({ where: { insumoId: id } }),
+      Promise.all([prisma.stockMovement.count({ where: { materialId: id } }), prisma.parteEquipo.count({ where: { insumoId: id } }), prisma.conteoInventario.count({ where: { materialId: id } }), prisma.cargaCombustible.count({ where: { equipoId: id } }), prisma.viajeCamion.count({ where: { OR: [{ equipoId: id }, { materialId: id }] } })]),
+    ]);
+    if (enUso.some(Boolean)) {
+      throw new DomainError("INSUMO_IN_USE", "El insumo tiene movimientos de stock, conteos o partes de equipo: desactivalo en vez de borrarlo", 409);
+    }
+    if (enAcu) {
+      throw new DomainError("INSUMO_IN_ACU", `El insumo se usa en ${enAcu} ACU: sacalo de esos ítems o desactivalo`, 409);
+    }
 
     try {
       await prisma.materialRequestDetail.deleteMany({ where: { materialId: id } });
@@ -578,21 +605,14 @@ catalogsRouter.post(
       const category = String(m.category || "GENERAL").trim().toUpperCase();
       const estimatedCost = Number(m.estimatedCost || m.unitPrice || 0);
 
-      const mat = await prisma.material.upsert({
-        where: { code },
-        update: {
-          description,
-          unit,
-          category,
-          estimatedCost,
-        },
-        create: {
-          code,
-          description,
-          unit,
-          category,
-          estimatedCost,
-        },
+      const mat = await prisma.$transaction(async (tx) => {
+        const m = await tx.material.upsert({
+          where: { code },
+          update: { description, unit, category },
+          create: { code, description, unit, category },
+        });
+        await recordEstimate(tx, m.id, estimatedCost, "IMPORT:carga masiva");
+        return tx.material.findUniqueOrThrow({ where: { id: m.id } });
       });
       created.push(mat);
     }

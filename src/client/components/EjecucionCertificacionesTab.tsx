@@ -36,6 +36,7 @@ import { formatMoney, formatDate, formatPercent, parseFlexibleNumber } from "../
 import { api } from "../api";
 import { SubcontractsTab } from "./SubcontractsTab";
 import { AdvancedCertificationsView } from "./certifications/AdvancedCertificationsView";
+import { todayIso } from "../insumos/labels";
 
 interface EjecucionCertificacionesTabProps {
   project?: Project | null;
@@ -200,7 +201,7 @@ export const EjecucionCertificacionesTab: React.FC<EjecucionCertificacionesTabPr
       id: Date.now(),
       number: clientCertForm.number,
       period: clientCertForm.period,
-      issueDate: new Date().toISOString().split("T")[0],
+      issueDate: todayIso(),
       fiscalStatus: "PRESENTADO_POR_OBRA",
       grossAmount: gross,
       advanceAmortization: adv,

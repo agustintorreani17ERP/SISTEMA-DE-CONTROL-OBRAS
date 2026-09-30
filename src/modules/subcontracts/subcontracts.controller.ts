@@ -10,6 +10,8 @@ import { audit, nextNumber } from "../../domain/audit";
 import { assertImputableItem, postCost, reverseMovements, type BudgetWarning } from "../../domain/budget";
 import { toDecimal } from "../../lib/money";
 import { recalculateProjectFinancials } from "../../domain/projectFinancials";
+import { subcontractOverMeasured } from "../../domain/progress";
+import { EVENTO, postAsientoDesdeRegla } from "../../domain/contabilidad";
 
 export const subcontractsRouter = Router();
 
@@ -145,6 +147,12 @@ async function certifyCertificate(id: number) {
         );
       }
 
+      // Control contra la medición oficial (antes de sumar esta cantidad al libro mayor).
+      const measurementWarnings = cert.quantity
+        ? await subcontractOverMeasured(tx, cert.contract.projectId, [
+            { budgetItemId: cert.contract.budgetItemId, quantity: Number(cert.quantity) },
+          ])
+        : [];
       const budgetWarnings = await postCost(tx, {
         projectId: cert.contract.projectId,
         budgetItemId: cert.contract.budgetItemId,
@@ -154,6 +162,15 @@ async function certifyCertificate(id: number) {
         sourceType: SUB_CERT,
         sourceId: cert.id,
         sourceNumber: `${cert.number} / ${cert.contract.number}`,
+      });
+      await postAsientoDesdeRegla(tx, {
+        evento: EVENTO.CERTIFICADO_SUBCONTRATISTA_APROBADO,
+        projectId: cert.contract.projectId,
+        concepto: `Certificado ${cert.number} / ${cert.contract.number}`,
+        sourceType: SUB_CERT,
+        sourceId: cert.id,
+        debe: [{ monto: cert.amount, budgetItemId: cert.contract.budgetItemId }],
+        haber: [{ monto: cert.amount, partnerId: cert.contract.partnerId }],
       });
 
       const next = await tx.subcontractorCertificate.update({
@@ -175,7 +192,7 @@ async function certifyCertificate(id: number) {
         fromStatus: cert.status,
         toStatus: next.status,
       });
-      return { ...next, budgetWarnings };
+      return { ...next, budgetWarnings, measurementWarnings };
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
   );

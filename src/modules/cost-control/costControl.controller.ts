@@ -9,6 +9,7 @@ import { postCost } from "../../domain/budget";
 import { rebuildProjectLedger } from "../../domain/ledgerSync";
 import { recalculateProjectFinancials } from "../../domain/projectFinancials";
 import { buildCostTree } from "./costTree";
+import { DISTRIBUTION_ROOT_PATH } from "../../domain/generalExpenses";
 
 export const costControlRouter = Router();
 
@@ -57,7 +58,8 @@ costControlRouter.get(
   asyncHandler(async (req, res) => {
     const projectId = projectIdParam(req.params.id);
     const items = await prisma.budgetItem.findMany({
-      where: { projectId },
+      // Los pozos "a distribuir" los carga el sistema, no se eligen a mano.
+      where: { projectId, NOT: { path: { startsWith: DISTRIBUTION_ROOT_PATH } } },
       orderBy: { sortOrder: "asc" },
       select: {
         id: true,

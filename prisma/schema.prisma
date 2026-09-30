@@ -85,6 +85,9 @@ enum BudgetMovementSource {
   CLIENT_CERTIFICATE
   MANUAL_ADJUSTMENT
   LABOR_COST
+  STOCK_TRANSFER
+  /// Factura recibida sin OC ni certificado, imputada por renglón.
+  INVOICE
 }
 
 /// COMMITTED = costo comprometido; ACTUAL = costo incurrido / avance ejecutado.
@@ -99,17 +102,49 @@ enum PettyCashExpenseStatus {
   RECHAZADO
 }
 
+/// RECEIPT = compra recibida; DIRECT_ISSUE = salida directa a un ítem; CONSUMPTION = salida a obra
+/// sin ítem; ADJUSTMENT = corrección manual; INVENTORY_ADJUSTMENT = derivado de un conteo.
 enum StockMovementKind {
   RECEIPT
   CONSUMPTION
   ADJUSTMENT
   REVERSAL
+  DIRECT_ISSUE
+  TRANSFER_OUT
+  TRANSFER_IN
+  INVENTORY_ADJUSTMENT
 }
 
 enum BudgetNodeKind {
   RUBRO
   SUBRUBRO
   ITEM
+}
+
+enum TipoCuentaFinanciera {
+  BANCO
+  CAJA
+}
+
+enum MovimientoCuentaTipo {
+  INGRESO
+  EGRESO
+}
+
+enum ChequeTipo {
+  EMITIDO
+  RECIBIDO
+}
+
+/// PENDIENTE = en cartera (recibido) o no debitado (emitido), no afecta saldo todavía.
+/// DEPOSITADO = recibido y depositado, a la espera de acreditación.
+/// ACREDITADO = movimiento real de fondos (fecha efectiva); RECHAZADO revierte si ya estaba acreditado.
+enum ChequeEstado {
+  PENDIENTE
+  DEPOSITADO
+  ACREDITADO
+  RECHAZADO
+  ANULADO
 }
 
 model Project {
@@ -132,28 +167,45 @@ model Project {
   status                 ProjectStatus @default(ACTIVO)
   startDate              DateTime?
   endDate                DateTime?
+  /// Coeficiente de pase con IVA: PU = costo directo × K. Sin ACU, costo meta = PU ÷ K.
+  coeficienteK           Decimal?      @db.Decimal(10, 4)
+  /// IVA incluido en los PU del presupuesto (%). Venta sin IVA = PU ÷ (1 + IVA).
+  ivaPct                 Decimal       @default(10) @db.Decimal(5, 2)
   createdAt              DateTime      @default(now())
   updatedAt              DateTime      @updatedAt
 
-  budgetItems      BudgetItem[]
-  budgetImports    BudgetImport[]
-  budgetMovements  BudgetMovement[]
-  laborPrices      LaborPrice[]
-  pettyCashFunds   PettyCashFund[]
-  workFronts       WorkFront[]
-  materialRequests MaterialRequest[]
-  purchaseOrders   PurchaseOrder[]
-  subcontracts     SubcontractorContract[]
-  warehouseStock   WarehouseStock[]
-  stockMovements   StockMovement[]
-  certificaciones  Certificacion[]
-  certifications   Certification[]
-  backups          ProjectBackup[]
-  invoices         Invoice[]
-  empleados        Empleado[]
-  asistencias      Asistencia[]
-  liquidaciones    LiquidacionPersonal[]
-  rrhhConfig       RRHHConfig?
+  budgetItems        BudgetItem[]
+  budgetImports      BudgetImport[]
+  budgetMovements    BudgetMovement[]
+  laborPrices        LaborPrice[]
+  pettyCashFunds     PettyCashFund[]
+  workFronts         WorkFront[]
+  materialRequests   MaterialRequest[]
+  purchaseOrders     PurchaseOrder[]
+  subcontracts       SubcontractorContract[]
+  warehouseStock     WarehouseStock[]
+  stockMovements     StockMovement[]
+  stockTransfersIn   StockMovement[]         @relation("StockTransferCounterpart")
+  avances            AvanceItem[]
+  avancesPlan        AvancePlanificado[]
+  cierres            CierrePeriodo[]
+  partesEquipo       ParteEquipo[]
+  partesDiarios      ParteDiario[]
+  horasPersonal      ParteHoraPersonal[]
+  cargasCombustible  CargaCombustible[]
+  viajesCamion       ViajeCamion[]
+  conteos            ConteoInventario[]
+  certificaciones    Certificacion[]
+  certifications     Certification[]
+  backups            ProjectBackup[]
+  invoices           Invoice[]
+  empleados          Empleado[]
+  asistencias        Asistencia[]
+  liquidaciones      LiquidacionPersonal[]
+  rrhhConfig         RRHHConfig?
+  asientos           Asiento[]
+  lineasAsiento      LineaAsiento[]
+  cuentasFinancieras CuentaFinanciera[]
 
   @@index([status])
 }
@@ -220,6 +272,15 @@ model BudgetItem {
   certificationItems CertificationItem[]
   asistencias        Asistencia[]
   liquidaciones      LiquidacionPersonal[]
+  componentes        ComponenteItem[]
+  stockMovements     StockMovement[]
+  avances            AvanceItem[]
+  avancesPlan        AvancePlanificado[]
+  partesEquipo       ParteEquipo[]
+  horasPersonal      ParteHoraPersonal[]
+  viajesCamion       ViajeCamion[]
+  facturaItems       InvoiceItem[]
+  lineasAsiento      LineaAsiento[]
 
   @@unique([projectId, path])
   @@index([projectId])
@@ -256,6 +317,8 @@ model BudgetMovement {
   id           Int                  @id @default(autoincrement())
   projectId    Int
   budgetItemId Int
+  /// Insumo del hecho (renglón de OC, gasto de caja chica, MO del subcontratista…), si se conoce.
+  insumoId     Int?
   source       BudgetMovementSource
   stage        BudgetMovementStage
   amount       Decimal              @db.Decimal(18, 2)
@@ -263,20 +326,25 @@ model BudgetMovement {
   sourceType   String
   sourceId     Int
   sourceNumber String?
+  /// Fecha del hecho (OC, recepción, transferencia…). createdAt es solo la hora de registro.
+  fecha        DateTime             @default(now()) @db.Date
   reversalOfId Int?
   overBudget   Boolean              @default(false)
   note         String?
   createdBy    String?
   createdAt    DateTime             @default(now())
 
-  project    Project          @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  budgetItem BudgetItem       @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
-  reversalOf    BudgetMovement?  @relation("MovementReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
-  reversals     BudgetMovement[] @relation("MovementReversal")
-  liquidacion   LiquidacionPersonal?
+  project     Project              @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  budgetItem  BudgetItem           @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+  insumo      Material?            @relation(fields: [insumoId], references: [id], onDelete: Restrict)
+  reversalOf  BudgetMovement?      @relation("MovementReversal", fields: [reversalOfId], references: [id], onDelete: Restrict)
+  reversals   BudgetMovement[]     @relation("MovementReversal")
+  liquidacion LiquidacionPersonal?
 
   @@index([projectId, source])
+  @@index([projectId, fecha])
   @@index([budgetItemId])
+  @@index([insumoId])
   @@index([sourceType, sourceId])
 }
 
@@ -296,10 +364,14 @@ model PettyCashFund {
   @@index([projectId])
 }
 
+/// Gasto de caja chica. Lleva insumo: DIRECTO exige ítem, COMÚN va al stock (sin ítem), TIEMPO
+/// ítem opcional. Al cargarse compromete; entra como costo (y al stock) con la rendición aprobada.
 model PettyCashExpense {
   id              Int                    @id @default(autoincrement())
   fundId          Int
-  budgetItemId    Int
+  budgetItemId    Int?
+  insumoId        Int?
+  quantity        Decimal?               @db.Decimal(18, 4)
   date            DateTime
   receiptNumber   String
   supplierName    String
@@ -313,7 +385,8 @@ model PettyCashExpense {
   updatedAt       DateTime               @updatedAt
 
   fund       PettyCashFund @relation(fields: [fundId], references: [id], onDelete: Restrict)
-  budgetItem BudgetItem    @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+  budgetItem BudgetItem?   @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+  insumo     Material?     @relation(fields: [insumoId], references: [id], onDelete: Restrict)
 
   @@index([fundId, status])
   @@index([budgetItemId])
@@ -340,6 +413,7 @@ model WorkFront {
   project  Project           @relation(fields: [projectId], references: [id], onDelete: Restrict)
   chief    Personnel?        @relation(fields: [chiefId], references: [id], onDelete: Restrict)
   requests MaterialRequest[]
+  partes   ParteDiario[]
 
   @@index([projectId])
 }
@@ -361,20 +435,89 @@ model Partner {
   certificaciones Certificacion[]
   certifications  Certification[]
   invoices        Invoice[]
+  lineasAsiento   LineaAsiento[]
+  cheques         Cheque[]
 }
 
+/// Vía de imputación al Centro de Costos (ver CLAUDE.md).
+enum InsumoTipo {
+  DIRECTO
+  COMUN
+  TIEMPO
+}
+
+enum InsumoCategoria {
+  MATERIAL
+  MANO_OBRA
+  EQUIPO
+}
+
+/// Catálogo de insumos. `category` es una subcategoría libre; `estimatedCost` es caché del
+/// precio vigente hoy: la fuente de verdad es MaterialPrice.
 model Material {
-  id            Int     @id @default(autoincrement())
-  code          String  @unique
+  id            Int             @id @default(autoincrement())
+  code          String          @unique
   description   String
   unit          String
   category      String
-  estimatedCost Decimal @default(0) @db.Decimal(18, 4)
+  estimatedCost Decimal         @default(0) @db.Decimal(18, 4)
+  tipo          InsumoTipo      @default(COMUN)
+  categoria     InsumoCategoria @default(MATERIAL)
+  sector        String?
+  toleranciaPct Decimal         @default(0) @db.Decimal(7, 4)
+  /// Equipos: consumo teórico de combustible en litros por hora (control de cargas).
+  consumoLh     Decimal?        @db.Decimal(10, 3)
+  active        Boolean         @default(true)
 
-  requestDetails  MaterialRequestDetail[]
-  purchaseDetails PurchaseOrderDetail[]
-  warehouseStock  WarehouseStock[]
-  stockMovements  StockMovement[]
+  requestDetails    MaterialRequestDetail[]
+  cargasCombustible CargaCombustible[]
+  viajesCamion      ViajeCamion[]           @relation("ViajeCamionEquipo")
+  viajesMaterial    ViajeCamion[]           @relation("ViajeCamionMaterial")
+  budgetMovements   BudgetMovement[]
+  gastosCajaChica   PettyCashExpense[]
+  facturaItems      InvoiceItem[]
+  certItems         CertificationItem[]
+  purchaseDetails   PurchaseOrderDetail[]
+  warehouseStock    WarehouseStock[]
+  stockMovements    StockMovement[]
+  prices            MaterialPrice[]
+  componentes       ComponenteItem[]
+  conteos           ConteoInventario[]
+  partesEquipo      ParteEquipo[]
+}
+
+/// Renglón del análisis de costo unitario (ACU) de un ítem: consumo del insumo por unidad del ítem.
+model ComponenteItem {
+  id             Int      @id @default(autoincrement())
+  budgetItemId   Int
+  insumoId       Int
+  consumo        Decimal  @db.Decimal(18, 6)
+  desperdicioPct Decimal  @default(0) @db.Decimal(7, 4)
+  sortOrder      Int      @default(0)
+  nota           String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  budgetItem BudgetItem @relation(fields: [budgetItemId], references: [id], onDelete: Cascade)
+  insumo     Material   @relation(fields: [insumoId], references: [id], onDelete: Restrict)
+
+  @@unique([budgetItemId, insumoId])
+  @@index([insumoId])
+}
+
+/// Precio sin IVA vigente desde `validFrom`. Nunca se edita: un cambio es una fila nueva.
+model MaterialPrice {
+  id         Int      @id @default(autoincrement())
+  materialId Int
+  price      Decimal  @db.Decimal(18, 4)
+  validFrom  DateTime @db.Date
+  source     String?
+  createdBy  String?
+  createdAt  DateTime @default(now())
+
+  material Material @relation(fields: [materialId], references: [id], onDelete: Cascade)
+
+  @@unique([materialId, validFrom])
 }
 
 model MaterialRequest {
@@ -420,10 +563,14 @@ model PurchaseOrder {
   partnerId         Int
   materialRequestId Int
   status            DocumentStatus @default(BORRADOR)
+  /// Fecha de la OC (obligatoria en la API). issueDate es cuándo se emitió en el sistema.
+  fecha             DateTime       @default(now()) @db.Date
   issueDate         DateTime?
   expectedDate      DateTime?
   totalAmount       Decimal        @default(0) @db.Decimal(18, 2)
   stockRegistered   Boolean        @default(false)
+  receivedDate      DateTime?      @db.Date
+  receiptNumber     String?
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
 
@@ -438,19 +585,22 @@ model PurchaseOrder {
 }
 
 model PurchaseOrderDetail {
-  id              Int     @id @default(autoincrement())
+  id              Int        @id @default(autoincrement())
   orderId         Int
   materialId      Int
   requestDetailId Int
-  budgetItemId    Int
-  quantity        Decimal @db.Decimal(18, 4)
-  unitPrice       Decimal @db.Decimal(18, 4)
-  subtotal        Decimal @db.Decimal(18, 2)
+  /// Obligatorio solo si tipo = DIRECTO. COMUN va al stock; TIEMPO sin ítem va a "a distribuir".
+  budgetItemId    Int?
+  /// Tipo del insumo al crear la línea: define la imputación aunque luego cambie el catálogo.
+  tipo            InsumoTipo @default(DIRECTO)
+  quantity        Decimal    @db.Decimal(18, 4)
+  unitPrice       Decimal    @db.Decimal(18, 4)
+  subtotal        Decimal    @db.Decimal(18, 2)
 
   order         PurchaseOrder         @relation(fields: [orderId], references: [id], onDelete: Cascade)
   material      Material              @relation(fields: [materialId], references: [id], onDelete: Restrict)
   requestDetail MaterialRequestDetail @relation(fields: [requestDetailId], references: [id], onDelete: Restrict)
-  budgetItem    BudgetItem            @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+  budgetItem    BudgetItem?           @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
 
   @@index([orderId])
   @@index([budgetItemId])
@@ -539,21 +689,53 @@ model WarehouseStock {
   @@unique([projectId, materialId])
 }
 
+/// Libro de stock por obra e insumo. El saldo a una fecha es la suma de los movimientos hasta
+/// ese día inclusive; WarehouseStock es solo caché del saldo total.
 model StockMovement {
-  id         Int               @id @default(autoincrement())
-  projectId  Int
-  materialId Int
-  kind       StockMovementKind
-  quantity   Decimal           @db.Decimal(18, 4)
-  sourceType String
-  sourceId   Int
-  note       String?
-  createdAt  DateTime          @default(now())
+  id                   Int               @id @default(autoincrement())
+  projectId            Int
+  materialId           Int
+  kind                 StockMovementKind
+  /// Con signo: entradas positivas, salidas negativas.
+  quantity             Decimal           @db.Decimal(18, 4)
+  fecha                DateTime          @default(now()) @db.Date
+  /// Ítem de destino (salida directa).
+  budgetItemId         Int?
+  /// Otra obra de una transferencia.
+  counterpartProjectId Int?
+  unitCost             Decimal?          @db.Decimal(18, 4)
+  sourceType           String
+  sourceId             Int
+  note                 String?
+  createdBy            String?
+  createdAt            DateTime          @default(now())
+
+  project            Project     @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  material           Material    @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  budgetItem         BudgetItem? @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+  counterpartProject Project?    @relation("StockTransferCounterpart", fields: [counterpartProjectId], references: [id], onDelete: Restrict)
+
+  @@index([projectId, materialId, fecha])
+  @@index([sourceType, sourceId])
+}
+
+/// Conteo físico de un insumo en una obra a una fecha (fin del día). Es un hecho: el ajuste de
+/// stock (INVENTORY_ADJUSTMENT) se deriva de él y se recalcula si cambian movimientos anteriores.
+model ConteoInventario {
+  id              Int      @id @default(autoincrement())
+  projectId       Int
+  materialId      Int
+  fecha           DateTime @db.Date
+  cantidadContada Decimal  @db.Decimal(18, 4)
+  fotoUrl         String?
+  nota            String?
+  createdBy       String?
+  createdAt       DateTime @default(now())
 
   project  Project  @relation(fields: [projectId], references: [id], onDelete: Restrict)
   material Material @relation(fields: [materialId], references: [id], onDelete: Restrict)
 
-  @@index([projectId, materialId])
+  @@index([projectId, materialId, fecha])
 }
 
 model DocumentAuditLog {
@@ -606,6 +788,10 @@ model Invoice {
   certificationId Int?
   certification   Certification? @relation(fields: [certificationId], references: [id], onDelete: SetNull)
 
+  /// Factura al cliente generada desde un cierre oficial (una por cierre).
+  cierreId Int?           @unique
+  cierre   CierrePeriodo? @relation(fields: [cierreId], references: [id], onDelete: Restrict)
+
   items    InvoiceItem[]
   payments Payment[]
 
@@ -618,36 +804,135 @@ model Invoice {
 }
 
 model InvoiceItem {
-  id          Int     @id @default(autoincrement())
-  invoiceId   Int
-  description String
-  quantity    Decimal @db.Decimal(18, 4)
-  unitPrice   Decimal @db.Decimal(18, 4)
-  vatType     String  @default("IVA10")
-  montoExento Decimal @default(0) @db.Decimal(18, 2)
-  montoIva5   Decimal @default(0) @db.Decimal(18, 2)
-  montoIva10  Decimal @default(0) @db.Decimal(18, 2)
-  subtotal    Decimal @db.Decimal(18, 2)
+  id           Int     @id @default(autoincrement())
+  invoiceId    Int
+  description  String
+  quantity     Decimal @db.Decimal(18, 4)
+  unitPrice    Decimal @db.Decimal(18, 4)
+  vatType      String  @default("IVA10")
+  montoExento  Decimal @default(0) @db.Decimal(18, 2)
+  montoIva5    Decimal @default(0) @db.Decimal(18, 2)
+  montoIva10   Decimal @default(0) @db.Decimal(18, 2)
+  subtotal     Decimal @db.Decimal(18, 2)
+  /// Imputación del renglón (facturas recibidas sin OC ni certificado; facturas al cliente por ítem).
+  insumoId     Int?
+  budgetItemId Int?
 
-  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  invoice    Invoice     @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  insumo     Material?   @relation(fields: [insumoId], references: [id], onDelete: Restrict)
+  budgetItem BudgetItem? @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
 
   @@index([invoiceId])
 }
 
 model Payment {
-  id              Int           @id @default(autoincrement())
-  invoiceId       Int
-  montoPagado     Decimal       @db.Decimal(18, 2)
-  fechaPago       DateTime      @default(now())
-  metodo          PaymentMethod @default(TRANSFERENCIA)
-  referenciaBanco String
-  comprobanteUrl  String?
-  notas           String?
-  createdAt       DateTime      @default(now())
+  id                 Int           @id @default(autoincrement())
+  invoiceId          Int
+  cuentaFinancieraId Int
+  montoPagado        Decimal       @db.Decimal(18, 2)
+  fechaPago          DateTime      @default(now())
+  metodo             PaymentMethod @default(TRANSFERENCIA)
+  referenciaBanco    String
+  comprobanteUrl     String?
+  notas              String?
+  createdAt          DateTime      @default(now())
 
-  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  invoice          Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  cuentaFinanciera CuentaFinanciera @relation(fields: [cuentaFinancieraId], references: [id], onDelete: Restrict)
+  cheque           Cheque?
 
   @@index([invoiceId])
+  @@index([cuentaFinancieraId])
+}
+
+/// Banco o caja de la obra. Todo Payment usa una CuentaFinanciera; el saldo nunca se guarda
+/// pre-sumado: se calcula como saldoInicial + movimientos confirmados hasta la fecha.
+model CuentaFinanciera {
+  id               Int                  @id @default(autoincrement())
+  projectId        Int
+  nombre           String
+  tipo             TipoCuentaFinanciera @default(BANCO)
+  moneda           String               @default("PYG")
+  banco            String?
+  numeroCuenta     String?
+  cuentaContableId Int?
+  saldoInicial     Decimal              @default(0) @db.Decimal(18, 2)
+  active           Boolean              @default(true)
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  project        Project         @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  cuentaContable CuentaContable? @relation(fields: [cuentaContableId], references: [id], onDelete: SetNull)
+
+  payments              Payment[]
+  movimientos           MovimientoCuentaFinanciera[]
+  cheques               Cheque[]
+  transferenciasOrigen  TransferenciaCuenta[]        @relation("TransferenciaOrigen")
+  transferenciasDestino TransferenciaCuenta[]        @relation("TransferenciaDestino")
+
+  @@index([projectId])
+}
+
+/// Libro de movimientos de una cuenta financiera: todo hecho con fecha (nunca un saldo pre-sumado).
+/// `confirmado` = false mientras un cheque diferido no se acredita; no cuenta para el saldo.
+model MovimientoCuentaFinanciera {
+  id                 Int                  @id @default(autoincrement())
+  cuentaFinancieraId Int
+  fecha              DateTime             @db.Date
+  tipo               MovimientoCuentaTipo
+  monto              Decimal              @db.Decimal(18, 2)
+  concepto           String
+  confirmado         Boolean              @default(true)
+  sourceType         String
+  sourceId           Int
+  createdAt          DateTime             @default(now())
+
+  cuenta CuentaFinanciera @relation(fields: [cuentaFinancieraId], references: [id], onDelete: Restrict)
+
+  @@index([cuentaFinancieraId, fecha])
+  @@index([sourceType, sourceId])
+}
+
+/// Cheque propio (EMITIDO) o de terceros (RECIBIDO) con fecha diferida. Solo mueve el saldo de
+/// la cuenta cuando pasa a ACREDITADO (o se revierte si estaba acreditado y luego RECHAZADO).
+model Cheque {
+  id                 Int          @id @default(autoincrement())
+  cuentaFinancieraId Int
+  tipo               ChequeTipo
+  numero             String
+  monto              Decimal      @db.Decimal(18, 2)
+  fechaEmision       DateTime     @db.Date
+  fechaPago          DateTime     @db.Date
+  estado             ChequeEstado @default(PENDIENTE)
+  partnerId          Int?
+  paymentId          Int?         @unique
+  notas              String?
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  cuenta  CuentaFinanciera @relation(fields: [cuentaFinancieraId], references: [id], onDelete: Restrict)
+  partner Partner?         @relation(fields: [partnerId], references: [id], onDelete: SetNull)
+  payment Payment?         @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  @@index([cuentaFinancieraId, estado])
+}
+
+/// Transferencia entre dos cuentas financieras de la obra: genera un egreso en origen y un
+/// ingreso en destino (MovimientoCuentaFinanciera), ambos confirmados a la fecha de la transferencia.
+model TransferenciaCuenta {
+  id              Int      @id @default(autoincrement())
+  cuentaOrigenId  Int
+  cuentaDestinoId Int
+  monto           Decimal  @db.Decimal(18, 2)
+  fecha           DateTime @db.Date
+  concepto        String?
+  createdAt       DateTime @default(now())
+
+  cuentaOrigen  CuentaFinanciera @relation("TransferenciaOrigen", fields: [cuentaOrigenId], references: [id], onDelete: Restrict)
+  cuentaDestino CuentaFinanciera @relation("TransferenciaDestino", fields: [cuentaDestinoId], references: [id], onDelete: Restrict)
+
+  @@index([cuentaOrigenId])
+  @@index([cuentaDestinoId])
 }
 
 model Certification {
@@ -665,6 +950,8 @@ model Certification {
   retentionPct    Decimal             @default(0) @db.Decimal(7, 4)
   retentionAmount Decimal             @default(0) @db.Decimal(18, 2)
   netAmount       Decimal             @default(0) @db.Decimal(18, 2)
+  /// Fecha del hecho contable (aprobación): es la fecha de su costo en el libro mayor.
+  approvedAt      DateTime?           @db.Date
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
 
@@ -679,19 +966,25 @@ model Certification {
 }
 
 model CertificationItem {
-  id                Int     @id @default(autoincrement())
+  id                Int      @id @default(autoincrement())
   certificationId   Int
   budgetItemId      Int
-  cantidadAnterior  Decimal @default(0) @db.Decimal(18, 4)
-  cantidadPresente  Decimal @default(0) @db.Decimal(18, 4)
-  cantidadAcumulada Decimal @default(0) @db.Decimal(18, 4)
-  precioUnitario    Decimal @default(0) @db.Decimal(18, 4)
-  montoTotal        Decimal @default(0) @db.Decimal(18, 2)
+  cantidadAnterior  Decimal  @default(0) @db.Decimal(18, 4)
+  cantidadPresente  Decimal  @default(0) @db.Decimal(18, 4)
+  cantidadAcumulada Decimal  @default(0) @db.Decimal(18, 4)
+  precioUnitario    Decimal  @default(0) @db.Decimal(18, 4)
+  montoTotal        Decimal  @default(0) @db.Decimal(18, 2)
   /// VENTA = precio del presupuesto; MANO_DE_OBRA = lista de precios de subcontratistas
-  priceSource       String  @default("VENTA")
+  priceSource       String   @default("VENTA")
+  /// Subcontratista: precio sugerido (lista de MO de la obra o MO del ACU) y de dónde salió.
+  precioSugerido    Decimal? @db.Decimal(18, 4)
+  precioFuente      String?
+  /// Insumo de mano de obra que se certifica (del ACU o de la lista), para el libro mayor.
+  insumoId          Int?
 
   certification         Certification          @relation(fields: [certificationId], references: [id], onDelete: Cascade)
   budgetItem            BudgetItem             @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+  insumo                Material?              @relation(fields: [insumoId], references: [id], onDelete: Restrict)
   auxiliaryCalculations AuxiliaryCalculation[]
   photos                ItemPhoto[]
 
@@ -775,62 +1068,65 @@ enum LiquidacionEstado {
 
 /// Extiende Personnel: datos de legajo para empleados con nómina.
 model Empleado {
-  id           Int          @id @default(autoincrement())
-  personnelId  Int?         @unique
-  projectId    Int?
+  id          Int  @id @default(autoincrement())
+  personnelId Int? @unique
+  projectId   Int?
 
-  fullName     String
-  ci           String       @unique
-  oficio       String
-  tipo         EmpleadoTipo
-  fechaIngreso DateTime
-  salarioBase  Decimal      @db.Decimal(18, 2)
-  nroIPS       String?
-  banco        String?
-  cuentaBanco  String?
-  activo       Boolean      @default(true)
-  notas        String?
+  fullName        String
+  ci              String       @unique
+  oficio          String
+  tipo            EmpleadoTipo
+  fechaIngreso    DateTime
+  salarioBase     Decimal      @db.Decimal(18, 2)
+  nroIPS          String?
+  banco           String?
+  cuentaBanco     String?
+  activo          Boolean      @default(true)
+  notas           String?
+  /// Si se carga, reemplaza el costo hora calculado (salario × cargas de RRHHConfig).
+  costoHoraManual Decimal?     @db.Decimal(18, 2)
 
-  createdAt    DateTime     @default(now())
-  updatedAt    DateTime     @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  personnel    Personnel?   @relation(fields: [personnelId], references: [id], onDelete: SetNull)
-  project      Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  documentos   EmpleadoDoc[]
-  asistencias  Asistencia[]
+  personnel     Personnel?            @relation(fields: [personnelId], references: [id], onDelete: SetNull)
+  project       Project?              @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  documentos    EmpleadoDoc[]
+  asistencias   Asistencia[]
+  horasParte    ParteHoraPersonal[]
   liquidaciones LiquidacionPersonal[]
 
   @@index([projectId])
 }
 
 model EmpleadoDoc {
-  id          Int      @id @default(autoincrement())
-  empleadoId  Int
-  tipo        String
-  url         String
-  nombre      String
-  createdAt   DateTime @default(now())
+  id         Int      @id @default(autoincrement())
+  empleadoId Int
+  tipo       String
+  url        String
+  nombre     String
+  createdAt  DateTime @default(now())
 
-  empleado    Empleado @relation(fields: [empleadoId], references: [id], onDelete: Cascade)
+  empleado Empleado @relation(fields: [empleadoId], references: [id], onDelete: Cascade)
 }
 
 /// Parte de asistencia diario por empleado/obra.
 model Asistencia {
-  id             Int              @id @default(autoincrement())
-  empleadoId     Int
-  projectId      Int
-  budgetItemId   Int?
-  fecha          DateTime         @db.Date
-  estado         AsistenciaEstado @default(PRESENTE)
-  horasNormales  Decimal          @default(0) @db.Decimal(5, 2)
-  horasExtra     Decimal          @default(0) @db.Decimal(5, 2)
-  jornal         Decimal          @default(0) @db.Decimal(18, 2)
-  notas          String?
-  createdAt      DateTime         @default(now())
+  id            Int              @id @default(autoincrement())
+  empleadoId    Int
+  projectId     Int
+  budgetItemId  Int?
+  fecha         DateTime         @db.Date
+  estado        AsistenciaEstado @default(PRESENTE)
+  horasNormales Decimal          @default(0) @db.Decimal(5, 2)
+  horasExtra    Decimal          @default(0) @db.Decimal(5, 2)
+  jornal        Decimal          @default(0) @db.Decimal(18, 2)
+  notas         String?
+  createdAt     DateTime         @default(now())
 
-  empleado     Empleado    @relation(fields: [empleadoId], references: [id], onDelete: Restrict)
-  project      Project     @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  budgetItem   BudgetItem? @relation(fields: [budgetItemId], references: [id], onDelete: SetNull)
+  empleado   Empleado    @relation(fields: [empleadoId], references: [id], onDelete: Restrict)
+  project    Project     @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  budgetItem BudgetItem? @relation(fields: [budgetItemId], references: [id], onDelete: SetNull)
 
   @@unique([empleadoId, projectId, fecha])
   @@index([projectId, fecha])
@@ -838,41 +1134,41 @@ model Asistencia {
 
 /// Cabecera de liquidación mensual de personal.
 model LiquidacionPersonal {
-  id                Int               @id @default(autoincrement())
-  empleadoId        Int
-  projectId         Int
-  periodo           String            // "YYYY-MM"
-  estado            LiquidacionEstado @default(BORRADOR)
+  id         Int               @id @default(autoincrement())
+  empleadoId Int
+  projectId  Int
+  periodo    String // "YYYY-MM"
+  estado     LiquidacionEstado @default(BORRADOR)
 
   // Parámetros aplicados
-  diasTrabajados    Decimal           @default(0) @db.Decimal(5, 2)
-  horasNormales     Decimal           @default(0) @db.Decimal(8, 2)
-  horasExtra        Decimal           @default(0) @db.Decimal(8, 2)
-  salarioBase       Decimal           @db.Decimal(18, 2)
-  valorHoraExtra    Decimal           @default(0) @db.Decimal(18, 4)
-  montoHorasExtra   Decimal           @default(0) @db.Decimal(18, 2)
-  bonificacionFamiliar Decimal        @default(0) @db.Decimal(18, 2)
-  otrosBonos        Decimal           @default(0) @db.Decimal(18, 2)
-  subTotal          Decimal           @default(0) @db.Decimal(18, 2)
+  diasTrabajados       Decimal @default(0) @db.Decimal(5, 2)
+  horasNormales        Decimal @default(0) @db.Decimal(8, 2)
+  horasExtra           Decimal @default(0) @db.Decimal(8, 2)
+  salarioBase          Decimal @db.Decimal(18, 2)
+  valorHoraExtra       Decimal @default(0) @db.Decimal(18, 4)
+  montoHorasExtra      Decimal @default(0) @db.Decimal(18, 2)
+  bonificacionFamiliar Decimal @default(0) @db.Decimal(18, 2)
+  otrosBonos           Decimal @default(0) @db.Decimal(18, 2)
+  subTotal             Decimal @default(0) @db.Decimal(18, 2)
 
-  ipsObrero         Decimal           @default(0) @db.Decimal(18, 2)   // 9%
-  ipsPatronal       Decimal           @default(0) @db.Decimal(18, 2)   // 16.5%
-  aguinaldo         Decimal           @default(0) @db.Decimal(18, 2)
-  anticipos         Decimal           @default(0) @db.Decimal(18, 2)
-  otrosDescuentos   Decimal           @default(0) @db.Decimal(18, 2)
-  netoAPagar        Decimal           @default(0) @db.Decimal(18, 2)
-  costoTotal        Decimal           @default(0) @db.Decimal(18, 2)   // subtotal + ips patronal
+  ipsObrero       Decimal @default(0) @db.Decimal(18, 2) // 9%
+  ipsPatronal     Decimal @default(0) @db.Decimal(18, 2) // 16.5%
+  aguinaldo       Decimal @default(0) @db.Decimal(18, 2)
+  anticipos       Decimal @default(0) @db.Decimal(18, 2)
+  otrosDescuentos Decimal @default(0) @db.Decimal(18, 2)
+  netoAPagar      Decimal @default(0) @db.Decimal(18, 2)
+  costoTotal      Decimal @default(0) @db.Decimal(18, 2) // subtotal + ips patronal
 
-  budgetItemId      Int?
-  budgetMovementId  Int?              @unique
-  notas             String?
+  budgetItemId     Int?
+  budgetMovementId Int?    @unique
+  notas            String?
 
-  createdAt         DateTime          @default(now())
-  updatedAt         DateTime          @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  empleado      Empleado        @relation(fields: [empleadoId], references: [id], onDelete: Restrict)
-  project       Project         @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  budgetItem    BudgetItem?     @relation(fields: [budgetItemId], references: [id], onDelete: SetNull)
+  empleado       Empleado        @relation(fields: [empleadoId], references: [id], onDelete: Restrict)
+  project        Project         @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  budgetItem     BudgetItem?     @relation(fields: [budgetItemId], references: [id], onDelete: SetNull)
   budgetMovement BudgetMovement? @relation(fields: [budgetMovementId], references: [id], onDelete: SetNull)
 
   @@unique([empleadoId, periodo])
@@ -881,17 +1177,299 @@ model LiquidacionPersonal {
 
 /// Configuración de parámetros RRHH por proyecto (o globales si projectId IS NULL).
 model RRHHConfig {
-  id                    Int      @id @default(autoincrement())
-  projectId             Int?     @unique
+  id        Int  @id @default(autoincrement())
+  projectId Int? @unique
 
-  pctIpsObrero          Decimal  @default(9)    @db.Decimal(5, 2)
-  pctIpsPatronal        Decimal  @default(16.5) @db.Decimal(5, 2)
-  factorHoraExtra       Decimal  @default(1.5)  @db.Decimal(5, 2)
-  horasDiasLaborales    Decimal  @default(8)    @db.Decimal(5, 2)
-  bonificacionFamiliar  Decimal  @default(0)    @db.Decimal(18, 2)
-  aguinaldoMeses        Decimal  @default(12)   @db.Decimal(5, 2)
+  pctIpsObrero         Decimal @default(9) @db.Decimal(5, 2)
+  pctIpsPatronal       Decimal @default(16.5) @db.Decimal(5, 2)
+  factorHoraExtra      Decimal @default(1.5) @db.Decimal(5, 2)
+  horasDiasLaborales   Decimal @default(8) @db.Decimal(5, 2)
+  bonificacionFamiliar Decimal @default(0) @db.Decimal(18, 2)
+  aguinaldoMeses       Decimal @default(12) @db.Decimal(5, 2)
+  /// Cargas del costo hora: vacaciones y otras cargas en % del salario (IPS patronal y aguinaldo, arriba).
+  pctVacaciones        Decimal @default(4.17) @db.Decimal(5, 2)
+  pctOtrasCargas       Decimal @default(0) @db.Decimal(5, 2)
+  /// Días trabajados por mes del mensualero (costo hora = salario ÷ días ÷ horas por día).
+  diasLaboralesMes     Decimal @default(26) @db.Decimal(5, 2)
 
-  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  project   Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AVANCE FECHADO Y CIERRES OFICIALES
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// PARTE_DIARIO = provisorio. MEDICION_OFICIAL = cantidad del período medida oficialmente; al
+/// llegar, reemplaza a los partes con fecha hasta la suya.
+enum AvanceOrigen {
+  PARTE_DIARIO
+  MEDICION_OFICIAL
+}
+
+/// Hecho de avance físico: cantidad ejecutada de un ítem con fecha. Nunca se guardan acumulados.
+model AvanceItem {
+  id           Int          @id @default(autoincrement())
+  projectId    Int
+  budgetItemId Int
+  fecha        DateTime     @db.Date
+  cantidad     Decimal      @db.Decimal(18, 4)
+  origen       AvanceOrigen
+  /// Documento que lo generó (medición oficial = Certification al cliente).
+  sourceType   String?
+  sourceId     Int?
+  nota         String?
+  createdBy    String?
+  createdAt    DateTime     @default(now())
+
+  project    Project    @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  budgetItem BudgetItem @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+
+  @@index([projectId, fecha])
+  @@index([budgetItemId, fecha])
+  @@index([sourceType, sourceId])
+}
+
+/// Cantidad planificada de un ítem para el período que termina en `fecha` (cronograma).
+model AvancePlanificado {
+  id           Int      @id @default(autoincrement())
+  projectId    Int
+  budgetItemId Int
+  fecha        DateTime @db.Date
+  cantidad     Decimal  @db.Decimal(18, 4)
+  createdAt    DateTime @default(now())
+
+  project    Project    @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  budgetItem BudgetItem @relation(fields: [budgetItemId], references: [id], onDelete: Cascade)
+
+  @@unique([budgetItemId, fecha])
+  @@index([projectId, fecha])
+}
+
+/// Cierre oficial: congela [desde, hasta]. Lo que tenga fecha dentro del rango ya no se edita.
+/// snapshot guarda el avance oficial (y luego el costo) tal como quedó al cerrar.
+model CierrePeriodo {
+  id        Int      @id @default(autoincrement())
+  projectId Int
+  desde     DateTime @db.Date
+  hasta     DateTime @db.Date
+  snapshot  Json
+  notas     String?
+  createdBy String?
+  createdAt DateTime @default(now())
+
+  project Project  @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  factura Invoice?
+
+  @@index([projectId, hasta])
+}
+
+/// Horas de un equipo (insumo TIEMPO) en la obra, del parte diario. Sin ítem: se prorratea.
+/// Son la llave de reparto de los costos por tiempo (vía C), no un costo en sí.
+model ParteEquipo {
+  id           Int      @id @default(autoincrement())
+  projectId    Int
+  fecha        DateTime @db.Date
+  insumoId     Int
+  budgetItemId Int?
+  horas        Decimal  @db.Decimal(10, 2)
+  nota         String?
+  parteId      Int?
+  createdBy    String?
+  createdAt    DateTime @default(now())
+
+  project    Project      @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  insumo     Material     @relation(fields: [insumoId], references: [id], onDelete: Restrict)
+  budgetItem BudgetItem?  @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+  parte      ParteDiario? @relation(fields: [parteId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, fecha])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PARTE DIARIO DE OBRA
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Cabecera del parte diario. Sus renglones (horas de personal y equipo, avance, combustible,
+/// viajes) son hechos fechados. clientUuid lo genera el celular: reenviar no duplica.
+model ParteDiario {
+  id            Int      @id @default(autoincrement())
+  projectId     Int
+  fecha         DateTime @db.Date
+  workFrontId   Int?
+  clima         String?
+  estadoFaena   String   @default("NORMAL")
+  actividades   String?
+  observaciones String?
+  supervisor    String?
+  clientUuid    String   @unique
+  createdBy     String?
+  createdAt     DateTime @default(now())
+
+  project       Project             @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  workFront     WorkFront?          @relation(fields: [workFrontId], references: [id], onDelete: SetNull)
+  horasPersonal ParteHoraPersonal[]
+  horasEquipo   ParteEquipo[]
+  cargas        CargaCombustible[]
+  viajes        ViajeCamion[]
+
+  @@index([projectId, fecha])
+}
+
+/// Horas de un empleado en un ítem (llave de reparto de la vía C). Reemplaza a la asistencia
+/// de ese empleado y día en el motor de costos.
+model ParteHoraPersonal {
+  id           Int      @id @default(autoincrement())
+  parteId      Int
+  projectId    Int
+  fecha        DateTime @db.Date
+  empleadoId   Int
+  budgetItemId Int?
+  horas        Decimal  @db.Decimal(5, 2)
+  createdAt    DateTime @default(now())
+
+  parte      ParteDiario @relation(fields: [parteId], references: [id], onDelete: Cascade)
+  project    Project     @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  empleado   Empleado    @relation(fields: [empleadoId], references: [id], onDelete: Restrict)
+  budgetItem BudgetItem? @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+
+  @@index([projectId, fecha])
+  @@index([empleadoId, fecha])
+}
+
+/// Carga de combustible de un equipo. Control, no costo (el costo entra por la compra).
+model CargaCombustible {
+  id        Int      @id @default(autoincrement())
+  projectId Int
+  parteId   Int?
+  fecha     DateTime @db.Date
+  equipoId  Int
+  litros    Decimal  @db.Decimal(10, 2)
+  horometro Decimal? @db.Decimal(12, 1)
+  fotoUrl   String?
+  nota      String?
+  createdAt DateTime @default(now())
+
+  project Project      @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  parte   ParteDiario? @relation(fields: [parteId], references: [id], onDelete: Cascade)
+  equipo  Material     @relation(fields: [equipoId], references: [id], onDelete: Restrict)
+
+  @@index([projectId, fecha])
+  @@index([equipoId, fecha])
+}
+
+/// Viaje de camión: qué se movió, cuánto, de dónde a dónde y para qué ítem.
+model ViajeCamion {
+  id            Int      @id @default(autoincrement())
+  projectId     Int
+  parteId       Int?
+  fecha         DateTime @db.Date
+  equipoId      Int?
+  origen        String
+  destino       String
+  materialId    Int?
+  materialTexto String?
+  cantidad      Decimal  @db.Decimal(12, 3)
+  /// M3 | T
+  unidad        String
+  km            Decimal? @db.Decimal(10, 1)
+  budgetItemId  Int?
+  nota          String?
+  createdAt     DateTime @default(now())
+
+  project    Project      @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  parte      ParteDiario? @relation(fields: [parteId], references: [id], onDelete: Cascade)
+  equipo     Material?    @relation("ViajeCamionEquipo", fields: [equipoId], references: [id], onDelete: Restrict)
+  material   Material?    @relation("ViajeCamionMaterial", fields: [materialId], references: [id], onDelete: Restrict)
+  budgetItem BudgetItem?  @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+
+  @@index([projectId, fecha])
+}
+
+enum TipoCuenta {
+  ACTIVO
+  PASIVO
+  PATRIMONIO
+  INGRESO
+  EGRESO
+}
+
+/// Plan de cuentas contable. Jerárquico por `codigo` (ej. "1.1.01"); solo las cuentas
+/// `imputable` reciben líneas de asiento, igual que los ITEM de BudgetItem.
+model CuentaContable {
+  id        Int        @id @default(autoincrement())
+  codigo    String     @unique
+  nombre    String
+  tipo      TipoCuenta
+  imputable Boolean    @default(true)
+  parentId  Int?
+  createdAt DateTime   @default(now())
+
+  parent             CuentaContable?        @relation("CuentaContableTree", fields: [parentId], references: [id], onDelete: Restrict)
+  children           CuentaContable[]       @relation("CuentaContableTree")
+  lineas             LineaAsiento[]
+  reglasDebe         ReglaAsientoContable[] @relation("ReglaAsientoDebe")
+  reglasHaber        ReglaAsientoContable[] @relation("ReglaAsientoHaber")
+  cuentasFinancieras CuentaFinanciera[]
+
+  @@index([parentId])
+}
+
+/// Regla de cuentas por evento contable (config, no código): qué cuenta se debita y cuál se
+/// acredita cuando postAsientoDesdeRegla() se llama con ese `evento`. Editable sin tocar TS.
+model ReglaAsientoContable {
+  id            Int      @id @default(autoincrement())
+  evento        String   @unique
+  cuentaDebeId  Int
+  cuentaHaberId Int
+  activo        Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  cuentaDebe  CuentaContable @relation("ReglaAsientoDebe", fields: [cuentaDebeId], references: [id], onDelete: Restrict)
+  cuentaHaber CuentaContable @relation("ReglaAsientoHaber", fields: [cuentaHaberId], references: [id], onDelete: Restrict)
+}
+
+/// Asiento contable: cabecera de doble entrada. Nunca se borra; se anula con un contra-asiento
+/// enlazado por `anulaDeId`. Idempotente por (sourceType, sourceId) salvo anulaciones.
+model Asiento {
+  id         Int      @id @default(autoincrement())
+  fecha      DateTime @db.Date
+  projectId  Int
+  concepto   String
+  sourceType String
+  sourceId   Int
+  anulaDeId  Int?
+  usuario    String?
+  createdAt  DateTime @default(now())
+
+  project  Project        @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  anulaDe  Asiento?       @relation("AsientoAnulacion", fields: [anulaDeId], references: [id], onDelete: Restrict)
+  anulados Asiento[]      @relation("AsientoAnulacion")
+  lineas   LineaAsiento[]
+
+  @@index([projectId, fecha])
+  @@index([sourceType, sourceId])
+}
+
+model LineaAsiento {
+  id           Int      @id @default(autoincrement())
+  asientoId    Int
+  cuentaId     Int
+  debe         Decimal  @default(0) @db.Decimal(18, 2)
+  haber        Decimal  @default(0) @db.Decimal(18, 2)
+  projectId    Int
+  budgetItemId Int?
+  partnerId    Int?
+  createdAt    DateTime @default(now())
+
+  asiento    Asiento        @relation(fields: [asientoId], references: [id], onDelete: Cascade)
+  cuenta     CuentaContable @relation(fields: [cuentaId], references: [id], onDelete: Restrict)
+  project    Project        @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  budgetItem BudgetItem?    @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+  partner    Partner?       @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+
+  @@index([asientoId])
+  @@index([cuentaId])
+  @@index([projectId])
 }

@@ -139,6 +139,10 @@ export const CertificateExcelPreview: React.FC<CertificateExcelPreviewProps> = (
           res.budgetWarnings?.length
             ? `\n\n⚠ Avisos de presupuesto:\n${res.budgetWarnings.map((w) => "• " + w.message).join("\n")}`
             : ""
+        }${
+          res.measurementWarnings?.length
+            ? `\n\n⚠ Supera la medición oficial:\n${res.measurementWarnings.map((w) => "• " + w).join("\n")}`
+            : ""
         }`
       );
       onRefresh();

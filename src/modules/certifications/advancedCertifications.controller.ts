@@ -9,6 +9,10 @@ import { recalculateProjectFinancials } from "../../domain/projectFinancials";
 import { assertImputableItem, postCost, postMovement, type BudgetWarning } from "../../domain/budget";
 import { moneyNumber } from "../../lib/money";
 import { auxSubtotal, buildCertificate, measuredQuantity } from "./certMath";
+import { cierreDe, measurementDate, removeOfficialMeasurement, subcontractOverMeasured, syncOfficialMeasurement } from "../../domain/progress";
+import { preciosSugeridosMO } from "../../domain/laborPrice";
+import { alertasPrecio, type PrecioFuente } from "../../domain/laborPriceMath";
+import { today } from "../../domain/prices";
 
 /**
  * Mediciones y certificados.
@@ -90,10 +94,17 @@ async function approvedHistory(projectId: number, partnerId: number | null, excl
   return map;
 }
 
-/** Precio de mano de obra por rubro (lista de precios de la obra). */
-async function laborPriceMap(projectId: number) {
-  const prices = await prisma.laborPrice.findMany({ where: { projectId, budgetItemId: { not: null } } });
-  return new Map(prices.map((p) => [p.budgetItemId as number, moneyNumber(p.unitPrice)]));
+/** Avisos de precio de un certificado de subcontratista: distinto del sugerido o sin referencia. */
+function priceWarningsOf(items: { precioUnitario: Prisma.Decimal; precioSugerido: Prisma.Decimal | null; precioFuente: string | null; budgetItem: { code: string; name: string } }[]) {
+  return alertasPrecio(
+    items.map((i) => ({
+      code: i.budgetItem.code,
+      name: i.budgetItem.name,
+      precio: moneyNumber(i.precioUnitario),
+      sugerido: i.precioSugerido === null ? null : moneyNumber(i.precioSugerido),
+      fuente: (i.precioFuente as PrecioFuente | null) ?? null,
+    }))
+  );
 }
 
 advancedCertificationsRouter.get(
@@ -125,17 +136,18 @@ advancedCertificationsRouter.get(
     if (!Number.isInteger(projectId) || projectId <= 0) throw new DomainError("INVALID_PROJECT", "La obra es obligatoria");
     const partnerId = parseOptionalId(req.query.partnerId);
 
-    const [items, history, labor] = await Promise.all([
+    const [items, history] = await Promise.all([
       prisma.budgetItem.findMany({ where: { projectId, nodeKind: "ITEM", isSystem: false }, orderBy: { sortOrder: "asc" } }),
       approvedHistory(projectId, partnerId),
-      partnerId ? laborPriceMap(projectId) : Promise.resolve(new Map<number, number>()),
     ]);
+    const labor = partnerId ? await preciosSugeridosMO(prisma, projectId, items.map((i) => i.id), today()) : new Map();
 
     ok(
       res,
       items.map((bi) => {
         const salePrice = moneyNumber(bi.unitPrice);
-        const laborPrice = labor.get(bi.id) ?? null;
+        const sugerido = labor.get(bi.id) ?? null;
+        const laborPrice = sugerido?.precio ?? null;
         const unitPrice = partnerId ? laborPrice ?? 0 : salePrice;
         const cantidadAnterior = history.get(bi.id) ?? 0;
         return {
@@ -147,6 +159,8 @@ advancedCertificationsRouter.get(
           unitPrice,
           salePrice,
           laborPrice,
+          /** De dónde sale el precio sugerido: lista de MO de la obra o MO del ACU. */
+          laborPriceSource: sugerido?.fuente ?? null,
           priceSource: partnerId ? "MANO_DE_OBRA" : "VENTA",
           missingPrice: partnerId ? laborPrice === null : false,
           totalContractQuantity: moneyNumber(bi.totalQuantity),
@@ -214,6 +228,15 @@ advancedCertificationsRouter.get(
         noPendingReview: pendingReview === 0,
         pendingReview,
         overContract: summary.rows.filter((r) => r.overContract).map((r) => r.code),
+        priceWarnings: cert.partnerId ? priceWarningsOf(cert.items) : [],
+        overMeasured:
+          cert.partnerId && cert.estado !== CertificationStatus.APROBADO
+            ? await subcontractOverMeasured(
+                prisma,
+                cert.projectId,
+                cert.items.map((i) => ({ budgetItemId: i.budgetItemId, quantity: moneyNumber(i.cantidadPresente) }))
+              )
+            : [],
       },
     });
   })
@@ -235,7 +258,8 @@ async function writeItems(
   certificationId: number,
   projectId: number,
   partnerId: number | null,
-  items: z.infer<typeof itemInputSchema>[]
+  items: z.infer<typeof itemInputSchema>[],
+  fecha: Date
 ) {
   const history = new Map<number, number>();
   for (const c of await tx.certification.findMany({
@@ -244,24 +268,19 @@ async function writeItems(
   })) {
     for (const i of c.items) history.set(i.budgetItemId, (history.get(i.budgetItemId) ?? 0) + moneyNumber(i.cantidadPresente));
   }
-  const labor = partnerId
-    ? new Map(
-        (await tx.laborPrice.findMany({ where: { projectId, budgetItemId: { not: null } } })).map((p) => [
-          p.budgetItemId as number,
-          moneyNumber(p.unitPrice),
-        ])
-      )
-    : new Map<number, number>();
+  // Subcontratista: precio sugerido de la lista de MO (de la obra, o la MO del ACU) a la fecha
+  const labor = partnerId ? await preciosSugeridosMO(tx, projectId, items.map((i) => i.budgetItemId), fecha) : new Map();
 
   let total = 0;
   for (const input of items) {
     const budgetItem = await assertImputableItem(tx, projectId, input.budgetItemId);
     const priceSource = input.priceSource ?? (partnerId ? "MANO_DE_OBRA" : "VENTA");
+    const sugerido = partnerId ? labor.get(budgetItem.id) ?? null : null;
     const unitPrice =
       input.precioUnitario !== undefined
         ? input.precioUnitario
         : priceSource === "MANO_DE_OBRA"
-        ? labor.get(budgetItem.id) ?? 0
+        ? sugerido?.precio ?? 0
         : moneyNumber(budgetItem.unitPrice);
     const presentQty = input.auxiliaryCalculations.length ? measuredQuantity(input.auxiliaryCalculations) : input.cantidadPresente;
     const previous = history.get(budgetItem.id) ?? 0;
@@ -278,6 +297,9 @@ async function writeItems(
         precioUnitario: unitPrice,
         montoTotal: amount,
         priceSource,
+        precioSugerido: partnerId ? sugerido?.precio ?? null : null,
+        precioFuente: partnerId ? sugerido?.fuente ?? null : null,
+        insumoId: partnerId ? sugerido?.insumoId ?? null : null,
       },
     });
     for (const ac of input.auxiliaryCalculations) {
@@ -348,7 +370,7 @@ advancedCertificationsRouter.post(
             notes: body.notes ?? null,
           },
         });
-        const total = await writeItems(tx, cert.id, body.projectId, partnerId, body.items);
+        const total = await writeItems(tx, cert.id, body.projectId, partnerId, body.items, cert.fecha);
         return tx.certification.update({
           where: { id: cert.id },
           data: { montoTotal: total, netAmount: total },
@@ -381,11 +403,14 @@ advancedCertificationsRouter.put(
         };
         if (body.items?.length) {
           await tx.certificationItem.deleteMany({ where: { certificationId: id } });
-          const total = await writeItems(tx, id, cert.projectId, cert.partnerId, body.items);
+          const total = await writeItems(tx, id, cert.projectId, cert.partnerId, body.items, cert.fecha);
           const retention = Math.round((total * moneyNumber(cert.retentionPct)) / 100);
           Object.assign(data, { montoTotal: total, retentionAmount: retention, netAmount: total - retention });
         }
-        return tx.certification.update({ where: { id }, data, include: certificationInclude });
+        const next = await tx.certification.update({ where: { id }, data, include: certificationInclude });
+        // Certificado al cliente: su medición es la oficial; si ya estaba cerrada, se re-registra.
+        if (!cert.partnerId) await syncOfficialMeasurement(tx, id);
+        return next;
       },
       { timeout: 60_000 }
     );
@@ -430,6 +455,8 @@ advancedCertificationsRouter.post(
     if (existing.estado === CertificationStatus.APROBADO) {
       throw new DomainError("ALREADY_APPROVED", "El certificado ya está aprobado", 409);
     }
+    let measurementWarnings: string[] = [];
+    let priceWarnings: string[] = [];
     const updated = await prisma.$transaction(async (tx) => {
       let total = 0;
       for (const item of existing.items) {
@@ -456,7 +483,7 @@ advancedCertificationsRouter.post(
         });
       }
       const retentionAmount = Math.round((total * moneyNumber(existing.retentionPct)) / 100);
-      return tx.certification.update({
+      const next = await tx.certification.update({
         where: { id },
         data: {
           estado: CertificationStatus.CERTIFICADO_BORRADOR,
@@ -466,8 +493,21 @@ advancedCertificationsRouter.post(
         },
         include: certificationInclude,
       });
+      if (existing.partnerId) {
+        // Subcontratista: se controla contra la medición oficial, no se mide de nuevo.
+        measurementWarnings = await subcontractOverMeasured(
+          tx,
+          existing.projectId,
+          next.items.map((i) => ({ budgetItemId: i.budgetItemId, quantity: moneyNumber(i.cantidadPresente) }))
+        );
+        priceWarnings = priceWarningsOf(next.items);
+      } else {
+        // Al cliente: esta medición es la oficial del período → avance fechado.
+        await syncOfficialMeasurement(tx, id);
+      }
+      return next;
     });
-    ok(res, updated);
+    ok(res, { ...updated, measurementWarnings, priceWarnings });
   })
 );
 
@@ -493,11 +533,32 @@ advancedCertificationsRouter.post(
     }
 
     const result = await prisma.$transaction(async (tx) => {
+      let measurementWarnings: string[] = [];
+      let priceWarnings: string[] = [];
+      const hoy = today();
+      if (cert.partnerId) {
+        measurementWarnings = await subcontractOverMeasured(
+          tx,
+          cert.projectId,
+          cert.items.map((i) => ({ budgetItemId: i.budgetItemId, quantity: moneyNumber(i.cantidadPresente) }))
+        );
+        priceWarnings = priceWarningsOf(cert.items);
+      } else {
+        // El certificado al cliente sale de la medición oficial cerrada.
+        const cierre = await cierreDe(tx, cert.projectId, measurementDate(cert));
+        if (!cierre) {
+          throw new DomainError(
+            "PERIOD_NOT_CLOSED",
+            "Antes de aprobar el certificado al cliente hacé el cierre oficial del período de su medición (Centro de Costos › Avance).",
+            409
+          );
+        }
+      }
       const total = moneyNumber(cert.montoTotal);
       const retentionAmount = Math.round((total * moneyNumber(cert.retentionPct)) / 100);
       const approvedCert = await tx.certification.update({
         where: { id },
-        data: { estado: CertificationStatus.APROBADO, retentionAmount, netAmount: total - retentionAmount },
+        data: { estado: CertificationStatus.APROBADO, retentionAmount, netAmount: total - retentionAmount, approvedAt: hoy },
         include: certificationInclude,
       });
 
@@ -507,11 +568,13 @@ advancedCertificationsRouter.post(
         const base = {
           projectId: cert.projectId,
           budgetItemId: item.budgetItemId,
+          insumoId: item.insumoId,
           amount: item.montoTotal,
           quantity: item.cantidadPresente,
           sourceType: "Certification",
           sourceId: cert.id,
           sourceNumber: `CERT-${String(cert.numero).padStart(2, "0")}${cert.partner ? ` ${cert.partner.name}` : ""}`,
+          fecha: hoy,
         };
         if (cert.partnerId) {
           budgetWarnings.push(...(await postCost(tx, { ...base, source: "SUBCONTRACT" })));
@@ -528,13 +591,14 @@ advancedCertificationsRouter.post(
       }
       await recalculateProjectFinancials(tx, cert.projectId);
 
-      // Factura (recibida del subcontratista o emitida al cliente)
+      // Factura recibida del subcontratista. Al cliente se factura desde el cierre oficial del
+      // período (Centro de Costos › Avance › Cierres), no desde cada certificado.
       const isSubcontractor = Boolean(cert.partnerId);
       const now = new Date();
       const dueDate = new Date(now.getTime() + 30 * 86400000);
       const iva10 = Math.round(total / 11);
       let invoice = cert.invoices[0] ?? null;
-      if (!invoice) {
+      if (!invoice && isSubcontractor) {
         invoice = await tx.invoice.create({
           data: {
             projectId: cert.projectId,
@@ -579,7 +643,14 @@ advancedCertificationsRouter.post(
           });
         }
       }
-      return { certification: approvedCert, invoice, budgetWarnings };
+      return {
+        certification: approvedCert,
+        invoice,
+        budgetWarnings,
+        measurementWarnings,
+        priceWarnings,
+        message: isSubcontractor ? undefined : "Certificado aprobado. La factura al cliente se emite desde el cierre oficial del período.",
+      };
     });
     ok(res, result, 201);
   })
@@ -594,7 +665,10 @@ advancedCertificationsRouter.delete(
     if (existing.estado === CertificationStatus.APROBADO) {
       throw new DomainError("CANNOT_DELETE_APPROVED", "No se puede borrar un certificado aprobado", 409);
     }
-    await prisma.certification.delete({ where: { id } });
+    await prisma.$transaction(async (tx) => {
+      if (!existing.partnerId) await removeOfficialMeasurement(tx, id);
+      await tx.certification.delete({ where: { id } });
+    });
     ok(res, { deleted: true, id });
   })
 );

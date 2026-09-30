@@ -48,11 +48,15 @@ function createInitialStore() {
   };
 }
 
+/** Al leer el JSON, las fechas vuelven como texto: se reconvierten a Date (como las da Prisma). */
+const ISO_DATETIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+const reviveDates = (_key: string, value: unknown) => (typeof value === "string" && ISO_DATETIME.test(value) ? new Date(value) : value);
+
 function loadStore() {
   try {
     if (fs.existsSync(STORE_FILE)) {
       const content = fs.readFileSync(STORE_FILE, "utf-8");
-      const parsed = JSON.parse(content);
+      const parsed = JSON.parse(content, reviveDates);
       if (parsed && typeof parsed === "object") {
         return { ...createInitialStore(), ...parsed };
       }
@@ -181,11 +185,88 @@ function expandRelations(modelName: string, item: any, include?: any) {
   return res;
 }
 
+const RANGE_OPS = ["gte", "gt", "lte", "lt"];
+
+/** Valor comparable: fechas por tiempo, Decimal/numéricos como número. */
+function comparable(v: any): any {
+  if (v instanceof Date) return v.getTime();
+  if (typeof v === "string" && ISO_DATETIME.test(v)) return new Date(v).getTime();
+  if (v && typeof v === "object" && typeof v.toNumber === "function") return v.toNumber();
+  return v;
+}
+
+/** Filtro de rango de Prisma ({ gte, lte, gt, lt, not? }) sobre un valor. */
+function matchesRange(value: any, filter: Record<string, any>): boolean {
+  if (value === null || value === undefined) return false;
+  const v = comparable(value);
+  if (filter.gte !== undefined && !(v >= comparable(filter.gte))) return false;
+  if (filter.gt !== undefined && !(v > comparable(filter.gt))) return false;
+  if (filter.lte !== undefined && !(v <= comparable(filter.lte))) return false;
+  if (filter.lt !== undefined && !(v < comparable(filter.lt))) return false;
+  if ("not" in filter && filter.not !== undefined && comparable(filter.not) === v) return false;
+  return true;
+}
+
+/** Ordena como Prisma: orderBy objeto o arreglo de objetos { campo: "asc" | "desc" }. */
+function sortRows(rows: any[], orderBy: any) {
+  const specs: [string, "asc" | "desc"][] = (Array.isArray(orderBy) ? orderBy : [orderBy])
+    .filter((o: any) => o && typeof o === "object")
+    .map((o: any) => Object.entries(o)[0] as [string, any])
+    .filter(([, dir]) => dir === "asc" || dir === "desc");
+  if (!specs.length) return rows;
+  return rows.sort((a, b) => {
+    for (const [key, dir] of specs) {
+      const x = comparable(a[key]);
+      const y = comparable(b[key]);
+      if (x === y || (x == null && y == null)) continue;
+      if (x == null) return 1;
+      if (y == null) return -1;
+      if (x < y) return dir === "desc" ? 1 : -1;
+      if (x > y) return dir === "desc" ? -1 : 1;
+    }
+    return 0;
+  });
+}
+
 function matchesWhere(rawItem: any, where: any, modelName: string = ""): boolean {
   if (!where) return true;
   const item = expandRelations(modelName, rawItem);
 
   for (const [key, val] of Object.entries(where)) {
+    if (key === "OR" && Array.isArray(val)) {
+      if (val.length && !val.some((w) => matchesWhere(rawItem, w, modelName))) return false;
+      continue;
+    }
+    if (key === "AND") {
+      const list = Array.isArray(val) ? val : [val];
+      if (!list.every((w) => matchesWhere(rawItem, w, modelName))) return false;
+      continue;
+    }
+    if (key === "NOT") {
+      const list = Array.isArray(val) ? val : [val];
+      if (list.some((w) => matchesWhere(rawItem, w, modelName))) return false;
+      continue;
+    }
+    if (val instanceof Date) {
+      if (comparable(item[key]) !== val.getTime()) return false;
+      continue;
+    }
+    if (val && typeof val === "object" && Object.keys(val).some((k) => RANGE_OPS.includes(k))) {
+      if (!matchesRange(item[key], val as Record<string, any>)) return false;
+      continue;
+    }
+    if (val && typeof val === "object" && ("some" in val || "every" in val || "none" in val)) {
+      // Filtros de relaciones a muchos: el simulador no los resuelve, se aceptan
+      continue;
+    }
+    if (val && typeof val === "object" && "not" in val && (val as any).not !== null && typeof (val as any).not === "object" && !((val as any).not instanceof Date)) {
+      if (matchesWhere(rawItem, { [key]: (val as any).not }, modelName)) return false;
+      continue;
+    }
+    if (val && typeof val === "object" && "not" in val && (val as any).not === null) {
+      if (item[key] === null || item[key] === undefined) return false;
+      continue;
+    }
     if (val === null) {
       // In Prisma / SQL, where: { deletedAt: null } matches null or undefined
       if (item[key] !== null && item[key] !== undefined) return false;
@@ -291,6 +372,19 @@ function withDefaults(modelName: string, data: Record<string, any>) {
 }
 
 function createMockModel(modelName: string) {
+  const model = baseMockModel(modelName);
+  const orThrow = (found: unknown) => {
+    if (!found) throw new Prisma.PrismaClientKnownRequestError(`No ${modelName} found`, { code: "P2025", clientVersion: "mock" });
+    return found;
+  };
+  return {
+    ...model,
+    findUniqueOrThrow: async (args?: any) => orThrow(await model.findUnique(args)),
+    findFirstOrThrow: async (args?: any) => orThrow(await model.findFirst(args)),
+  };
+}
+
+function baseMockModel(modelName: string) {
   return {
     findMany: async (args?: any) => {
       const collection = (mockStore as any)[modelName] || [];
@@ -300,17 +394,7 @@ function createMockModel(modelName: string) {
         results = results.filter((item) => matchesWhere(item, args.where, modelName));
       }
 
-      if (args?.orderBy && typeof args.orderBy === "object") {
-        const orderKey = Object.keys(args.orderBy)[0];
-        const orderDir = args.orderBy[orderKey];
-        if (orderKey) {
-          results.sort((a, b) => {
-            if (a[orderKey] < b[orderKey]) return orderDir === "desc" ? 1 : -1;
-            if (a[orderKey] > b[orderKey]) return orderDir === "desc" ? -1 : 1;
-            return 0;
-          });
-        }
-      }
+      if (args?.orderBy && typeof args.orderBy === "object") sortRows(results, args.orderBy);
 
       if (args?.take && typeof args.take === "number") {
         results = results.slice(0, args.take);
@@ -320,9 +404,9 @@ function createMockModel(modelName: string) {
     },
     findFirst: async (args?: any) => {
       const collection = (mockStore as any)[modelName] || [];
-      if (!args?.where) return collection[0] ? expandRelations(modelName, collection[0], args?.include) : null;
-      const found = collection.find((item: any) => matchesWhere(item, args.where, modelName)) || null;
-      return expandRelations(modelName, found, args?.include);
+      let rows = args?.where ? collection.filter((item: any) => matchesWhere(item, args.where, modelName)) : [...collection];
+      if (args?.orderBy && typeof args.orderBy === "object") rows = sortRows(rows, args.orderBy);
+      return rows[0] ? expandRelations(modelName, rows[0], args?.include) : null;
     },
     findUnique: async (args?: any) => {
       const collection = (mockStore as any)[modelName] || [];

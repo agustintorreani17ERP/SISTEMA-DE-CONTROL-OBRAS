@@ -60,6 +60,9 @@ export function CertificateDetail({ certificationId, project, currency, onClose,
       const res = await fn();
       showToast(msg);
       res?.budgetWarnings?.forEach((w: { message: string }) => showToast(`Presupuesto: ${w.message}`, "info"));
+      res?.measurementWarnings?.forEach((w: string) => showToast(`Supera la medición oficial: ${w}`, "error"));
+      res?.priceWarnings?.forEach((w: string) => showToast(`Precio: ${w}`, "error"));
+      if (res?.message) showToast(res.message, "info");
       await load();
       onChanged();
     } catch (err: any) {
@@ -260,8 +263,58 @@ export function CertificateDetail({ certificationId, project, currency, onClose,
           {check(checks.previousMatchesHistory, "Los acumulados coinciden con los certificados anteriores")}
           {check(checks.noPendingReview, checks.noPendingReview ? "No quedan cantidades pendientes de revisión" : `${checks.pendingReview} línea(s) del cómputo marcadas [?]`)}
           {check(checks.overContract.length === 0, checks.overContract.length ? `Superan lo contratado: ${checks.overContract.join(", ")}` : "Ningún ítem supera lo contratado")}
+          {cert.partnerId && (
+            <>
+              {check(!checks.priceWarnings?.length, checks.priceWarnings?.length ? "Precios distintos del sugerido (lista de MO):" : "Todos los precios son los sugeridos de la lista de MO")}
+              {checks.priceWarnings?.map((w) => (
+                <li key={w} className="pl-6 text-red-600">
+                  {w}
+                </li>
+              ))}
+              {editable &&
+                check(!checks.overMeasured?.length, checks.overMeasured?.length ? "Supera lo medido oficialmente:" : "No supera la medición oficial acumulada")}
+              {editable &&
+                checks.overMeasured?.map((w) => (
+                  <li key={w} className="pl-6 text-red-600">
+                    {w}
+                  </li>
+                ))}
+            </>
+          )}
         </ul>
       </Card>
+
+      {cert.partnerId && (
+        <Card title="Precios de mano de obra">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 text-left text-xs font-semibold">
+                <th className="py-1.5">Ítem</th>
+                <th className="py-1.5 text-right">Precio usado</th>
+                <th className="py-1.5 text-right">Sugerido</th>
+                <th className="py-1.5 pl-3">Origen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {cert.items.map((i) => {
+                const usado = Number(i.precioUnitario);
+                const sug = i.precioSugerido === null || i.precioSugerido === undefined ? null : Number(i.precioSugerido);
+                const distinto = sug === null || (sug > 0 ? Math.abs(usado / sug - 1) > 0.005 : usado !== 0);
+                return (
+                  <tr key={i.id} className="border-b border-slate-100">
+                    <td className="py-1.5">
+                      {i.budgetItem?.code} · {i.budgetItem?.name}
+                    </td>
+                    <td className={cx("py-1.5 text-right tabular-nums", distinto && "font-semibold text-red-600")}>{money(usado)}</td>
+                    <td className="py-1.5 text-right tabular-nums">{sug === null ? "—" : money(sug)}</td>
+                    <td className="py-1.5 pl-3 text-xs">{i.precioFuente === "LISTA_OBRA" ? "Lista de MO de la obra" : i.precioFuente === "ACU_MO" ? "MO del ACU" : "Sin referencia"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </Card>
+      )}
 
       {cert.items.some((i) => (i.photos ?? []).length) && (
         <Card title="Fotos de la medición">

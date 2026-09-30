@@ -20,6 +20,13 @@ export function exportCostSheet(rows: SheetRow[], project: Project, filtered: bo
     "Total previsto (Gs.)",
     "Total ejecutado (Gs.)",
     "Saldo (Gs.)",
+    "Costo meta unit. (Gs.)",
+    "Costo meta total (Gs.)",
+    "% Materiales",
+    "% Mano de obra",
+    "% Equipos",
+    "Margen previsto (Gs.)",
+    "Margen % s/ venta sin IVA",
   ];
   const HEAD_ROW = 4; // filas 1-3: título; 4: encabezado; datos desde la 5
   const first = HEAD_ROW + 1;
@@ -73,6 +80,13 @@ export function exportCostSheet(rows: SheetRow[], project: Project, filtered: bo
       cell(r.isItem ? r.plannedTotal : sumOf("I"), GS, style),
       cell(r.isItem ? r.executedTotal : sumOf("J"), GS, style),
       cell({ f: `I${R}-J${R}` }, GS, style),
+      cell(r.isItem && r.costoMetaUnit !== null ? r.costoMetaUnit : "", GS, style),
+      cell(r.isItem ? r.costoMetaTotal ?? "" : sumOf("M"), GS, style),
+      cell(r.shareMaterial ?? "", PCT, style),
+      cell(r.shareManoObra ?? "", PCT, style),
+      cell(r.shareEquipo ?? "", PCT, style),
+      cell(r.isItem ? r.margenPrevisto ?? "" : sumOf("Q"), GS, style),
+      cell(r.margenPct ?? "", PCT, style),
     ]);
   });
 
@@ -89,10 +103,15 @@ export function exportCostSheet(rows: SheetRow[], project: Project, filtered: bo
     cell(sumRoots("I"), GS, totalStyle),
     cell(sumRoots("J"), GS, totalStyle),
     cell({ f: `I${T}-J${T}` }, GS, totalStyle),
+    cell("", undefined, totalStyle),
+    cell(sumRoots("M"), GS, totalStyle),
+    ...Array.from({ length: 3 }, () => cell("", undefined, totalStyle)),
+    cell(sumRoots("Q"), GS, totalStyle),
+    cell("", undefined, totalStyle),
   ]);
 
   const ws = XLSX.utils.aoa_to_sheet(data);
-  ws["!cols"] = [{ wch: 10 }, { wch: 60 }, { wch: 6 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 18 }, { wch: 18 }, { wch: 18 }];
+  ws["!cols"] = [{ wch: 10 }, { wch: 60 }, { wch: 6 }, { wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 18 }, { wch: 18 }, { wch: 18 }, { wch: 16 }, { wch: 18 }, { wch: 11 }, { wch: 11 }, { wch: 11 }, { wch: 18 }, { wch: 12 }];
   ws["!freeze"] = { xSplit: 2, ySplit: HEAD_ROW };
   (ws as any)["!views"] = [{ state: "frozen", xSplit: 2, ySplit: HEAD_ROW }];
   const wb = XLSX.utils.book_new();

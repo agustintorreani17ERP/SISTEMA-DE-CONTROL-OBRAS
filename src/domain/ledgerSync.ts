@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 import { postCost, postMovement, rebuildItemCache } from "./budget";
 import { recalculateProjectFinancials } from "./projectFinancials";
 import { toDecimal } from "../lib/money";
+import { ledgerItemFor, ledgerLines } from "./imputation";
 
 type Tx = Prisma.TransactionClient;
 
@@ -33,14 +34,12 @@ export async function rebuildProjectLedger(tx: Tx, projectId: number) {
   });
   for (const order of orders) {
     if (await hasMovements("PurchaseOrder", order.id)) continue;
-    const byItem = new Map<number, ReturnType<typeof toDecimal>>();
-    for (const d of order.details) {
-      byItem.set(d.budgetItemId, (byItem.get(d.budgetItemId) ?? toDecimal(0)).plus(d.subtotal));
-    }
-    for (const [budgetItemId, amount] of byItem) {
+    const lines = await ledgerLines(tx, projectId, order.details);
+    for (const { budgetItemId, insumoId, amount } of lines) {
       const base = {
         projectId,
         budgetItemId,
+        insumoId,
         amount,
         source: "PURCHASE_ORDER" as const,
         sourceType: "PurchaseOrder",
@@ -49,8 +48,8 @@ export async function rebuildProjectLedger(tx: Tx, projectId: number) {
         note: "Sincronización de datos existentes",
       };
       await attempt(`OC ${order.number}`, async () => {
-        await postMovement(tx, { ...base, stage: "COMMITTED" });
-        if (order.status === "RECIBIDO") await postMovement(tx, { ...base, stage: "ACTUAL" });
+        await postMovement(tx, { ...base, stage: "COMMITTED", fecha: order.fecha });
+        if (order.status === "RECIBIDO") await postMovement(tx, { ...base, stage: "ACTUAL", fecha: order.receivedDate ?? order.fecha });
       });
     }
   }
@@ -66,11 +65,13 @@ export async function rebuildProjectLedger(tx: Tx, projectId: number) {
       const base = {
         projectId,
         budgetItemId: item.budgetItemId,
+        insumoId: item.insumoId,
         amount: item.montoTotal,
         quantity: item.cantidadPresente,
         sourceType: "Certification",
         sourceId: cert.id,
         sourceNumber: `CERT-${String(cert.numero).padStart(2, "0")}`,
+        fecha: cert.approvedAt ?? undefined,
       };
       await attempt(`Certificado ${cert.numero}`, () =>
         cert.partnerId
@@ -124,22 +125,28 @@ export async function rebuildProjectLedger(tx: Tx, projectId: number) {
   }
 
   // Caja chica no rechazada
+  // Compromete al cargarse; costo incurrido solo con la rendición aprobada.
   const expenses = await tx.pettyCashExpense.findMany({
     where: { status: { not: "RECHAZADO" }, fund: { projectId } },
+    include: { insumo: { select: { tipo: true } } },
   });
   for (const exp of expenses) {
     if (await hasMovements("PettyCashExpense", exp.id)) continue;
-    await attempt(`Caja chica ${exp.receiptNumber}`, () =>
-      postCost(tx, {
+    await attempt(`Caja chica ${exp.receiptNumber}`, async () => {
+      const base = {
         projectId,
-        budgetItemId: exp.budgetItemId,
+        budgetItemId: exp.budgetItemId ?? (await ledgerItemFor(tx, projectId, { tipo: exp.insumo?.tipo ?? "COMUN", budgetItemId: null })),
+        insumoId: exp.insumoId,
         amount: exp.amount,
-        source: "PETTY_CASH",
+        source: "PETTY_CASH" as const,
         sourceType: "PettyCashExpense",
         sourceId: exp.id,
         sourceNumber: exp.receiptNumber,
-      })
-    );
+        fecha: exp.date,
+      };
+      await postMovement(tx, { ...base, stage: "COMMITTED" });
+      if (exp.status === "RENDIDO") await postMovement(tx, { ...base, stage: "ACTUAL" });
+    });
   }
 
   const cache = await rebuildItemCache(tx, projectId);
