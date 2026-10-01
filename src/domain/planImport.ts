@@ -45,6 +45,8 @@ export interface PlanItemRef {
   id: number;
   code: string;
   contrato: number;
+  /** Ruta única del ítem en el presupuesto (ej. "A2/PLANTA-BAJA/2.4"): permite cargar obras con códigos repetidos entre bloques. */
+  path?: string;
 }
 
 export interface PlanPreviewRow {
@@ -71,19 +73,29 @@ export function parsePlanGrid(text: string, items: PlanItemRef[]) {
   });
   if (!cols.length) return { periodos: [], filas: [], errores: ["No encontré períodos en el encabezado (ej. mar-26, 03/2026, 31/03/2026)"] };
 
-  const byCode = new Map(items.map((i) => [i.code.trim().toLowerCase(), i]));
+  // La primera columna puede ser la ruta (única) o el código. Si un código se repite en varios bloques es ambiguo.
+  const byPath = new Map(items.filter((i) => i.path).map((i) => [i.path!.trim().toLowerCase(), i]));
+  const codeCount = new Map<string, number>();
+  for (const i of items) {
+    const k = i.code.trim().toLowerCase();
+    codeCount.set(k, (codeCount.get(k) ?? 0) + 1);
+  }
+  const byCode = new Map(items.filter((i) => codeCount.get(i.code.trim().toLowerCase()) === 1).map((i) => [i.code.trim().toLowerCase(), i]));
   const filas: PlanPreviewRow[] = [];
   lines.slice(1).forEach((line, n) => {
     const cells = line.split(sep);
     const codigo = (cells[0] ?? "").trim();
     if (!codigo) return;
-    const item = byCode.get(codigo.toLowerCase());
+    const key = codigo.toLowerCase();
+    const item = byPath.get(key) ?? byCode.get(key);
+    const ambiguo = !item && (codeCount.get(key) ?? 0) > 1;
     for (const c of cols) {
       const raw = cells[c.idx] ?? "";
       const cantidad = parsePlanValue(raw, item?.contrato ?? 0);
       if (cantidad === null) continue;
       const row: PlanPreviewRow = { fila: n + 2, codigo, budgetItemId: item?.id ?? null, fecha: c.fecha, cantidad: Number.isNaN(cantidad) ? 0 : cantidad };
-      if (!item) row.error = "Ítem inexistente en el presupuesto";
+      if (ambiguo) row.error = "Código repetido en varios bloques: usá la ruta del ítem (columna Ruta)";
+      else if (!item) row.error = "Ítem inexistente en el presupuesto";
       else if (Number.isNaN(cantidad)) row.error = `Valor "${raw.trim()}" no es un número`;
       else if (cantidad < 0) row.error = "Cantidad negativa";
       filas.push(row);

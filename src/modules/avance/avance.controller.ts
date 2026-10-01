@@ -10,6 +10,7 @@ import { today, toDay } from "../../domain/prices";
 import { assertOpenPeriod, closePeriod, closingPreview, progressReport } from "../../domain/progress";
 import { costEngine } from "../../domain/costEngine";
 import { parsePlanGrid } from "../../domain/planImport";
+import { guardarPlan } from "../../domain/planSave";
 import { clientInvoicePreview, createClientInvoice } from "../../domain/clientBilling";
 
 /** Avance fechado por ítem (partes diarios y medición oficial), cronograma y cierres oficiales. */
@@ -136,9 +137,9 @@ avanceRouter.post(
     const { texto } = z.object({ texto: z.string().min(1) }).parse(req.body);
     const items = await prisma.budgetItem.findMany({
       where: { projectId, nodeKind: "ITEM", isSystem: false },
-      select: { id: true, code: true, totalQuantity: true },
+      select: { id: true, code: true, path: true, totalQuantity: true },
     });
-    ok(res, parsePlanGrid(texto, items.map((i) => ({ id: i.id, code: i.code, contrato: moneyNumber(i.totalQuantity) }))));
+    ok(res, parsePlanGrid(texto, items.map((i) => ({ id: i.id, code: i.code, path: i.path, contrato: moneyNumber(i.totalQuantity) }))));
   })
 );
 
@@ -156,23 +157,9 @@ avanceRouter.put(
     await assertItems(projectId, body.lineas.map((l) => l.budgetItemId));
     const n = await prisma.$transaction(
       async (tx) => {
-        if (body.modo === "REEMPLAZAR") await tx.avancePlanificado.deleteMany({ where: { projectId } });
-        let count = 0;
-        for (const l of body.lineas) {
-          const key = { budgetItemId_fecha: { budgetItemId: l.budgetItemId, fecha: toDay(l.fecha) } };
-          if (l.cantidad === 0) {
-            await tx.avancePlanificado.deleteMany({ where: { budgetItemId: l.budgetItemId, fecha: toDay(l.fecha) } });
-            continue;
-          }
-          await tx.avancePlanificado.upsert({
-            where: key,
-            update: { cantidad: l.cantidad },
-            create: { projectId, budgetItemId: l.budgetItemId, fecha: toDay(l.fecha), cantidad: l.cantidad },
-          });
-          count++;
-        }
-        await audit(tx, { entity: "AvancePlanificado", entityId: projectId, action: body.modo, payload: { lineas: count } });
-        return count;
+        const guardados = await guardarPlan(tx, projectId, body.modo, body.lineas);
+        await audit(tx, { entity: "AvancePlanificado", entityId: projectId, action: body.modo, payload: { lineas: guardados } });
+        return guardados;
       },
       { timeout: 120_000 }
     );
