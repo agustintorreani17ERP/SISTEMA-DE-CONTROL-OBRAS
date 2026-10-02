@@ -1,8 +1,8 @@
 import { Prisma, type BudgetMovementSource, type BudgetMovementStage } from "@prisma/client";
 import { DomainError, NotFoundError } from "../errors/domain";
 import { toDecimal, type MoneyLike } from "../lib/money";
-import { assertOpenPeriod } from "./progress";
-import { today } from "./prices";
+import { fechaContable } from "./progress";
+import { today, toDay } from "./prices";
 
 /**
  * Libro mayor presupuestario.
@@ -103,11 +103,9 @@ export async function assertImputableItem(tx: Tx, projectId: number, budgetItemI
 
 export async function postMovement(tx: Tx, input: PostMovementInput) {
   const item = await assertImputableItem(tx, input.projectId, input.budgetItemId);
-  // Lo cerrado no se edita. El certificado al cliente es la excepción: se aprueba después de
-  // cerrar el período de su medición.
-  if (input.source !== "CLIENT_CERTIFICATE") {
-    await assertOpenPeriod(tx, input.projectId, input.fecha ?? today(), "El movimiento contable");
-  }
+  // Lo cerrado no se edita: un documento que llega tarde (OC, recepción, factura, certificado…)
+  // se contabiliza el primer día abierto y guarda su fecha real en fechaDocumento.
+  const fc = await fechaContable(tx, input.projectId, input.fecha ?? today());
   const amount = toDecimal(input.amount);
   const quantity =
     input.quantity === undefined || input.quantity === null ? null : toDecimal(input.quantity);
@@ -154,7 +152,8 @@ export async function postMovement(tx: Tx, input: PostMovementInput) {
       note: input.note,
       createdBy: input.createdBy,
       // Sin fecha del hecho: hoy en Paraguay (el default de la base truncaría en UTC)
-      fecha: input.fecha ?? today(),
+      fecha: fc.fecha,
+      fechaDocumento: fc.desplazada ? toDay(input.fecha ?? today()) : null,
     },
   });
   await tx.budgetItem.update({
@@ -162,7 +161,9 @@ export async function postMovement(tx: Tx, input: PostMovementInput) {
     data: cacheDelta(input.source, input.stage, amount, quantity),
   });
 
-  return { movement, warnings };
+  /** Si el documento era de un período cerrado: su fecha real y la fecha en que se contabilizó. */
+  const desplazado = fc.desplazada ? { fechaDocumento: toDay(input.fecha ?? today()), fechaContable: fc.fecha } : null;
+  return { movement, warnings, desplazado };
 }
 
 /**
@@ -221,7 +222,7 @@ export async function reverseMovements(
         sourceId: m.sourceId,
         sourceNumber: m.sourceNumber,
         reversalOfId: m.id,
-        fecha: today(),
+        fecha: (await fechaContable(tx, m.projectId, today())).fecha,
         note: params.note ?? `Reverso de movimiento ${m.id}`,
         createdBy: params.createdBy,
       },

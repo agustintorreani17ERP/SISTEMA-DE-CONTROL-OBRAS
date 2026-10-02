@@ -23,6 +23,7 @@ interface ThreeWayMatchModalProps {
   onClose: () => void;
   onViewA4: (invoice: any) => void;
   onProceedPayment: (invoice: any) => void;
+  onImputar?: (invoice: any) => void;
   onMatchUpdated: () => void;
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
 }
@@ -33,6 +34,7 @@ export const ThreeWayMatchModal: React.FC<ThreeWayMatchModalProps> = ({
   onClose,
   onViewA4,
   onProceedPayment,
+  onImputar,
   onMatchUpdated,
   showToast,
 }) => {
@@ -44,7 +46,25 @@ export const ThreeWayMatchModal: React.FC<ThreeWayMatchModalProps> = ({
   const diff = Math.abs(invoiceTotal - poAmount);
   const hasRemision = Boolean(invoice?.remisionNumber || po?.stockRegistered);
 
-  const isMatched = invoice?.threeWayMatchPassed && invoice?.estado === "APROBADA";
+  // El tipo de control depende de qué documento respalda la factura — no todas pasan por 3 vías.
+  const matchKind: "ORDEN_COMPRA" | "CERTIFICADO" | "NO_APLICA" | "SIN_DOCUMENTO" =
+    invoice?.tipo === "EMITIDA"
+      ? "NO_APLICA"
+      : invoice?.purchaseOrderId
+        ? "ORDEN_COMPRA"
+        : invoice?.certificacionId || invoice?.certificationId
+          ? "CERTIFICADO"
+          : "SIN_DOCUMENTO";
+  const MATCH_KIND_LABEL: Record<typeof matchKind, string> = {
+    ORDEN_COMPRA: "Control de 3 vías (O.C. + recepción + factura)",
+    CERTIFICADO: "Control de 2 vías (certificado + factura, sin recepción física)",
+    NO_APLICA: "No aplica — factura de venta al cliente",
+    SIN_DOCUMENTO: "Sin documento de respaldo — requiere aprobación manual",
+  };
+
+  // estado y threeWayMatchPassed siempre se escriben juntos en el backend (ver threeWayMatch.ts),
+  // así que basta con mirar estado para decidir si se puede pagar.
+  const isMatched = invoice?.estado === "APROBADA" || invoice?.estado === "PAGADA";
 
   const handleReverify = async () => {
     setRevalidating(true);
@@ -87,7 +107,7 @@ export const ThreeWayMatchModal: React.FC<ThreeWayMatchModalProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h2 className="text-base font-extrabold text-slate-900">
-                  Control de Integración Tripartita (Three-Way Match)
+                  Control de Aprobación de Factura
                 </h2>
                 <span
                   className={`px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider ${
@@ -99,9 +119,7 @@ export const ThreeWayMatchModal: React.FC<ThreeWayMatchModalProps> = ({
                   {isMatched ? "APROBADA PARA PAGO" : "EN REVISIÓN / BLOQUEADA"}
                 </span>
               </div>
-              <p className="text-xs text-slate-500">
-                Validación cruzada corporativa estilo SAP: Orden de Compra vs. Recepción en Pañol vs. Factura Fiscal
-              </p>
+              <p className="text-xs text-slate-500">{MATCH_KIND_LABEL[matchKind]}</p>
             </div>
           </div>
 
@@ -125,23 +143,20 @@ export const ThreeWayMatchModal: React.FC<ThreeWayMatchModalProps> = ({
             <div className="space-y-1">
               <div className="flex items-center gap-2">
                 <span className="font-bold text-xs uppercase tracking-wide">
-                  Regla de Negocio: Tolerancia del 0.00%
+                  {matchKind === "ORDEN_COMPRA" || matchKind === "CERTIFICADO" ? "Regla de negocio: tolerancia 0%" : MATCH_KIND_LABEL[matchKind]}
                 </span>
-                <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-white/80 font-bold border border-slate-200">
-                  Delta: ₲ {formatGs(diff)}
-                </span>
+                {(matchKind === "ORDEN_COMPRA" || matchKind === "CERTIFICADO") && (
+                  <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-white/80 font-bold border border-slate-200">
+                    Delta: ₲ {formatGs(diff)}
+                  </span>
+                )}
               </div>
-              <p className="text-xs text-slate-700 leading-relaxed">
-                {invoice.matchNotes ||
-                  (isMatched
-                    ? "Los montos, precios acordados y la recepción física de mercaderías coinciden en un 100%."
-                    : "Existe una divergencia en el importe o aún no se ha verificado el ingreso físico en el Pañol de obra.")}
-              </p>
+              <p className="text-xs text-slate-700 leading-relaxed">{invoice.matchNotes || MATCH_KIND_LABEL[matchKind]}</p>
             </div>
 
             <button
               onClick={handleReverify}
-              disabled={revalidating}
+              disabled={revalidating || matchKind === "NO_APLICA"}
               className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 text-xs font-bold shadow-xs transition shrink-0 cursor-pointer disabled:opacity-50"
             >
               <RefreshCw className={`w-4 h-4 ${revalidating ? "animate-spin text-blue-600" : ""}`} />
@@ -328,12 +343,17 @@ export const ThreeWayMatchModal: React.FC<ThreeWayMatchModalProps> = ({
             {isMatched ? (
               <span className="text-emerald-700 font-semibold flex items-center gap-1.5">
                 <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                Desembolso habilitado por Auditoría Financiera
+                Desembolso habilitado
+              </span>
+            ) : matchKind === "SIN_DOCUMENTO" ? (
+              <span className="text-amber-700 font-semibold flex items-center gap-1.5">
+                <Lock className="w-4 h-4 text-amber-500" />
+                Sin O.C. ni certificado: aprobala imputando sus renglones a insumo e ítem
               </span>
             ) : (
               <span className="text-rose-600 font-semibold flex items-center gap-1.5">
                 <Lock className="w-4 h-4 text-rose-500" />
-                Pago bloqueado: Resuelva las discrepancias para habilitar
+                Pago bloqueado: resolvé la discrepancia para habilitar
               </span>
             )}
           </div>
@@ -346,6 +366,16 @@ export const ThreeWayMatchModal: React.FC<ThreeWayMatchModalProps> = ({
               <Printer className="w-4 h-4" />
               <span>Ver Factura Legal A4</span>
             </button>
+
+            {!isMatched && matchKind === "SIN_DOCUMENTO" && onImputar && (
+              <button
+                onClick={() => onImputar(invoice)}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-xs transition cursor-pointer"
+              >
+                <ArrowRight className="w-4 h-4" />
+                <span>Imputar y aprobar</span>
+              </button>
+            )}
 
             {isMatched && invoice.estado !== "PAGADA" && (
               <button

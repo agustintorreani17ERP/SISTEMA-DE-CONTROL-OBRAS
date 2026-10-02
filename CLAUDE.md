@@ -64,7 +64,7 @@ src/
 │   ├── laborPriceMath.ts       # Precio sugerido de MO (lista de la obra o MO del ACU) y alertas — puro
 │   ├── laborPrice.ts           # preciosSugeridosMO(db, obra, ítems, fecha)
 │   ├── clientBillingMath.ts    # Factura al cliente desde la medición oficial (IVA, fondo de reparo) — puro
-│   ├── clientBilling.ts        # Borrador / emisión de la factura de un cierre (una por cierre)
+│   ├── clientBilling.ts        # Factura al cliente: al aprobar el certificado y desde el cierre (solo lo no facturado)
 │   ├── reconciliationMath.ts   # Conciliación documentos ↔ libro mayor ↔ facturas — puro
 │   ├── reconciliation.ts       # Conciliación por rango + totales del motor
 │   ├── dashboardMath.ts        # Tablero (hoja 8): métricas por ítem/rubro/obra, EAC, alertas, curva S — puro
@@ -131,17 +131,17 @@ src/
 - Imputación en compras: usar `resolveLineItem` / `amountsByLedgerItem` de `src/domain/imputation.ts`. DIRECTO exige ítem; COMÚN no lleva ítem y su costo va al pozo de sistema "Costos a distribuir › stock de obra" (`SYS-DIST`); TIEMPO sin ítem va a "Costos a distribuir › tiempo". La línea de OC congela el `tipo` del insumo.
 - Stock: todo movimiento con `fecha`, vía `recordStockMovement` (recalcula caché, conteos posteriores y saldo negativo). `WarehouseStock` es solo caché. Un conteo es un hecho; su ajuste `INVENTORY_ADJUSTMENT` se deriva. Fechas `@db.Date`: mostrarlas con `fmtDate` de `src/client/compras/status.ts` (no con `new Date()` local).
 - Avance: `AvanceItem` con fecha y origen PARTE_DIARIO (provisorio) o MEDICION_OFICIAL (reemplaza los partes hasta su fecha). La medición oficial ES la medición del certificado al cliente (`Certification` sin partnerId): al cerrarla se registra con `syncOfficialMeasurement`. Los certificados de subcontratistas no miden: se controlan con `subcontractOverMeasured`. Plan: `AvancePlanificado` (cantidad del período que termina en `fecha`).
-- Cierres: `CierrePeriodo` guarda snapshot. Todo hecho fechado hasta el último cierre es inmutable: llamar `assertOpenPeriod` antes de crear/editar/borrar hechos con fecha. El certificado al cliente solo se aprueba si su período está cerrado.
-- Motor de costos: todo `BudgetMovement` ACTUAL del rango (salvo certificado al cliente) cae en un balde: ítem (A), pozo stock (B), pozo tiempo / Gastos Generales / personal (C). Validación: imputado + pérdidas + no imputado = total contable. Horas de equipo: `ParteEquipo` (llave de reparto, no costo). Al cerrar, el resultado queda en `CierrePeriodo.snapshot.costos`. `postMovement` rechaza fechas cerradas (salvo CLIENT_CERTIFICATE).
+- Cierres: `CierrePeriodo` guarda snapshot. Partes, mediciones, asistencia, conteos y salidas de stock con fecha hasta el último cierre son inmutables: llamar `assertOpenPeriod`. Los documentos (OC, recepción, factura, certificado, caja chica) se aceptan tarde: `postMovement` y `recordStockMovement({ tardio: true })` los contabilizan el primer día abierto y guardan la fecha real en `fechaDocumento`. Solo el último cierre se reabre (`reopenLastClosing`, rol ADMIN vía header `x-user-role` provisorio, motivo obligatorio, copia en `CierreReapertura`). El certificado al cliente se aprueba sin cierre (exige medición cerrada).
+- Motor de costos: todo `BudgetMovement` ACTUAL del rango (salvo certificado al cliente) cae en un balde: ítem (A), pozo stock (B), pozo tiempo / Gastos Generales / personal (C). Validación: imputado + pérdidas + no imputado = total contable. Horas de equipo: `ParteEquipo` (llave de reparto, no costo). Al cerrar, el resultado queda en `CierrePeriodo.snapshot.costos`. `postMovement` nunca escribe en fechas cerradas: desplaza al primer día abierto.
 - Parte diario: `ParteDiario` (cabecera, `clientUuid` único) con `ParteHoraPersonal`, `ParteEquipo`, `AvanceItem` (sourceType "ParteDiario"), `CargaCombustible` y `ViajeCamion`. Las horas de personal del parte reemplazan a la asistencia de ese empleado y día en el motor (`pesosPersonal`); si ese día no había asistencia, el parte la crea (nota "Parte diario #id"). Peso de personal = horas × costo hora con cargas (`costoHora` de `laborCost.ts`). El combustible es control, no costo.
 - Dinero = obra + ítem + insumo + fecha: todo asiento (`postMovement`) lleva `projectId`, `budgetItemId` (el ítem si es DIRECTO; si no, el pozo `SYS-DIST` o Gastos Generales), `insumoId` si se conoce y `fecha` del hecho. Para renglones de OC usar `ledgerLines`; para gastos sueltos (caja chica, factura sin OC) `resolveExpenseLine` de `imputation.ts`. Hechos confirmados tarde (rendición, liquidación, factura de período cerrado) usan `fechaContable` (su fecha, o el primer día abierto).
 - Caja chica: el gasto lleva insumo; compromete al cargarse y entra como costo (y al stock si es COMÚN) con la rendición aprobada.
 - Certificados de subcontratistas: precio sugerido = lista de MO de la obra (`LaborPrice`) o MO del ACU (`preciosSugeridosMO`); se guarda en `CertificationItem.precioSugerido/precioFuente/insumoId` y se avisa si difiere o si supera la medición oficial. Su costo entra con fecha de aprobación (`Certification.approvedAt`).
-- Factura al cliente: sale del snapshot del `CierrePeriodo` (`createClientInvoice`, una por cierre). Aprobar el certificado al cliente ya no factura.
+- Factura al cliente: se emite al aprobar el certificado al cliente (`facturarCertificadoCliente`, EMITIDA con `certificationId`, IVA desglosado, asiento Clientes / Ventas + IVA débito fiscal). El cierre (`createClientInvoice`) factura solo lo pendiente: medición oficial acumulada − facturado (`facturadoHasta`). Nunca facturar por fuera de esas dos funciones.
 - Tablero: todo indicador de costo sale de `costEngine` (nunca del caché de `BudgetItem`). Los índices de rubro/obra se recalculan con sumas (`aggregate`), no se promedian. Costo real de obra = imputado + pérdidas; el no imputado se muestra aparte. Umbrales en `UMBRALES` (IC 0,95, IP 0,9, no imputado 10 %).
 - Formularios de celular: guardar siempre vía `enqueueParte` + `flushOutbox` (`src/client/offline/outbox.ts`); el servidor debe ser idempotente por `clientUuid`. 4xx = rechazado (se corrige), sin red = pendiente.
 - ACU = `ComponenteItem` (ítem × insumo, consumo por unidad, % desperdicio). El importador de presupuesto borra y recrea ítems: reengancha los ACU por `path` en la misma transacción.
-- Diseño: texto negro, sin fondos de color, rojo solo para alertas.
+- Diseño: texto negro, sin fondos de color, rojo solo para alertas y anulados. Excepción: estados de documentos (pedidos, OC) con `StatusPill` de color (`src/client/ui/index.tsx`), tonos en `src/client/compras/status.ts`.
 
 ## Documentos de referencia
 
@@ -163,5 +163,5 @@ src/
 - Costo meta por ítem = ACU; si no hay ACU, PU ÷ K de la obra (ejemplo CTN: K = 1,3454 con IVA).
 - Costos sin IVA. Moneda Gs sin decimales, usar formatGs.
 - Cierres oficiales congelan un rango como snapshot para certificados y contabilidad; lo cerrado no se edita.
-- Diseño de pantallas: texto negro, sin fondos de color, rojo solo para alertas.
+- Diseño de pantallas: texto negro, sin fondos de color, rojo solo para alertas y anulados; los estados de documentos van con `StatusPill` de color.
 - Referencia funcional: docs/Control_Costo_Venta_Ejecutado_CTN.xlsx (cada hoja = una pantalla o proceso). Lista de MO: docs/PRECIO_MANO_DE_OBRA.pdf.

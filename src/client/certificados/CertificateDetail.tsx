@@ -62,6 +62,7 @@ export function CertificateDetail({ certificationId, project, currency, onClose,
       res?.budgetWarnings?.forEach((w: { message: string }) => showToast(`Presupuesto: ${w.message}`, "info"));
       res?.measurementWarnings?.forEach((w: string) => showToast(`Supera la medición oficial: ${w}`, "error"));
       res?.priceWarnings?.forEach((w: string) => showToast(`Precio: ${w}`, "error"));
+      res?.avisos?.forEach((a: string) => showToast(a, "info"));
       if (res?.message) showToast(res.message, "info");
       await load();
       onChanged();

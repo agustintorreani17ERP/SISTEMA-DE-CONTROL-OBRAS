@@ -40,6 +40,15 @@ const USERS: AuthUser[] = [
     roleLabel: "Responsable de Compras",
     initials: "MG",
   },
+  {
+    // Rol ADMIN: reabre cierres oficiales (header x-user-role provisorio hasta el login real).
+    id: 4,
+    fullName: "Administrador",
+    email: "admin@obra.local",
+    role: "ADMIN",
+    roleLabel: "Administrador del sistema",
+    initials: "AD",
+  },
 ];
 
 const loginSchema = z.object({

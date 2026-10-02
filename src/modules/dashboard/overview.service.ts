@@ -1,6 +1,7 @@
 import { prisma } from "../../lib/prisma";
 import { moneyNumber } from "../../lib/money";
 import { buildCostTree } from "../cost-control/costTree";
+import { ESTADOS_SIN_PAGAR, solicitadoSinPagar, type EstadoSolicitud } from "../../domain/fondosMath";
 
 /**
  * Indicadores para el jefe de obra / gerencia. Responde:
@@ -120,7 +121,14 @@ async function cash(projectId: number) {
     if (inv.tipo === "EMITIDA") receivable += open;
     else payable += open;
   }
-  return { receivable, payable };
+  const solicitudes = await prisma.solicitudFondo.findMany({
+    where: { projectId, estado: { in: ESTADOS_SIN_PAGAR } },
+    select: { estado: true, montoNeto: true, montoPagado: true },
+  });
+  const requested = solicitadoSinPagar(
+    solicitudes.map((s) => ({ estado: s.estado as EstadoSolicitud, montoNeto: moneyNumber(s.montoNeto), montoPagado: moneyNumber(s.montoPagado) }))
+  );
+  return { receivable, payable, requested };
 }
 
 /** Curva mensual acumulada: certificado al cliente vs. costo incurrido. */

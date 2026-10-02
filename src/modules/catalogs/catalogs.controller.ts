@@ -8,6 +8,7 @@ import { DomainError, NotFoundError } from "../../errors/domain";
 import { audit } from "../../domain/audit";
 import { ensureGeneralExpenses } from "../../domain/generalExpenses";
 import { recalculateProjectFinancials } from "../../domain/projectFinancials";
+import { syncWorkFrontsFromAreas } from "../../domain/workFrontSync";
 import { recordEstimate } from "../../domain/prices";
 
 export const catalogsRouter = Router();
@@ -293,6 +294,7 @@ catalogsRouter.post(
       });
       await audit(tx, { entity: "BudgetItem", entityId: item.id, action: "CREATE" });
       await recalculateProjectFinancials(tx, body.projectId);
+      await syncWorkFrontsFromAreas(tx, body.projectId);
       return item;
     });
     ok(res, created, 201);
@@ -450,6 +452,7 @@ catalogsRouter.put(
         } as Prisma.InputJsonValue,
       });
       await recalculateProjectFinancials(tx, existing.projectId);
+      await syncWorkFrontsFromAreas(tx, existing.projectId);
       return next;
     });
 
@@ -503,6 +506,7 @@ catalogsRouter.delete(
       await tx.budgetItem.delete({ where: { id } });
       await audit(tx, { entity: "BudgetItem", entityId: id, action: "DELETE" });
       await recalculateProjectFinancials(tx, existing.projectId);
+      await syncWorkFrontsFromAreas(tx, existing.projectId);
     });
     ok(res, { deleted: true, id });
   })
@@ -527,6 +531,7 @@ catalogsRouter.delete(
       await tx.budgetItem.updateMany({ where: { id: { in: ids } }, data: { parentId: null } });
       await tx.budgetItem.deleteMany({ where: { id: { in: ids } } });
       await recalculateProjectFinancials(tx, projectId);
+      await syncWorkFrontsFromAreas(tx, projectId);
     });
     ok(res, { deletedAll: true, projectId });
   })

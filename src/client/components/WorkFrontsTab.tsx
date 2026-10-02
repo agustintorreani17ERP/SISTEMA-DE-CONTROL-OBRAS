@@ -68,7 +68,14 @@ export const WorkFrontsTab: React.FC<WorkFrontsTabProps> = ({ project, workFront
               <li key={f.id} className="flex items-center gap-3 px-5 py-3.5">
                 <MapPin className="h-4 w-4 text-slate-400" />
                 <div className="flex-1">
-                  <p className="font-medium text-slate-900">{f.name}</p>
+                  <p className="font-medium text-slate-900">
+                    {f.name}
+                    {f.budgetItemId && (
+                      <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-normal text-slate-500" title="Se generó solo desde un rubro raíz del presupuesto; si lo renombrás ahí, el nombre se actualiza acá.">
+                        auto · Área
+                      </span>
+                    )}
+                  </p>
                   <p className="text-xs text-slate-500">
                     Responsable: {f.chief?.fullName ?? personnel.find((p) => p.id === f.chiefId)?.fullName ?? "sin asignar"}
                   </p>

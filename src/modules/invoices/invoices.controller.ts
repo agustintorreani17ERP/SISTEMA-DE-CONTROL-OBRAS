@@ -12,6 +12,7 @@ import { recalculateProjectFinancials } from "../../domain/projectFinancials";
 import { recordStockMovement } from "../../domain/stock";
 import { EVENTO, postAsientoDesdeRegla } from "../../domain/contabilidad";
 import { toDecimal } from "../../lib/money";
+import { evaluateMatch, type MatchResult } from "../../domain/threeWayMatch";
 
 export const invoicesRouter = Router();
 
@@ -76,7 +77,9 @@ const invoiceInclude = {
 };
 
 // ----------------------------------------------------
-// Three-Way Match Engine Function
+// Control de aprobación (ex "Three-Way Match"): wrapper delgado que carga los documentos
+// relacionados y delega la decisión a la función pura `evaluateMatch` (src/domain/threeWayMatch.ts).
+// Documentado en el plan: estado + threeWayMatchPassed se escriben siempre juntos vía applyMatchResult.
 // ----------------------------------------------------
 async function evaluateThreeWayMatch(params: {
   tipo: "EMITIDA" | "RECIBIDA";
@@ -85,161 +88,37 @@ async function evaluateThreeWayMatch(params: {
   certificacionId?: number | null;
   certificationId?: number | null;
   remisionNumber?: string | null;
-}) {
+}): Promise<MatchResult> {
   const { tipo, total, purchaseOrderId, certificacionId, certificationId, remisionNumber } = params;
 
-  if (tipo === "RECIBIDA") {
-    // 1. MATCH VÍA ORDEN DE COMPRA (Materiales e Insumos)
-    if (purchaseOrderId) {
-      const po = await prisma.purchaseOrder.findUnique({
-        where: { id: purchaseOrderId },
-        include: { details: true },
-      });
-
-      if (!po) {
-        return {
-          passed: false,
-          notes: "Orden de Compra vinculada no existe en el sistema.",
-          calculatedStatus: "EN_REVISION" as const,
-        };
-      }
-
-      const poTotal = Number(po.totalAmount || 0);
-      const diff = Math.abs(total - poTotal);
-
-      // Regla de negocio: Margen de tolerancia del 0%
-      if (diff > 0.05) {
-        return {
-          passed: false,
-          notes: `Discrepancia de monto (Tolerancia 0%): Monto facturado (${total.toLocaleString("es-PY")}) difiere de O.C. ${po.number} (${poTotal.toLocaleString("es-PY")}). Diferencia: ${diff.toLocaleString("es-PY")}.`,
-          calculatedStatus: "EN_REVISION" as const,
-        };
-      }
-
-      // Validación de recepción en pañol (Remisión / Ingreso físico a obra)
-      const hasPhysicalReceipt = po.stockRegistered || Boolean(remisionNumber && remisionNumber.trim().length > 0);
-      if (!hasPhysicalReceipt) {
-        return {
-          passed: false,
-          notes: `Pendiente de recepción física: Falta verificar Nota de Remisión en Pañol de Obra para la O.C. ${po.number}.`,
-          calculatedStatus: "EN_REVISION" as const,
-        };
-      }
-
-      return {
-        passed: true,
-        notes: `Validación Tripartita Exitosa (3-Way Match 100%): O.C. ${po.number}, Remisión de Pañol ${remisionNumber || "REGISTRADA"} y Factura coinciden con 0% de tolerancia.`,
-        calculatedStatus: "APROBADA" as const,
-      };
-    }
-
-    // 2. MATCH VÍA CERTIFICADO DE SUBCONTRATO (Servicios y Obras tercerizadas)
-    if (certificacionId) {
-      const cert = await prisma.certificacion.findUnique({
-        where: { id: certificacionId },
-      });
-
-      if (!cert) {
-        return {
-          passed: false,
-          notes: "Certificado de subcontratista no existe en el sistema.",
-          calculatedStatus: "EN_REVISION" as const,
-        };
-      }
-
-      if (cert.estado !== "APROBADA" && cert.estado !== "PAGADA") {
-        return {
-          passed: false,
-          notes: `El Certificado de Subcontrato #${cert.id} aún no cuenta con Aprobación de Fiscalización (Estado: ${cert.estado}).`,
-          calculatedStatus: "EN_REVISION" as const,
-        };
-      }
-
-      const certTotal = Number(cert.monto_total || 0);
-      const diff = Math.abs(total - certTotal);
-
-      if (diff > 0.05) {
-        return {
-          passed: false,
-          notes: `Discrepancia en medición: Monto facturado (${total.toLocaleString("es-PY")}) difiere del Certificado Aprobado #${cert.id} (${certTotal.toLocaleString("es-PY")}).`,
-          calculatedStatus: "EN_REVISION" as const,
-        };
-      }
-
-      return {
-        passed: true,
-        notes: `Validación Tripartita Exitosa (3-Way Match 100%): Contrato de Subcontrato, Medición de Campo Aprobada #${cert.id} y Factura coinciden con 0% de tolerancia.`,
-        calculatedStatus: "APROBADA" as const,
-      };
-    }
-
-    // 2.b MATCH VÍA NUEVO MODELO DE CERTIFICACIÓN AVANZADA
-    if (certificationId) {
-      const cert = await prisma.certification.findUnique({
-        where: { id: certificationId },
-      });
-
-      if (!cert) {
-        return {
-          passed: false,
-          notes: "Certificación avanzada no encontrada en el sistema.",
-          calculatedStatus: "EN_REVISION" as const,
-        };
-      }
-
-      if (cert.estado !== "APROBADO") {
-        return {
-          passed: false,
-          notes: `La Certificación #${cert.numero} no se encuentra aprobada (Estado: ${cert.estado}).`,
-          calculatedStatus: "EN_REVISION" as const,
-        };
-      }
-
-      const certTotal = Number(cert.montoTotal || 0);
-      const diff = Math.abs(total - certTotal);
-
-      if (diff > 0.05) {
-        return {
-          passed: false,
-          notes: `Discrepancia en medición: Monto facturado (${total.toLocaleString("es-PY")}) difiere del Certificado #${cert.numero} (${certTotal.toLocaleString("es-PY")}).`,
-          calculatedStatus: "EN_REVISION" as const,
-        };
-      }
-
-      return {
-        passed: true,
-        notes: `Validación Tripartita Exitosa (3-Way Match 100%): Medición de campo N° ${cert.numero} aprobada, cómputos y factura coinciden sin discrepancias.`,
-        calculatedStatus: "APROBADA" as const,
-      };
-    }
-
-    // Sin documento de respaldo
-    return {
-      passed: false,
-      notes: "Factura sin Orden de Compra ni Certificado de Subcontratista enlazado. Requiere auditoría manual.",
-      calculatedStatus: "EN_REVISION" as const,
-    };
-  } else {
-    // FACTURAS EMITIDAS A CLIENTES (Comitentes)
-    if (certificacionId) {
-      const cert = await prisma.certificacion.findUnique({
-        where: { id: certificacionId },
-      });
-      if (cert && (cert.estado === "APROBADA" || cert.estado === "PAGADA")) {
-        return {
-          passed: true,
-          notes: `Factura respaldada por Certificado de Avance al Cliente #${cert.id}.`,
-          calculatedStatus: "APROBADA" as const,
-        };
-      }
-    }
-
-    return {
-      passed: true,
-      notes: "Factura emitida al cliente registrada conforme a contrato principal.",
-      calculatedStatus: "APROBADA" as const,
-    };
+  let purchaseOrder: { number: string; totalAmount: number; stockRegistered: boolean } | null = null;
+  if (purchaseOrderId) {
+    const po = await prisma.purchaseOrder.findUnique({ where: { id: purchaseOrderId } });
+    if (!po) return { kind: "ORDEN_COMPRA", passed: false, notes: "Orden de Compra vinculada no existe en el sistema." };
+    purchaseOrder = { number: po.number, totalAmount: Number(po.totalAmount || 0), stockRegistered: po.stockRegistered };
   }
+
+  let certificado: { ref: string; estado: string; estadosAprobados: string[]; monto: number } | null = null;
+  if (!purchaseOrder && certificacionId) {
+    const cert = await prisma.certificacion.findUnique({ where: { id: certificacionId } });
+    if (!cert) return { kind: "CERTIFICADO", passed: false, notes: "Certificado de subcontratista no existe en el sistema." };
+    certificado = { ref: `#${cert.id}`, estado: cert.estado, estadosAprobados: ["APROBADA", "PAGADA"], monto: Number(cert.monto_total || 0) };
+  } else if (!purchaseOrder && certificationId) {
+    const cert = await prisma.certification.findUnique({ where: { id: certificationId } });
+    if (!cert) return { kind: "CERTIFICADO", passed: false, notes: "Certificación avanzada no encontrada en el sistema." };
+    certificado = { ref: `N° ${cert.numero}`, estado: cert.estado, estadosAprobados: ["APROBADO"], monto: Number(cert.montoTotal || 0) };
+  }
+
+  return evaluateMatch({ tipo, total, purchaseOrder, certificado, remisionNumber });
+}
+
+/** Escribe estado + threeWayMatchPassed + matchNotes juntos, siempre a partir del mismo MatchResult. */
+function matchResultToInvoiceData(matchResult: MatchResult) {
+  return {
+    estado: matchResult.passed ? ("APROBADA" as const) : ("EN_REVISION" as const),
+    threeWayMatchPassed: matchResult.passed,
+    matchNotes: matchResult.notes,
+  };
 }
 
 // ----------------------------------------------------
@@ -349,9 +228,8 @@ invoicesRouter.post(
     });
 
     // Determine final status
-    const finalStatus = matchResult.passed
-      ? (body.estado === "BORRADOR" ? "BORRADOR" : "APROBADA")
-      : "EN_REVISION";
+    const matchData = matchResultToInvoiceData(matchResult);
+    const finalStatus = matchResult.passed && body.estado === "BORRADOR" ? "BORRADOR" : matchData.estado;
 
     // Auto-calculate VAT breakdown if not provided
     let calculatedSubtotal = body.subtotal;
@@ -386,8 +264,8 @@ invoicesRouter.post(
         certificacionId: body.certificacionId || null,
         remisionNumber: body.remisionNumber || null,
         remisionDate: body.remisionDate ? new Date(body.remisionDate) : null,
-        threeWayMatchPassed: matchResult.passed,
-        matchNotes: matchResult.notes,
+        threeWayMatchPassed: matchData.threeWayMatchPassed,
+        matchNotes: matchData.matchNotes,
         items: body.items && body.items.length > 0
           ? {
               create: body.items.map((item) => ({
@@ -426,6 +304,7 @@ invoicesRouter.post(
       fromStatus: null,
       toStatus: finalStatus,
       payload: {
+        matchKind: matchResult.kind,
         matchPassed: matchResult.passed,
         matchNotes: matchResult.notes,
         total: body.total,
@@ -462,11 +341,7 @@ invoicesRouter.post(
 
     const updated = await prisma.invoice.update({
       where: { id },
-      data: {
-        threeWayMatchPassed: matchResult.passed,
-        matchNotes: matchResult.notes,
-        estado: matchResult.passed ? "APROBADA" : "EN_REVISION",
-      },
+      data: matchResultToInvoiceData(matchResult),
       include: invoiceInclude,
     });
 
@@ -477,6 +352,7 @@ invoicesRouter.post(
       fromStatus: invoice.estado,
       toStatus: updated.estado,
       payload: {
+        matchKind: matchResult.kind,
         matchPassed: matchResult.passed,
         notes: matchResult.notes,
       },
@@ -580,11 +456,15 @@ invoicesRouter.post(
             haber: [{ monto: totalAsiento, partnerId: inv.partnerId }],
           });
         }
+        // Imputar por renglón ES la aprobación manual de una factura sin OC ni certificado: debe
+        // dejar threeWayMatchPassed sincronizado con estado, igual que cualquier otro camino de
+        // aprobación (ver evaluateMatch/matchResultToInvoiceData en threeWayMatch.ts).
         const next = await tx.invoice.update({
           where: { id },
           data: {
             estado: inv.estado === "PAGADA" ? "PAGADA" : "APROBADA",
-            matchNotes: `${inv.matchNotes ? `${inv.matchNotes} ` : ""}Imputada por renglón (sin OC ni certificado).`,
+            threeWayMatchPassed: true,
+            matchNotes: "Aprobada manualmente por imputación de renglones (sin OC ni certificado).",
           },
           include: invoiceInclude,
         });

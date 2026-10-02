@@ -10,7 +10,13 @@ export const EVENTO = {
   LIQUIDACION_APROBADA: "LIQUIDACION_APROBADA",
   CAJA_CHICA_RENDIDA: "CAJA_CHICA_RENDIDA",
   FACTURA_CLIENTE_EMITIDA: "FACTURA_CLIENTE_EMITIDA",
+  /** IVA de la factura al cliente: se usa la cuenta haber (IVA débito fiscal). */
+  IVA_DEBITO_FISCAL: "IVA_DEBITO_FISCAL",
   PAGO_FACTURA: "PAGO_FACTURA",
+  /** Pago de una solicitud de fondos de anticipo (Debe Anticipos a proveedores). */
+  PAGO_ANTICIPO_PROVEEDOR: "PAGO_ANTICIPO_PROVEEDOR",
+  /** Pago de una solicitud de certificado de subcontrato sin factura (Debe Subcontratistas). */
+  PAGO_CERTIFICADO_SUBCONTRATISTA: "PAGO_CERTIFICADO_SUBCONTRATISTA",
 } as const;
 
 /**
@@ -97,6 +103,35 @@ export async function postAsientoDesdeRegla(
     fecha: params.fecha,
     usuario: params.usuario,
     lineas,
+  });
+}
+
+/**
+ * Asiento de una factura al cliente: Debe Clientes (total) / Haber Ventas (sin IVA) + Haber IVA
+ * débito fiscal (IVA). Si no hay regla IVA_DEBITO_FISCAL activa, todo el total va a Ventas.
+ */
+export async function postAsientoFacturaCliente(
+  tx: Tx,
+  params: { projectId: number; invoiceId: number; numeroFactura: string; fecha: Date; total: MoneyLike; iva: MoneyLike; usuario?: string }
+) {
+  const regla = await tx.reglaAsientoContable.findUnique({ where: { evento: EVENTO.FACTURA_CLIENTE_EMITIDA } });
+  if (!regla || !regla.activo) return null;
+  const total = toDecimal(params.total);
+  const iva = toDecimal(params.iva);
+  const reglaIva = iva.gt(0) ? await tx.reglaAsientoContable.findUnique({ where: { evento: EVENTO.IVA_DEBITO_FISCAL } }) : null;
+  const conIva = Boolean(reglaIva?.activo);
+  return postAsiento(tx, {
+    projectId: params.projectId,
+    concepto: `Factura al cliente ${params.numeroFactura}`,
+    sourceType: "Invoice",
+    sourceId: params.invoiceId,
+    fecha: params.fecha,
+    usuario: params.usuario,
+    lineas: [
+      { cuentaId: regla.cuentaDebeId, debe: total },
+      { cuentaId: regla.cuentaHaberId, haber: conIva ? total.minus(iva) : total },
+      ...(conIva ? [{ cuentaId: reglaIva!.cuentaHaberId, haber: iva }] : []),
+    ],
   });
 }
 
@@ -292,22 +327,20 @@ export async function rebuildProjectAccounting(tx: Tx, projectId: number) {
     });
   }
 
-  // Facturas al cliente emitidas (cierre oficial)
+  // Facturas al cliente emitidas (certificado aprobado o cierre oficial)
   const facturasCliente = await tx.invoice.findMany({
-    where: { projectId, tipo: "EMITIDA", cierreId: { not: null } },
+    where: { projectId, tipo: "EMITIDA", estado: { not: "ANULADA" }, OR: [{ cierreId: { not: null } }, { certificationId: { not: null } }] },
   });
   for (const inv of facturasCliente) {
     if (await hasAsiento("Invoice", inv.id)) continue;
     await attempt(`Factura al cliente ${inv.numeroFactura}`, () =>
-      postAsientoDesdeRegla(tx, {
-        evento: EVENTO.FACTURA_CLIENTE_EMITIDA,
+      postAsientoFacturaCliente(tx, {
         projectId,
-        concepto: `Factura al cliente ${inv.numeroFactura}`,
-        sourceType: "Invoice",
-        sourceId: inv.id,
+        invoiceId: inv.id,
+        numeroFactura: inv.numeroFactura,
         fecha: inv.fechaEmision,
-        debe: [{ monto: inv.total }],
-        haber: [{ monto: inv.total }],
+        total: inv.total,
+        iva: toDecimal(inv.montoIva10).plus(toDecimal(inv.montoIva5)),
       })
     );
   }
@@ -345,7 +378,7 @@ export async function anularAsiento(
   if (!asiento) {
     throw new DomainError("ASIENTO_NO_EXISTE", `Asiento ${params.asientoId} no existe`, 404);
   }
-  const yaAnulado = await tx.asiento.findFirst({ where: { anulaDeId: asiento.id } });
+  const yaAnulado = await tx.asiento.findFirst({ where: { anulaDeId: asiento.id }, include: { lineas: true } });
   if (yaAnulado) return yaAnulado;
 
   return tx.asiento.create({

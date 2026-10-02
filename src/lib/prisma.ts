@@ -69,12 +69,35 @@ function loadStore() {
 
 let mockStore = loadStore();
 
-function saveStore() {
+function writeStoreNow() {
   try {
     fs.writeFileSync(STORE_FILE, JSON.stringify(mockStore, null, 2), "utf-8");
   } catch (err) {
     console.warn("[Prisma Mock] Error al guardar mock-db-store.json:", err);
   }
+}
+
+// El archivo es grande (varios MB): se escribe una sola vez por ráfaga de cambios, no en cada create/upsert.
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+function saveStore() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    writeStoreNow();
+  }, 200);
+}
+function flushStore() {
+  if (!saveTimer) return;
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  writeStoreNow();
+}
+process.on("exit", flushStore);
+for (const sig of ["SIGINT", "SIGTERM"] as const) {
+  process.once(sig, () => {
+    flushStore();
+    process.exit(0);
+  });
 }
 
 export function resetStore() {

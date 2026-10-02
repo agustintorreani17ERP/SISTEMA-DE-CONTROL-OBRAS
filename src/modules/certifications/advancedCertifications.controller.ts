@@ -13,6 +13,10 @@ import { cierreDe, measurementDate, removeOfficialMeasurement, subcontractOverMe
 import { preciosSugeridosMO } from "../../domain/laborPrice";
 import { alertasPrecio, type PrecioFuente } from "../../domain/laborPriceMath";
 import { today } from "../../domain/prices";
+import { evaluateMatch } from "../../domain/threeWayMatch";
+import { facturarCertificadoCliente } from "../../domain/clientBilling";
+import { solicitudDesdeCertificacion } from "../../domain/fondos";
+import { usuarioDe } from "../../http/usuario";
 
 /**
  * Mediciones y certificados.
@@ -526,15 +530,22 @@ advancedCertificationsRouter.post(
     });
     if (!cert) throw new NotFoundError("Certificación", id);
 
-    // Ya aprobado: no se vuelve a descontar del presupuesto ni a facturar.
+    const usuario = usuarioDe(req) || "sistema";
+
+    // Ya aprobado: no se vuelve a descontar del presupuesto ni a facturar. La solicitud de fondos
+    // es idempotente: si faltaba (certificado anterior al módulo), se genera.
     if (cert.estado === CertificationStatus.APROBADO) {
-      ok(res, { certification: cert, invoice: cert.invoices[0] ?? null, budgetWarnings: [], message: "El certificado ya se encontraba aprobado." });
+      const solicitudFondo = cert.partnerId
+        ? await prisma.$transaction((tx) => solicitudDesdeCertificacion(tx, cert.id, usuario))
+        : null;
+      ok(res, { certification: cert, invoice: cert.invoices[0] ?? null, solicitudFondo, budgetWarnings: [], message: "El certificado ya se encontraba aprobado." });
       return;
     }
 
     const result = await prisma.$transaction(async (tx) => {
       let measurementWarnings: string[] = [];
       let priceWarnings: string[] = [];
+      const avisos: string[] = [];
       const hoy = today();
       if (cert.partnerId) {
         measurementWarnings = await subcontractOverMeasured(
@@ -544,14 +555,18 @@ advancedCertificationsRouter.post(
         );
         priceWarnings = priceWarningsOf(cert.items);
       } else {
-        // El certificado al cliente sale de la medición oficial cerrada.
-        const cierre = await cierreDe(tx, cert.projectId, measurementDate(cert));
-        if (!cierre) {
+        // El certificado al cliente sale de su medición (la oficial): tiene que estar cerrada, no
+        // hace falta el cierre oficial del período. Si todavía no está cerrado, entra en el próximo cierre.
+        if (cert.estado === CertificationStatus.MEDICION_BORRADOR) {
           throw new DomainError(
-            "PERIOD_NOT_CLOSED",
-            "Antes de aprobar el certificado al cliente hacé el cierre oficial del período de su medición (Centro de Costos › Avance).",
+            "MEASUREMENT_OPEN",
+            "Cerrá la medición antes de aprobar el certificado (botón «Cerrar medición» en el certificado).",
             409
           );
+        }
+        const cierre = await cierreDe(tx, cert.projectId, measurementDate(cert));
+        if (!cierre) {
+          avisos.push(`La medición del ${measurementDate(cert).toISOString().slice(0, 10).split("-").reverse().join("/")} entrará en el próximo cierre oficial.`);
         }
       }
       const total = moneyNumber(cert.montoTotal);
@@ -591,14 +606,25 @@ advancedCertificationsRouter.post(
       }
       await recalculateProjectFinancials(tx, cert.projectId);
 
-      // Factura recibida del subcontratista. Al cliente se factura desde el cierre oficial del
-      // período (Centro de Costos › Avance › Cierres), no desde cada certificado.
+      // Factura recibida del subcontratista. Al cliente se factura al aprobar (abajo); el cierre
+      // oficial factura solo lo que todavía no se facturó.
       const isSubcontractor = Boolean(cert.partnerId);
       const now = new Date();
       const dueDate = new Date(now.getTime() + 30 * 86400000);
       const iva10 = Math.round(total / 11);
       let invoice = cert.invoices[0] ?? null;
       if (!invoice && isSubcontractor) {
+        // Certificado ya aprobado (estado APROBADO arriba) con el mismo monto que la factura:
+        // control de 2 vías vía evaluateMatch (certificado + factura, sin recepción física porque
+        // es un servicio), no un true hardcodeado — ver src/domain/threeWayMatch.ts.
+        const matchResult = evaluateMatch({
+          tipo: "RECIBIDA",
+          total,
+          certificado: { ref: `N° ${cert.numero}`, estado: approvedCert.estado, estadosAprobados: ["APROBADO"], monto: total },
+        });
+        const notas = retentionAmount
+          ? `Fondo de reparo ${moneyNumber(cert.retentionPct)}%: ${retentionAmount.toLocaleString("es-PY")} Gs. Neto a pagar ${(total - retentionAmount).toLocaleString("es-PY")} Gs. ${matchResult.notes}`
+          : matchResult.notes;
         invoice = await tx.invoice.create({
           data: {
             projectId: cert.projectId,
@@ -607,7 +633,7 @@ advancedCertificationsRouter.post(
             numeroFactura: `${isSubcontractor ? "001-002" : "001-001"}-${String(cert.numero).padStart(7, "0")}`,
             timbrado: "PENDIENTE",
             tipo: isSubcontractor ? "RECIBIDA" : "EMITIDA",
-            estado: "APROBADA",
+            estado: matchResult.passed ? "APROBADA" : "EN_REVISION",
             fechaEmision: now,
             fechaVencimiento: dueDate,
             condicionVenta: "CREDITO",
@@ -619,10 +645,8 @@ advancedCertificationsRouter.post(
             montoIva5: 0,
             montoIva10: iva10,
             total,
-            threeWayMatchPassed: true,
-            matchNotes: retentionAmount
-              ? `Fondo de reparo ${moneyNumber(cert.retentionPct)}%: ${retentionAmount.toLocaleString("es-PY")} Gs. Neto a pagar ${(total - retentionAmount).toLocaleString("es-PY")} Gs.`
-              : "Certificado aprobado desde la medición.",
+            threeWayMatchPassed: matchResult.passed,
+            matchNotes: notas,
           },
         });
         for (const item of cert.items) {
@@ -643,13 +667,27 @@ advancedCertificationsRouter.post(
           });
         }
       }
+      if (!isSubcontractor) {
+        // Factura al cliente (EMITIDA, IVA desglosado), enlazada al certificado; sin doble facturación con el cierre.
+        const facturado = await facturarCertificadoCliente(tx, cert.id, { fechaEmision: now, usuario });
+        invoice = facturado.invoice ?? invoice;
+        avisos.push(...facturado.avisos);
+      }
+      // Pedido de pago a tesorería: neto = total − fondo de reparo − retenciones − anticipo aplicado.
+      const solicitudFondo = isSubcontractor ? await solicitudDesdeCertificacion(tx, cert.id, usuario) : null;
       return {
         certification: approvedCert,
         invoice,
+        solicitudFondo,
         budgetWarnings,
         measurementWarnings,
         priceWarnings,
-        message: isSubcontractor ? undefined : "Certificado aprobado. La factura al cliente se emite desde el cierre oficial del período.",
+        avisos,
+        message: isSubcontractor
+          ? undefined
+          : invoice
+            ? `Certificado aprobado y facturado al cliente (factura ${invoice.numeroFactura}).`
+            : "Certificado aprobado.",
       };
     });
     ok(res, result, 201);

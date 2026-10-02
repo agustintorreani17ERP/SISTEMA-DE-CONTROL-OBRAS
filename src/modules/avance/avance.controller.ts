@@ -7,7 +7,10 @@ import { DomainError, NotFoundError } from "../../errors/domain";
 import { moneyNumber } from "../../lib/money";
 import { audit } from "../../domain/audit";
 import { today, toDay } from "../../domain/prices";
-import { assertOpenPeriod, closePeriod, closingPreview, progressReport } from "../../domain/progress";
+import { assertOpenPeriod, cerradoHasta, closePeriod, closingPreview, progressReport, reopenLastClosing } from "../../domain/progress";
+import { invalidateCostCache } from "../../domain/costCache";
+import { requireRole } from "../../middleware/requireRole";
+import { usuarioDe } from "../../http/usuario";
 import { costEngine } from "../../domain/costEngine";
 import { parsePlanGrid } from "../../domain/planImport";
 import { guardarPlan } from "../../domain/planSave";
@@ -264,5 +267,41 @@ avanceRouter.post(
       { timeout: 120_000 }
     );
     ok(res, { id: cierre.id, desde: iso(cierre.desde), hasta: iso(cierre.hasta) }, 201);
+  })
+);
+
+/** Hasta qué fecha está cerrada la obra (banner "Cerrado hasta dd/mm/aaaa"). */
+avanceRouter.get(
+  "/projects/:id/cerrado-hasta",
+  asyncHandler(async (req, res) => {
+    const hasta = await cerradoHasta(prisma, intId.parse(req.params.id));
+    ok(res, { hasta: hasta ? iso(hasta) : null });
+  })
+);
+
+/** Reabre el último cierre oficial (solo administrador, con motivo). Los anteriores no se reabren. */
+avanceRouter.post(
+  "/cierres/:id/reabrir",
+  requireRole("ADMIN"),
+  asyncHandler(async (req, res) => {
+    const id = intId.parse(req.params.id);
+    const { motivo } = z.object({ motivo: z.string().trim().min(10, "Escribí el motivo de la reapertura (al menos 10 caracteres)").max(1000) }).parse(req.body ?? {});
+    const usuario = usuarioDe(req) || null;
+    const r = await prisma.$transaction(async (tx) => {
+      const out = await reopenLastClosing(tx, id, { motivo, usuario });
+      await audit(tx, {
+        entity: "CierrePeriodo",
+        entityId: id,
+        action: "REOPEN",
+        payload: { motivo, usuario, desde: out.cierre.desde, hasta: out.cierre.hasta, reaperturaId: out.archivo.id, facturaId: out.factura?.id ?? null },
+      });
+      return out;
+    });
+    invalidateCostCache();
+    ok(res, {
+      reaperturaId: r.archivo.id,
+      cierre: r.cierre,
+      avisos: r.factura ? [`La factura ${r.factura.numeroFactura} del cierre sigue vigente: al volver a cerrar se factura solo la diferencia.`] : [],
+    });
   })
 );

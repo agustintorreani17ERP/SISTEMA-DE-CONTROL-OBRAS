@@ -1,5 +1,5 @@
 import React from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Edit2, Trash2 } from "lucide-react";
 import type { CostNode } from "../types";
 import { cx } from "../ui";
 import { formatGs, formatPct, formatQty } from "../utils/numbers";
@@ -13,6 +13,8 @@ interface CostSheetProps {
   onToggle: (id: number) => void;
   onOpenItem: (node: CostNode) => void;
   onOpenAcu?: (node: CostNode) => void;
+  onEdit?: (node: CostNode) => void;
+  onDelete?: (node: CostNode) => void;
 }
 
 const num = "px-3 py-1.5 text-right font-mono tabular-nums whitespace-nowrap";
@@ -36,11 +38,12 @@ function Progress({ value, exceeded }: { value: number | null; exceeded: boolean
  */
 const share = (v: number | null) => (v === null ? "" : formatPct(v, 0));
 
-export function CostSheet({ rows, nodes, filtered, collapsed, onToggle, onOpenItem, onOpenAcu }: CostSheetProps) {
+export function CostSheet({ rows, nodes, filtered, collapsed, onToggle, onOpenItem, onOpenAcu, onEdit, onDelete }: CostSheetProps) {
+  const showActions = Boolean(onEdit || onDelete);
   const totals = sheetTotals(rows, nodes, filtered);
 
   return (
-    <div className="max-h-[70vh] overflow-auto rounded-2xl border border-slate-200 bg-white">
+    <div className="max-h-[calc(100vh-13rem)] overflow-auto rounded-2xl border border-slate-200 bg-white">
       <table className="w-full min-w-[1980px] border-separate border-spacing-0 text-[13px]">
         <thead>
           <tr className="text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
@@ -68,6 +71,7 @@ export function CostSheet({ rows, nodes, filtered, collapsed, onToggle, onOpenIt
                 {label}
               </th>
             ))}
+            {showActions && <th className="sticky top-0 z-20 border-b border-slate-200 bg-slate-50 px-3 py-2.5 w-16" />}
           </tr>
         </thead>
         <tbody>
@@ -159,12 +163,30 @@ export function CostSheet({ rows, nodes, filtered, collapsed, onToggle, onOpenIt
                 <td className={cx(num, "border-b border-slate-100", bg, (r.margenPct ?? 0) < 0 && "font-semibold text-red-600")}>
                   {r.margenPct === null ? "" : formatPct(r.margenPct)}
                 </td>
+                {showActions && (
+                  <td className={cx("border-b border-slate-100 px-3 py-1.5 text-right", bg)} onClick={(e) => e.stopPropagation()}>
+                    {!n.isSystem && (
+                      <span className="inline-flex gap-1">
+                        {onEdit && (
+                          <button onClick={() => onEdit(n)} className="rounded p-1 text-slate-400 hover:text-slate-900" aria-label="Editar">
+                            <Edit2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                        {onDelete && (
+                          <button onClick={() => onDelete(n)} className="rounded p-1 text-slate-400 hover:text-rose-600" aria-label="Borrar">
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </span>
+                    )}
+                  </td>
+                )}
               </tr>
             );
           })}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={18} className="px-4 py-10 text-center text-slate-400">
+              <td colSpan={showActions ? 19 : 18} className="px-4 py-10 text-center text-slate-400">
                 No hay partidas con esos filtros.
               </td>
             </tr>
@@ -187,6 +209,7 @@ export function CostSheet({ rows, nodes, filtered, collapsed, onToggle, onOpenIt
             <td className={cx(num, "sticky bottom-0 z-10 bg-slate-800 py-2.5")}>{share(totals.shareEquipo)}</td>
             <td className={cx(num, "sticky bottom-0 z-10 bg-slate-800 py-2.5")}>{formatGs(totals.margen)}</td>
             <td className={cx(num, "sticky bottom-0 z-10 bg-slate-800 py-2.5")}>{totals.margenPct === null ? "" : formatPct(totals.margenPct)}</td>
+            {showActions && <td className="sticky bottom-0 z-10 bg-slate-800 py-2.5" />}
           </tr>
         </tfoot>
       </table>

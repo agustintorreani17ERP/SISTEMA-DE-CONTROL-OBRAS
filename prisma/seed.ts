@@ -129,7 +129,11 @@ async function ensureReglasAsiento(idByCodigo: Map<string, number>) {
     { evento: "LIQUIDACION_APROBADA", debe: "5.1.02", haber: "2.2.03" },
     { evento: "CAJA_CHICA_RENDIDA", debe: "5.2", haber: "1.1.02" },
     { evento: "FACTURA_CLIENTE_EMITIDA", debe: "1.2.01", haber: "4.1" },
+    // IVA de la factura al cliente: Haber IVA débito fiscal (el debe es Clientes, de la regla anterior).
+    { evento: "IVA_DEBITO_FISCAL", debe: "1.2.01", haber: "2.2.01" },
     { evento: "PAGO_FACTURA", debe: "2.1.01", haber: "1.1.03" },
+    { evento: "PAGO_ANTICIPO_PROVEEDOR", debe: "1.2.02", haber: "1.1.03" },
+    { evento: "PAGO_CERTIFICADO_SUBCONTRATISTA", debe: "2.1.02", haber: "1.1.03" },
   ];
   for (const r of reglas) {
     const cuentaDebeId = idByCodigo.get(r.debe);

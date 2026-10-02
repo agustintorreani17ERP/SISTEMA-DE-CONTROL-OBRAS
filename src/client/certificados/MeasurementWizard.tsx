@@ -32,6 +32,8 @@ interface MeasurementWizardProps {
   partners: Partner[];
   subcontracts: SubcontractorContract[];
   currency: "PYG" | "USD";
+  /** Destino ya elegido desde la tarjeta del contratista: id del subcontratista, null = cliente, undefined = elegir. */
+  initialPartnerId?: number | null;
   onClose: () => void;
   onCreated: (certificationId: number, asCertificate: boolean) => void;
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
@@ -53,11 +55,11 @@ const toAux = (l: AuxRow) => ({
  * 1. Destino (avance de obra o subcontratista) · 2. Planilla (rubros, cómputo y fotos) ·
  * 3. Revisión obligatoria → borrador de certificado.
  */
-export function MeasurementWizard({ project, partners, subcontracts, currency, onClose, onCreated, showToast }: MeasurementWizardProps) {
+export function MeasurementWizard({ project, partners, subcontracts, currency, initialPartnerId, onClose, onCreated, showToast }: MeasurementWizardProps) {
   const [step, setStep] = useState(0);
-  const [destino, setDestino] = useState<"OBRA" | "SUB">("OBRA");
+  const [destino, setDestino] = useState<"OBRA" | "SUB">(initialPartnerId ? "SUB" : "OBRA");
   const [subs, setSubs] = useState(partners.filter((p) => p.kind !== "SUPPLIER"));
-  const [partnerId, setPartnerId] = useState<number | "">("");
+  const [partnerId, setPartnerId] = useState<number | "">(initialPartnerId ?? "");
   const [contractId, setContractId] = useState<number | "">("");
   const [newSub, setNewSub] = useState<{ name: string; taxId: string } | null>(null);
   const [periodFrom, setPeriodFrom] = useState("");

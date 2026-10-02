@@ -35,14 +35,15 @@ import {
 } from "./types";
 import { api } from "./api";
 import { cx } from "./ui";
+import { CierreBanner } from "./costos/CierreBanner";
 import { cacheGetJson, cacheSetJson, flushOutbox } from "./offline/outbox";
 
 type FinanzasSubTab = "facturas" | "auditoria-match" | "cuentas-pagar" | "cuentas-cobrar" | "caja-chica";
 
 export function App() {
   const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
-  const [suministrosSubTab, setSuministrosSubTab] = useState<SuministrosSubTab>("pedidos");
-  const [finanzasSubTab, setFinanzasSubTab] = useState<FinanzasSubTab>("facturas");
+  const [suministrosSubTab, setSuministrosSubTab] = useState<SuministrosSubTab | null>(null);
+  const [finanzasSubTab, setFinanzasSubTab] = useState<FinanzasSubTab | null>(null);
   const [currency, setCurrency] = useState<"PYG" | "USD">("PYG");
   const [refreshing, setRefreshing] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -181,7 +182,17 @@ export function App() {
     navigate(tab);
   };
 
-  const handleRefresh = () => fetchData(selectedProjectId, true);
+  // Links entre módulos sin pasar callbacks (ej. Solicitudes de fondos → documento origen).
+  useEffect(() => {
+    const onNavigate = (e: Event) => {
+      const { tab, subTab } = (e as CustomEvent<{ tab: PendingItem["tab"]; subTab?: string }>).detail;
+      navigateFromOverview(tab, subTab);
+    };
+    window.addEventListener("infratrack:navigate", onNavigate);
+    return () => window.removeEventListener("infratrack:navigate", onNavigate);
+  });
+
+  const handleRefresh =() => fetchData(selectedProjectId, true);
 
   const handleCreate = (action: CreateAction) => {
     const nonce = Date.now();
@@ -334,6 +345,8 @@ export function App() {
             </div>
           )}
 
+          {project && <CierreBanner projectId={project.id} refreshKey={refreshKey} />}
+
           {!project && (
             <PortfolioPage
               currency={currency}
@@ -395,8 +408,8 @@ export function App() {
           {project && activeTab === "suministros" && (
             <SuministrosTab
               project={project}
-              materialRequests={materialRequests.filter((r) => r.projectId === project.id)}
-              purchaseOrders={purchaseOrders.filter((o) => o.projectId === project.id)}
+              materialRequests={materialRequests}
+              purchaseOrders={purchaseOrders}
               stock={stock}
               stockMovements={stockMovements}
               materials={materials}

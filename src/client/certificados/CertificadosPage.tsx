@@ -8,6 +8,7 @@ import { formatMoney } from "../utils/format";
 import { SubcontractsTab } from "../components/SubcontractsTab";
 import { MeasurementWizard } from "./MeasurementWizard";
 import { CertificateDetail } from "./CertificateDetail";
+import { ContratistasBoard } from "./ContratistasBoard";
 import { CERT_STATUS, destinoLabel, periodLabel } from "./status";
 
 export type CertificadosIntent = { action: "new-measurement" | "new-contract"; nonce: number } | null;
@@ -29,8 +30,12 @@ type Destino = "ALL" | "OBRA" | "SUB";
 /** Certificados: 1. Mediciones → 2. Certificados (formato Medición N / Cert N) · Contratos de subcontratistas. */
 export function CertificadosPage({ project, budgetItems, partners, subcontracts, currency, intent, onRefresh, showToast }: CertificadosPageProps) {
   const [sub, setSub] = useState<Sub>("mediciones");
+  /** Mediciones y Certificados se ven como fichas por contratista o como lista. */
+  const [vista, setVista] = useState<"FICHAS" | "LISTA">("FICHAS");
   const [certs, setCerts] = useState<Certification[]>([]);
   const [wizard, setWizard] = useState(false);
+  /** Contratista elegido desde su tarjeta: el asistente arranca con él (null = certificado al cliente). */
+  const [wizardPartner, setWizardPartner] = useState<number | null | undefined>(undefined);
   const [openContract, setOpenContract] = useState(0);
   const [detailId, setDetailId] = useState<number | null>(null);
   const [destino, setDestino] = useState<Destino>("ALL");
@@ -130,7 +135,45 @@ export function CertificadosPage({ project, budgetItems, partners, subcontracts,
         ]}
       />
 
-      {sub === "contratos" ? (
+      {sub !== "contratos" && (
+        <div className="flex justify-end">
+          <div className="inline-flex rounded-xl border border-slate-200 bg-white p-0.5 text-xs font-medium">
+            {(
+              [
+                ["FICHAS", "Fichas por contratista"],
+                ["LISTA", "Lista"],
+              ] as const
+            ).map(([v, label]) => (
+              <button
+                key={v}
+                onClick={() => setVista(v)}
+                className={vista === v ? "rounded-lg border border-slate-900 px-3 py-1.5 text-slate-900" : "rounded-lg border border-transparent px-3 py-1.5 text-slate-600"}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {sub !== "contratos" && vista === "FICHAS" ? (
+        <ContratistasBoard
+          key={sub}
+          modo={sub === "mediciones" ? "MEDICION" : "CERTIFICADO"}
+          project={project}
+          partners={partners}
+          subcontracts={subcontracts}
+          certs={certs}
+          currency={currency}
+          onOpenDocument={(id) => setDetailId(id)}
+          onNew={(partnerId) => {
+            setWizardPartner(partnerId);
+            setWizard(true);
+          }}
+          onPartnersChanged={onRefresh}
+          showToast={showToast}
+        />
+      ) : sub === "contratos" ? (
         <SubcontractsTab
           key={openContract}
           project={project}
@@ -235,9 +278,14 @@ export function CertificadosPage({ project, budgetItems, partners, subcontracts,
           partners={partners}
           subcontracts={subcontracts}
           currency={currency}
-          onClose={() => setWizard(false)}
+          initialPartnerId={wizardPartner}
+          onClose={() => {
+            setWizard(false);
+            setWizardPartner(undefined);
+          }}
           onCreated={(id, asCertificate) => {
             setWizard(false);
+            setWizardPartner(undefined);
             setSub(asCertificate ? "certificados" : "mediciones");
             afterChange();
             setDetailId(id);

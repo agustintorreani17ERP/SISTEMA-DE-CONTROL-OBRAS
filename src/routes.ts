@@ -13,6 +13,9 @@ import { invoicesRouter } from "./modules/invoices/invoices.controller";
 import { costControlRouter } from "./modules/cost-control/costControl.controller";
 import { pettyCashRouter } from "./modules/petty-cash/pettyCash.controller";
 import { cuentasFinancierasRouter } from "./modules/finance/cuentasFinancieras.controller";
+import { cuentasCorrientesRouter } from "./modules/finance/cuentasCorrientes.controller";
+import { librosRouter } from "./modules/finance/libros.controller";
+import { reportesRouter } from "./modules/finance/reportes.controller";
 import { uploadsRouter } from "./modules/uploads/uploads.controller";
 import { laborPricesRouter } from "./modules/labor-prices/laborPrices.controller";
 import { rrhhRouter } from "./modules/rrhh/rrhh.controller";
@@ -21,6 +24,7 @@ import { acuRouter } from "./modules/acu/acu.controller";
 import { avanceRouter } from "./modules/avance/avance.controller";
 import { costosRouter } from "./modules/costos/costos.controller";
 import { partesRouter } from "./modules/partes/partes.controller";
+import { fondosRouter } from "./modules/fondos/fondos.controller";
 
 export const apiRouter = Router();
 
@@ -36,6 +40,10 @@ apiRouter.use("/certifications", advancedCertificationsRouter);
 apiRouter.use("/invoices", invoicesRouter);
 apiRouter.use("/caja-chica", pettyCashRouter);
 apiRouter.use("/cuentas-financieras", cuentasFinancierasRouter);
+apiRouter.use("/cuentas-corrientes", cuentasCorrientesRouter);
+apiRouter.use("/libros", librosRouter);
+apiRouter.use("/reportes", reportesRouter);
+apiRouter.use("/fondos", fondosRouter);
 apiRouter.use(budgetImportRouter);
 apiRouter.use(costControlRouter);
 apiRouter.use(overviewRouter);

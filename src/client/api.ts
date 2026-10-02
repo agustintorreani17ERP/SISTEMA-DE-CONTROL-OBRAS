@@ -50,6 +50,16 @@ import {
   MoImportPreview,
   ItemAcuData,
   AcuBibliotecaItem,
+  FacturaCuentaCorriente,
+  AgingBucket,
+  Anticipo,
+  RetencionFondo,
+  ConfigRetencionesAnticipos,
+  SolicitudFondo,
+  SolicitudesFondosFiltros,
+  SolicitudesFondosPage,
+  PagoSolicitudInput,
+  AnticipoOtorgado,
 } from "./types";
 import type {
   ArithmeticStrategy,
@@ -61,10 +71,33 @@ import type {
   SurchargeTreatment,
 } from "../modules/budgets/engine/types";
 
+/** Rol del usuario logueado (localStorage), para mostrar acciones de administrador. */
+export function currentRole(): string | null {
+  try {
+    const saved = localStorage.getItem("infratrack_user");
+    return saved ? ((JSON.parse(saved) as { role?: string }).role ?? null) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Usuario logueado (x-usuario): lo usa el servidor para creador / aprobador (ej. solicitudes de fondos). */
+function usuarioHeader(): Record<string, string> {
+  try {
+    const saved = localStorage.getItem("infratrack_user");
+    const user = saved ? (JSON.parse(saved) as { fullName?: string; role?: string }) : undefined;
+    // x-user-role: rol del usuario logueado (provisorio hasta el login real; ej. reabrir cierres es solo ADMIN).
+    return { ...(user?.fullName ? { "x-usuario": encodeURIComponent(user.fullName) } : {}), ...(user?.role ? { "x-user-role": user.role } : {}) };
+  } catch {
+    return {};
+  }
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     headers: {
       "Content-Type": "application/json",
+      ...usuarioHeader(),
       ...options?.headers,
     },
     ...options,
@@ -557,6 +590,193 @@ export const api = {
   updateChequeEstado: (id: number, estado: Cheque["estado"]) =>
     request<Cheque>(`/api/cuentas-financieras/cheques/${id}/estado`, { method: "PATCH", body: JSON.stringify({ estado }) }),
 
+  // Cuentas corrientes: a cobrar / a pagar, anticipos, retenciones, estado de cuenta
+  getFacturasCuentaCorriente: (projectId: number, tipo: "EMITIDA" | "RECIBIDA") =>
+    request<{ facturas: FacturaCuentaCorriente[]; buckets: Record<AgingBucket, number>; totalSaldo: number }>(
+      `/api/cuentas-corrientes/facturas?projectId=${projectId}&tipo=${tipo}`
+    ),
+  pagarFacturasMultiples: (body: {
+    cuentaFinancieraId: number;
+    fecha?: string;
+    metodo?: "TRANSFERENCIA" | "CHEQUE" | "EFECTIVO";
+    referenciaBanco: string;
+    notas?: string;
+    aplicaciones: { invoiceId: number; monto: number }[];
+  }) => request<{ grupoPagoId: string; pagos: any[] }>("/api/cuentas-corrientes/pagos-multiples", { method: "POST", body: JSON.stringify(body) }),
+  getAnticipos: (projectId: number, partnerId?: number) =>
+    request<Anticipo[]>(`/api/cuentas-corrientes/anticipos?projectId=${projectId}${partnerId ? `&partnerId=${partnerId}` : ""}`),
+  createAnticipo: (body: { projectId: number; partnerId?: number | null; tipo: "OTORGADO" | "RECIBIDO"; monto: number; fecha: string; concepto?: string }) =>
+    request<Anticipo>("/api/cuentas-corrientes/anticipos", { method: "POST", body: JSON.stringify(body) }),
+  aplicarAnticipo: (id: number, body: { monto: number; fecha?: string; sourceType: string; sourceId: number }) =>
+    request<Anticipo>(`/api/cuentas-corrientes/anticipos/${id}/aplicar`, { method: "POST", body: JSON.stringify(body) }),
+  getRetenciones: (projectId: number, partnerId?: number) =>
+    request<RetencionFondo[]>(`/api/cuentas-corrientes/retenciones?projectId=${projectId}${partnerId ? `&partnerId=${partnerId}` : ""}`),
+  liberarRetencion: (id: number, monto: number) =>
+    request<RetencionFondo>(`/api/cuentas-corrientes/retenciones/${id}/liberar`, { method: "POST", body: JSON.stringify({ monto }) }),
+  getConfigRetencionesAnticipos: (projectId: number) =>
+    request<ConfigRetencionesAnticipos>(`/api/cuentas-corrientes/config?projectId=${projectId}`),
+  updateConfigRetencionesAnticipos: (body: Partial<ConfigRetencionesAnticipos> & { projectId: number }) =>
+    request<ConfigRetencionesAnticipos>("/api/cuentas-corrientes/config", { method: "PUT", body: JSON.stringify(body) }),
+  // Libros contables: ingresos/egresos, diario, mayor, IVA compras/ventas
+  getLibroIngresosEgresos: (params: { projectId?: number; desde?: string; hasta?: string; vista: "DEVENGADO" | "PERCIBIDO" }) => {
+    const q = new URLSearchParams();
+    if (params.projectId) q.set("projectId", String(params.projectId));
+    if (params.desde) q.set("desde", params.desde);
+    if (params.hasta) q.set("hasta", params.hasta);
+    q.set("vista", params.vista);
+    return request<{
+      vista: string;
+      ingresos: { fecha: string; obra: string; comprobante: string; tercero: string; concepto: string; monto: number }[];
+      egresos: { fecha: string; obra: string; comprobante: string; tercero: string; concepto: string; monto: number }[];
+      totalIngresos: number;
+      totalEgresos: number;
+      saldo: number;
+    }>(`/api/libros/ingresos-egresos?${q.toString()}`);
+  },
+  getLibroDiario: (params: { projectId?: number; desde?: string; hasta?: string }) => {
+    const q = new URLSearchParams();
+    if (params.projectId) q.set("projectId", String(params.projectId));
+    if (params.desde) q.set("desde", params.desde);
+    if (params.hasta) q.set("hasta", params.hasta);
+    return request<{
+      asientos: {
+        id: number;
+        fecha: string;
+        obra: string;
+        concepto: string;
+        sourceType: string;
+        sourceId: number;
+        anulado: boolean;
+        lineas: { cuentaCodigo: string; cuentaNombre: string; debe: number; haber: number }[];
+      }[];
+      totalDebe: number;
+      totalHaber: number;
+    }>(`/api/libros/diario?${q.toString()}`);
+  },
+  getLibroMayorResumen: (params: { projectId?: number; desde?: string; hasta?: string }) => {
+    const q = new URLSearchParams();
+    if (params.projectId) q.set("projectId", String(params.projectId));
+    if (params.desde) q.set("desde", params.desde);
+    if (params.hasta) q.set("hasta", params.hasta);
+    return request<{ cuentas: { cuenta: { id: number; codigo: string; nombre: string }; debe: number; haber: number; saldo: number }[] }>(
+      `/api/libros/mayor?${q.toString()}`
+    );
+  },
+  getLibroMayorDetalle: (params: { projectId?: number; desde?: string; hasta?: string; cuentaId: number }) => {
+    const q = new URLSearchParams();
+    if (params.projectId) q.set("projectId", String(params.projectId));
+    if (params.desde) q.set("desde", params.desde);
+    if (params.hasta) q.set("hasta", params.hasta);
+    q.set("cuentaId", String(params.cuentaId));
+    return request<{
+      cuenta: { id: number; codigo: string; nombre: string };
+      saldoInicial: number;
+      movimientos: { fecha: string; concepto: string; sourceType: string; sourceId: number; debe: number; haber: number; saldo: number }[];
+      saldoFinal: number;
+    }>(`/api/libros/mayor?${q.toString()}`);
+  },
+  getLibroIva: (params: { projectId?: number; desde?: string; hasta?: string; tipo: "COMPRAS" | "VENTAS" }) => {
+    const q = new URLSearchParams();
+    if (params.projectId) q.set("projectId", String(params.projectId));
+    if (params.desde) q.set("desde", params.desde);
+    if (params.hasta) q.set("hasta", params.hasta);
+    q.set("tipo", params.tipo);
+    return request<{
+      tipo: string;
+      filas: {
+        fecha: string;
+        ruc: string;
+        razonSocial: string;
+        timbrado: string;
+        numero: string;
+        gravado10: number;
+        iva10: number;
+        gravado5: number;
+        iva5: number;
+        exento: number;
+        ivaTotal: number;
+        total: number;
+      }[];
+      totales: { gravado10: number; iva10: number; gravado5: number; iva5: number; exento: number; ivaTotal: number; total: number };
+    }>(`/api/libros/iva?${q.toString()}`);
+  },
+
+  // Reportes gerenciales: estado de resultados, balance, flujo de caja, posición de IVA, resumen por obra
+  getEstadoResultados: (params: { projectId?: number; desde?: string; hasta?: string }) => {
+    const q = new URLSearchParams();
+    if (params.projectId) q.set("projectId", String(params.projectId));
+    if (params.desde) q.set("desde", params.desde);
+    if (params.hasta) q.set("hasta", params.hasta);
+    return request<{
+      desde: string;
+      hasta: string;
+      porObra: { obra: { id: number; code: string; name: string }; ingresos: number; costos: number; resultado: number }[];
+      consolidado: { ingresos: number; costos: number; resultado: number };
+    }>(`/api/reportes/estado-resultados?${q.toString()}`);
+  },
+  getBalance: (params: { projectId?: number; hasta?: string }) => {
+    const q = new URLSearchParams();
+    if (params.projectId) q.set("projectId", String(params.projectId));
+    if (params.hasta) q.set("hasta", params.hasta);
+    return request<{
+      hasta: string;
+      activo: { cuenta: { id: number; codigo: string; nombre: string; tipo: string }; saldo: number }[];
+      pasivo: { cuenta: { id: number; codigo: string; nombre: string; tipo: string }; saldo: number }[];
+      patrimonio: { cuenta: { id: number; codigo: string; nombre: string; tipo: string }; saldo: number }[];
+      resultadoDelEjercicio: number;
+      totalActivo: number;
+      totalPasivo: number;
+      totalPatrimonio: number;
+      cuadra: boolean;
+    }>(`/api/reportes/balance?${q.toString()}`);
+  },
+  getFlujoCaja: (params: { projectId?: number; desde?: string; hasta?: string }) => {
+    const q = new URLSearchParams();
+    if (params.projectId) q.set("projectId", String(params.projectId));
+    if (params.desde) q.set("desde", params.desde);
+    if (params.hasta) q.set("hasta", params.hasta);
+    return request<{
+      real: { fecha: string; ingresos: number; egresos: number; neto: number; saldoAcumulado: number }[];
+      proyectado: { dias: number; ingresosEsperados: number; egresosEsperados: number; neto: number }[];
+      hoy: string;
+    }>(`/api/reportes/flujo-caja?${q.toString()}`);
+  },
+  getIvaPosicion: (params: { projectId?: number; desde?: string; hasta?: string }) => {
+    const q = new URLSearchParams();
+    if (params.projectId) q.set("projectId", String(params.projectId));
+    if (params.desde) q.set("desde", params.desde);
+    if (params.hasta) q.set("hasta", params.hasta);
+    return request<{ meses: { mes: string; debitoFiscal: number; creditoFiscal: number; posicion: number }[] }>(`/api/reportes/iva-posicion?${q.toString()}`);
+  },
+  getResumenObras: (params: { projectId?: number; desde?: string; hasta?: string }) => {
+    const q = new URLSearchParams();
+    if (params.projectId) q.set("projectId", String(params.projectId));
+    if (params.desde) q.set("desde", params.desde);
+    if (params.hasta) q.set("hasta", params.hasta);
+    return request<{
+      desde: string;
+      hasta: string;
+      filas: {
+        obra: { id: number; code: string; name: string };
+        facturado: number;
+        cobrado: number;
+        porCobrar: number;
+        anticipos: number;
+        fondoReparo: number;
+        pagado: number;
+        porPagar: number;
+      }[];
+    }>(`/api/reportes/resumen-obras?${q.toString()}`);
+  },
+
+  getEstadoCuenta: (projectId: number, partnerId: number | null) =>
+    request<{
+      facturas: FacturaCuentaCorriente[];
+      anticipos: Anticipo[];
+      retenciones: RetencionFondo[];
+      totales: { saldoFacturasPendientes: number; saldoAnticiposPendientes: number; saldoRetencionesPendientes: number };
+    }>(`/api/cuentas-corrientes/estado-cuenta?projectId=${projectId}${partnerId ? `&partnerId=${partnerId}` : ""}`),
+
 
   // Authentication
   login: (credentials: { email: string; password?: string }) =>
@@ -641,7 +861,7 @@ export const api = {
       method: "POST",
     }),
   approveCertification: (id: number) =>
-    request<{ certification: any; invoice: any; budgetWarnings?: BudgetWarning[]; measurementWarnings?: string[] }>(`/api/certifications/${id}/approve`, {
+    request<{ certification: any; invoice: any; budgetWarnings?: BudgetWarning[]; measurementWarnings?: string[]; avisos?: string[]; message?: string }>(`/api/certifications/${id}/approve`, {
       method: "POST",
     }),
   deleteCertification: (id: number) =>
@@ -786,6 +1006,12 @@ export const api = {
   savePlan: (projectId: number, body: { modo: "REEMPLAZAR" | "COMBINAR"; lineas: { budgetItemId: number; fecha: string; cantidad: number }[] }) =>
     request<{ guardados: number }>(`/api/projects/${projectId}/plan`, { method: "PUT", body: JSON.stringify(body) }),
   getCierres: (projectId: number) => request<CierreResumen[]>(`/api/projects/${projectId}/cierres`),
+  getCerradoHasta: (projectId: number) => request<{ hasta: string | null }>(`/api/projects/${projectId}/cerrado-hasta`),
+  reabrirCierre: (cierreId: number, motivo: string) =>
+    request<{ reaperturaId: number; cierre: { desde: string; hasta: string }; avisos: string[] }>(`/api/cierres/${cierreId}/reabrir`, {
+      method: "POST",
+      body: JSON.stringify({ motivo }),
+    }),
   getFacturaCierre: (cierreId: number) => request<ClientInvoicePreview>(`/api/cierres/${cierreId}/factura`),
   createFacturaCierre: (cierreId: number, body: { numeroFactura?: string | null; timbrado?: string | null; fechaEmision?: string; diasVencimiento?: number }) =>
     request<{ id: number; numeroFactura: string }>(`/api/cierres/${cierreId}/factura`, { method: "POST", body: JSON.stringify(body) }),
@@ -827,4 +1053,27 @@ export const api = {
     request<CombustibleData>(`/api/projects/${projectId}/combustible?desde=${desde}&hasta=${hasta}`),
   getViajes: (projectId: number, desde: string, hasta: string) => request<ViajesData>(`/api/projects/${projectId}/viajes?desde=${desde}&hasta=${hasta}`),
   getCostoHora: (projectId?: number) => request<CostoHoraData>(`/api/rrhh/costo-hora${projectId ? `?projectId=${projectId}` : ""}`),
+
+  // Solicitudes de fondos (tesorería) y anticipos otorgados
+  getSolicitudesFondos: (f: SolicitudesFondosFiltros) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(f)) {
+      if (v === undefined || v === null || v === "" || (Array.isArray(v) && v.length === 0)) continue;
+      qs.set(k, Array.isArray(v) ? v.join(",") : String(v));
+    }
+    return request<SolicitudesFondosPage>(`/api/fondos?${qs}`);
+  },
+  aprobarSolicitudFondo: (id: number) => request<SolicitudFondo>(`/api/fondos/${id}/aprobar`, { method: "POST", body: "{}" }),
+  rechazarSolicitudFondo: (id: number, motivo: string) =>
+    request<SolicitudFondo>(`/api/fondos/${id}/rechazar`, { method: "POST", body: JSON.stringify({ motivo }) }),
+  programarSolicitudFondo: (id: number, body: { fechaProgramada: string; cuentaFinancieraId?: number | null }) =>
+    request<SolicitudFondo>(`/api/fondos/${id}/programar`, { method: "POST", body: JSON.stringify(body) }),
+  pagarSolicitudFondo: (id: number, body: PagoSolicitudInput & { monto?: number | null }) =>
+    request<{ solicitud: SolicitudFondo; pagoId: number }>(`/api/fondos/${id}/pagar`, { method: "POST", body: JSON.stringify(body) }),
+  pagarSolicitudesLote: (body: PagoSolicitudInput & { items: { solicitudId: number; monto?: number | null }[] }) =>
+    request<{ grupoPagoId: string; total: number; cantidad: number }>("/api/fondos/pagos-lote", { method: "POST", body: JSON.stringify(body) }),
+  getAnticiposOtorgados: (projectId: number) => request<AnticipoOtorgado[]>(`/api/fondos/anticipos?projectId=${projectId}`),
+  createAnticipoOtorgado: (body: { projectId: number; partnerId: number; monto: number; fecha: string; concepto?: string }) =>
+    request<{ id: number; solicitudId: number | null }>("/api/fondos/anticipos", { method: "POST", body: JSON.stringify(body) }),
+  anularAnticipo: (id: number) => request<{ id: number }>(`/api/fondos/anticipos/${id}/anular`, { method: "POST", body: "{}" }),
 };

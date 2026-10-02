@@ -1,23 +1,34 @@
-import type { Tone } from "../ui";
+import type { PillTone } from "../ui";
 
 import { formatQty } from "../utils/numbers";
 export type DocStatus = "BORRADOR" | "APROBADO_PARA_COMPRA" | "EMITIDA" | "RECIBIDO" | "ANULADO";
+type StatusInfo = { label: string; tone: PillTone };
 
-export const REQUEST_STATUS: Record<DocStatus, { label: string; tone: Tone }> = {
+export const REQUEST_STATUS: Record<DocStatus, StatusInfo> = {
   BORRADOR: { label: "Borrador", tone: "neutral" },
-  APROBADO_PARA_COMPRA: { label: "Aprobado", tone: "brand" },
-  EMITIDA: { label: "Con OC", tone: "warn" },
+  APROBADO_PARA_COMPRA: { label: "Aprobado", tone: "info" },
+  EMITIDA: { label: "Con OC", tone: "violet" },
   RECIBIDO: { label: "Recibido", tone: "good" },
   ANULADO: { label: "Anulado", tone: "bad" },
 };
 
-export const ORDER_STATUS: Record<DocStatus, { label: string; tone: Tone }> = {
+export const ORDER_STATUS: Record<DocStatus, StatusInfo> = {
   BORRADOR: { label: "Borrador", tone: "neutral" },
-  APROBADO_PARA_COMPRA: { label: "Aprobada", tone: "brand" },
+  APROBADO_PARA_COMPRA: { label: "Aprobada", tone: "info" },
   EMITIDA: { label: "Emitida", tone: "warn" },
   RECIBIDO: { label: "Recibida", tone: "good" },
   ANULADO: { label: "Anulada", tone: "bad" },
 };
+
+/** Estado visible del pedido: con varias OC, "Recibido" solo si todas las vigentes llegaron. */
+export function pedidoEtapa(r: { status: DocStatus; purchaseOrders?: { status: DocStatus }[] }): StatusInfo {
+  const ocs = (r.purchaseOrders ?? []).filter((o) => o.status !== "ANULADO");
+  if (r.status === "ANULADO" || ocs.length === 0) return REQUEST_STATUS[r.status];
+  const recibidas = ocs.filter((o) => o.status === "RECIBIDO").length;
+  if (recibidas === ocs.length) return REQUEST_STATUS.RECIBIDO;
+  if (recibidas > 0) return { label: `Parcial ${recibidas}/${ocs.length}`, tone: "warn" };
+  return REQUEST_STATUS[r.status];
+}
 
 /** Las fechas sin hora (columnas DATE) llegan como medianoche UTC: se muestran tal cual, sin huso. */
 export const fmtDate = (d?: string | null) => {

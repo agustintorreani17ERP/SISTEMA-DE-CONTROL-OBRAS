@@ -2,23 +2,25 @@ import React, { useMemo, useState } from "react";
 import { ClipboardList, Eye, Plus, Printer, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { MaterialRequest, Project } from "../types";
-import { Badge, Button, Card, Drawer, EmptyState } from "../ui";
+import { Button, Card, Drawer, EmptyState, StatusPill } from "../ui";
 import { ActionBar, MoreMenu, Timeline } from "../ui/actions";
 import { PrintableDocument } from "./PrintableDocument";
-import { fmtDate, fmtQty, REQUEST_STATUS } from "./status";
+import { fmtDate, fmtQty, pedidoEtapa, REQUEST_STATUS } from "./status";
 
 type Filter = "ALL" | "BORRADOR" | "APROBADO_PARA_COMPRA" | "EMITIDA" | "RECIBIDO";
 
 interface RequestsViewProps {
   project: Project;
   requests: MaterialRequest[];
+  /** Vista "todas las obras": agrega la columna Obra. */
+  showProject?: boolean;
   onNew: () => void;
   onCreateOrder: (request: MaterialRequest) => void;
   onRefresh: () => void;
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
 }
 
-export function RequestsView({ project, requests, onNew, onCreateOrder, onRefresh, showToast }: RequestsViewProps) {
+export function RequestsView({ project, requests, showProject, onNew, onCreateOrder, onRefresh, showToast }: RequestsViewProps) {
   const [filter, setFilter] = useState<Filter>("ALL");
   const [search, setSearch] = useState("");
   const [detail, setDetail] = useState<MaterialRequest | null>(null);
@@ -32,7 +34,7 @@ export function RequestsView({ project, requests, onNew, onCreateOrder, onRefres
       (r) =>
         (filter === "ALL" || r.status === filter) &&
         (!q ||
-          `${r.number} ${r.workFront?.name ?? ""} ${(r.details ?? []).map((d) => d.material?.description).join(" ")}`
+          `${r.number} ${r.project?.name ?? ""} ${r.workFront?.name ?? ""} ${(r.details ?? []).map((d) => d.material?.description).join(" ")}`
             .toLowerCase()
             .includes(q))
     );
@@ -58,7 +60,8 @@ export function RequestsView({ project, requests, onNew, onCreateOrder, onRefres
           Aprobar
         </Button>
       );
-    if (r.status === "APROBADO_PARA_COMPRA")
+    // La OC se arma dentro de la obra seleccionada
+    if (r.status === "APROBADO_PARA_COMPRA" && r.projectId === project.id)
       return (
         <Button size="sm" variant="primary" onClick={() => onCreateOrder(r)}>
           Crear OC
@@ -72,10 +75,10 @@ export function RequestsView({ project, requests, onNew, onCreateOrder, onRefres
       <ActionBar
         chips={[
           { value: "ALL", label: "Todos", count: requests.length },
-          { value: "BORRADOR", label: "Borrador", count: count("BORRADOR") },
-          { value: "APROBADO_PARA_COMPRA", label: "Por comprar", count: count("APROBADO_PARA_COMPRA") },
-          { value: "EMITIDA", label: "Con OC", count: count("EMITIDA") },
-          { value: "RECIBIDO", label: "Recibidos", count: count("RECIBIDO") },
+          { value: "BORRADOR", label: "Borrador", count: count("BORRADOR"), tone: REQUEST_STATUS.BORRADOR.tone },
+          { value: "APROBADO_PARA_COMPRA", label: "Por comprar", count: count("APROBADO_PARA_COMPRA"), tone: REQUEST_STATUS.APROBADO_PARA_COMPRA.tone },
+          { value: "EMITIDA", label: "Con OC", count: count("EMITIDA"), tone: REQUEST_STATUS.EMITIDA.tone },
+          { value: "RECIBIDO", label: "Recibidos", count: count("RECIBIDO"), tone: REQUEST_STATUS.RECIBIDO.tone },
         ]}
         chip={filter}
         onChip={setFilter}
@@ -106,6 +109,7 @@ export function RequestsView({ project, requests, onNew, onCreateOrder, onRefres
               <thead className="text-left text-xs text-slate-500">
                 <tr className="border-b border-slate-100">
                   <th className="px-5 py-3">Pedido</th>
+                  {showProject && <th className="px-3 py-3">Obra</th>}
                   <th className="px-3 py-3">Frente</th>
                   <th className="px-3 py-3">Materiales</th>
                   <th className="px-3 py-3">Estado</th>
@@ -114,7 +118,7 @@ export function RequestsView({ project, requests, onNew, onCreateOrder, onRefres
               </thead>
               <tbody>
                 {visible.map((r) => {
-                  const st = REQUEST_STATUS[r.status];
+                  const st = pedidoEtapa(r);
                   const first = r.details?.[0];
                   return (
                     <tr key={r.id} onClick={() => setDetail(r)} className="cursor-pointer border-b border-slate-100 last:border-0 hover:bg-slate-50">
@@ -122,13 +126,14 @@ export function RequestsView({ project, requests, onNew, onCreateOrder, onRefres
                         <p className="font-medium text-slate-900">{r.number}</p>
                         <p className="text-xs text-slate-500">{fmtDate(r.requestedDate ?? r.createdAt)}</p>
                       </td>
+                      {showProject && <td className="px-3 py-3 text-slate-700">{r.project?.name ?? "—"}</td>}
                       <td className="px-3 py-3 text-slate-600">{r.workFront?.name ?? <span className="text-slate-400">—</span>}</td>
                       <td className="px-3 py-3 text-slate-700">
                         {first ? `${first.material?.description ?? "Material"} · ${fmtQty(first.quantity)} ${first.material?.unit ?? ""}` : "—"}
                         {(r.details?.length ?? 0) > 1 && <span className="text-slate-400"> +{(r.details?.length ?? 0) - 1}</span>}
                       </td>
                       <td className="px-3 py-3">
-                        <Badge tone={st.tone}>{st.label}</Badge>
+                        <StatusPill tone={st.tone}>{st.label}</StatusPill>
                       </td>
                       <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1">
@@ -158,7 +163,7 @@ export function RequestsView({ project, requests, onNew, onCreateOrder, onRefres
                 })}
                 {visible.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-5 py-8 text-center text-slate-400">
+                    <td colSpan={showProject ? 6 : 5} className="px-5 py-8 text-center text-slate-400">
                       No hay pedidos con ese filtro.
                     </td>
                   </tr>
@@ -172,7 +177,7 @@ export function RequestsView({ project, requests, onNew, onCreateOrder, onRefres
       {detail && (
         <Drawer title={`Pedido ${detail.number}`} onClose={() => setDetail(null)}>
           <div className="flex items-center justify-between">
-            <Badge tone={REQUEST_STATUS[detail.status].tone}>{REQUEST_STATUS[detail.status].label}</Badge>
+            <StatusPill tone={pedidoEtapa(detail).tone}>{pedidoEtapa(detail).label}</StatusPill>
             {nextAction(detail)}
           </div>
           <dl className="grid grid-cols-2 gap-3 text-sm">
@@ -219,7 +224,7 @@ export function RequestsView({ project, requests, onNew, onCreateOrder, onRefres
           number={printing.number}
           onClose={() => setPrinting(null)}
           meta={[
-            { label: "Obra", value: `${project.code} · ${project.name}` },
+            { label: "Obra", value: `${(printing.project ?? project).code} · ${(printing.project ?? project).name}` },
             { label: "Frente", value: printing.workFront?.name ?? "—" },
             { label: "Fecha", value: fmtDate(printing.requestedDate ?? printing.createdAt) },
             { label: "Solicitado por", value: printing.requestedBy?.fullName ?? "—" },

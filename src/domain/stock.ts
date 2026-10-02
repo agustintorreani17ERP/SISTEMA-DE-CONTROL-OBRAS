@@ -5,7 +5,7 @@ import { postCost } from "./budget";
 import { distributionPoolId } from "./generalExpenses";
 import { getPrecioVigente, toDay } from "./prices";
 import { deriveCountAdjustments, firstNegativeDay, type StockMov } from "./stockMath";
-import { assertOpenPeriod } from "./progress";
+import { assertOpenPeriod, fechaContable } from "./progress";
 
 type Tx = Prisma.TransactionClient;
 
@@ -32,6 +32,12 @@ export interface StockMovementInput {
   unitCost?: MoneyLike;
   note?: string | null;
   createdBy?: string | null;
+  /**
+   * Documento que puede llegar tarde (recepción de OC, factura, caja chica): si su fecha está en
+   * un período cerrado se registra el primer día abierto y guarda la fecha real en fechaDocumento.
+   * Sin esto (salidas, transferencias, conteos) una fecha cerrada se rechaza.
+   */
+  tardio?: boolean;
 }
 
 const iso = (d: Date) => d.toISOString().slice(0, 10);
@@ -116,8 +122,14 @@ export async function recomputeCountAdjustments(tx: Tx, projectId: number, mater
 export async function recordStockMovement(tx: Tx, input: StockMovementInput) {
   const quantity = toDecimal(input.quantity);
   if (quantity.isZero()) throw new DomainError("INVALID_QUANTITY", "La cantidad no puede ser cero");
-  const fecha = toDay(input.fecha);
-  await assertOpenPeriod(tx, input.projectId, fecha, "El movimiento de stock");
+  let fecha = toDay(input.fecha);
+  let fechaDocumento: Date | null = null;
+  if (input.tardio) {
+    const fc = await fechaContable(tx, input.projectId, fecha);
+    if (fc.desplazada) [fechaDocumento, fecha] = [fecha, fc.fecha];
+  } else {
+    await assertOpenPeriod(tx, input.projectId, fecha, "El movimiento de stock");
+  }
   const movement = await tx.stockMovement.create({
     data: {
       projectId: input.projectId,
@@ -125,6 +137,7 @@ export async function recordStockMovement(tx: Tx, input: StockMovementInput) {
       kind: input.kind,
       quantity,
       fecha,
+      fechaDocumento,
       sourceType: input.sourceType,
       sourceId: input.sourceId,
       budgetItemId: input.budgetItemId ?? null,

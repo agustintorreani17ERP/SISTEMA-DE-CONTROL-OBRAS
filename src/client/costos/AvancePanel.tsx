@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { CalendarRange, ClipboardList, Lock, Trash2 } from "lucide-react";
-import { api } from "../api";
+import { api, currentRole } from "../api";
 import type { AvanceHecho, CierreResumen, ClientInvoicePreview, PlanPreview, ProgressReport, ProgressRow, Project } from "../types";
 import { Button, Drawer, Field, Modal, cx, inputClass } from "../ui";
 import { formatGs, formatPct, formatQty } from "../utils/numbers";
@@ -29,6 +29,8 @@ export const AvancePanel: React.FC<{ project: Project; onChanged: () => void; sh
   const [detail, setDetail] = useState<ProgressRow | null>(null);
   const [snapshotOf, setSnapshotOf] = useState<CierreResumen | null>(null);
   const [facturarOf, setFacturarOf] = useState<CierreResumen | null>(null);
+  const [reabrirOf, setReabrirOf] = useState<CierreResumen | null>(null);
+  const esAdmin = currentRole() === "ADMIN";
 
   const load = useCallback(async () => {
     try {
@@ -181,6 +183,7 @@ export const AvancePanel: React.FC<{ project: Project; onChanged: () => void; sh
                 <th className="px-3 py-2">Cerrado</th>
                 <th className="px-3 py-2">Notas</th>
                 <th className="px-3 py-2">Factura al cliente</th>
+                <th className="px-3 py-2" />
               </tr>
             </thead>
             <tbody>
@@ -205,11 +208,19 @@ export const AvancePanel: React.FC<{ project: Project; onChanged: () => void; sh
                       </Button>
                     )}
                   </td>
+                  <td className="px-3 py-1.5 text-xs" onClick={(e) => e.stopPropagation()}>
+                    {/* Solo el último cierre (la lista viene del más reciente al más viejo) y solo un administrador. */}
+                    {esAdmin && c.id === cierres[0]?.id && (
+                      <Button size="sm" onClick={() => setReabrirOf(c)}>
+                        Reabrir
+                      </Button>
+                    )}
+                  </td>
                 </tr>
               ))}
               {cierres.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-3 py-4 text-center text-slate-500">
+                  <td colSpan={8} className="px-3 py-4 text-center text-slate-500">
                     Todavía no hay cierres.
                   </td>
                 </tr>
@@ -218,6 +229,19 @@ export const AvancePanel: React.FC<{ project: Project; onChanged: () => void; sh
           </table>
         </div>
       </div>
+
+      {reabrirOf && (
+        <ReabrirCierreModal
+          cierre={reabrirOf}
+          onClose={() => setReabrirOf(null)}
+          onDone={() => {
+            setReabrirOf(null);
+            setRange(null); // el rango por defecto vuelve a empezar después del cierre anterior
+            load();
+          }}
+          showToast={showToast}
+        />
+      )}
 
       {facturarOf && (
         <FacturaCierreModal
@@ -710,6 +734,49 @@ function FacturaCierreModal({ cierre, onClose, onDone, showToast }: { cierre: Ci
           </div>
         </div>
       )}
+    </Modal>
+  );
+}
+
+function ReabrirCierreModal({ cierre, onClose, onDone, showToast }: { cierre: CierreResumen; onClose: () => void; onDone: () => void; showToast: Toast }) {
+  const [motivo, setMotivo] = useState("");
+  const [saving, setSaving] = useState(false);
+  const reabrir = async () => {
+    setSaving(true);
+    try {
+      const r = await api.reabrirCierre(cierre.id, motivo);
+      showToast(`Cierre ${fmtDate(r.cierre.desde)} – ${fmtDate(r.cierre.hasta)} reabierto`, "success");
+      r.avisos.forEach((a) => showToast(a, "info"));
+      onDone();
+    } catch (e: any) {
+      showToast(e.message, "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Modal
+      title={`Reabrir cierre ${fmtDate(cierre.desde)} – ${fmtDate(cierre.hasta)}`}
+      onClose={onClose}
+      footer={
+        <>
+          <Button onClick={onClose}>Cancelar</Button>
+          <Button variant="primary" onClick={reabrir} disabled={saving || motivo.trim().length < 10}>
+            Reabrir
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-3 text-sm text-slate-900">
+        <p>
+          El período vuelve a quedar abierto: se pueden corregir partes, mediciones y documentos. El snapshot actual queda guardado y la reapertura
+          queda en la auditoría. Los cierres anteriores no se pueden reabrir.
+        </p>
+        {cierre.factura && <p className="text-red-600">La factura {cierre.factura.numeroFactura} sigue vigente: al volver a cerrar se factura solo la diferencia.</p>}
+        <Field label="Motivo (obligatorio)">
+          <textarea className={inputClass} rows={3} value={motivo} onChange={(e) => setMotivo(e.target.value)} placeholder="Ej.: la fiscalización corrigió la medición del ítem 3.2" />
+        </Field>
+      </div>
     </Modal>
   );
 }

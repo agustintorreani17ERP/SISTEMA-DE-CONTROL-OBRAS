@@ -8,6 +8,7 @@ import { moneyNumber } from "../../lib/money";
 import { postCost } from "../../domain/budget";
 import { rebuildProjectLedger } from "../../domain/ledgerSync";
 import { recalculateProjectFinancials } from "../../domain/projectFinancials";
+import { syncWorkFrontsFromAreas } from "../../domain/workFrontSync";
 import { buildCostTree } from "./costTree";
 import { DISTRIBUTION_ROOT_PATH } from "../../domain/generalExpenses";
 
@@ -147,7 +148,14 @@ costControlRouter.post(
   "/projects/:id/budget-ledger/rebuild",
   asyncHandler(async (req, res) => {
     const projectId = projectIdParam(req.params.id);
-    const result = await prisma.$transaction((tx) => rebuildProjectLedger(tx, projectId), { timeout: 120_000 });
+    const result = await prisma.$transaction(
+      async (tx) => {
+        const r = await rebuildProjectLedger(tx, projectId);
+        await syncWorkFrontsFromAreas(tx, projectId);
+        return r;
+      },
+      { timeout: 120_000 }
+    );
     ok(res, result);
   })
 );

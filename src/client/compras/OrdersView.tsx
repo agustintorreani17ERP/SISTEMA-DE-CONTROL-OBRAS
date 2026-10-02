@@ -2,7 +2,7 @@ import React, { useMemo, useState } from "react";
 import { Ban, Eye, Plus, Printer, ShoppingCart, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { Project, PurchaseOrder } from "../types";
-import { Badge, Button, Card, Drawer, EmptyState, Field, Modal, inputClass } from "../ui";
+import { Button, Card, Drawer, EmptyState, Field, Modal, StatusPill, inputClass } from "../ui";
 import { todayIso } from "../insumos/labels";
 import { ActionBar, MoreMenu, Timeline } from "../ui/actions";
 import { formatMoney } from "../utils/format";
@@ -14,13 +14,15 @@ type Filter = "ALL" | DocStatus;
 interface OrdersViewProps {
   project: Project;
   orders: PurchaseOrder[];
+  /** Vista "todas las obras": agrega la columna Obra. */
+  showProject?: boolean;
   currency: "PYG" | "USD";
   onNew: () => void;
   onRefresh: () => void;
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
 }
 
-export function OrdersView({ project, orders, currency, onNew, onRefresh, showToast }: OrdersViewProps) {
+export function OrdersView({ project, orders, showProject, currency, onNew, onRefresh, showToast }: OrdersViewProps) {
   const [filter, setFilter] = useState<Filter>("ALL");
   const [search, setSearch] = useState("");
   const [detail, setDetail] = useState<PurchaseOrder | null>(null);
@@ -36,7 +38,7 @@ export function OrdersView({ project, orders, currency, onNew, onRefresh, showTo
     return orders.filter(
       (o) =>
         (filter === "ALL" || o.status === filter) &&
-        (!q || `${o.number} ${o.partner?.name ?? ""} ${o.materialRequest?.number ?? ""}`.toLowerCase().includes(q))
+        (!q || `${o.number} ${o.project?.name ?? ""} ${o.partner?.name ?? ""} ${o.materialRequest?.number ?? ""}`.toLowerCase().includes(q))
     );
   }, [orders, filter, search]);
 
@@ -116,11 +118,11 @@ export function OrdersView({ project, orders, currency, onNew, onRefresh, showTo
       <ActionBar
         chips={[
           { value: "ALL", label: "Todas", count: orders.length },
-          { value: "BORRADOR", label: "Por aprobar", count: count("BORRADOR") },
-          { value: "APROBADO_PARA_COMPRA", label: "Por emitir", count: count("APROBADO_PARA_COMPRA") },
-          { value: "EMITIDA", label: "Por recibir", count: count("EMITIDA") },
-          { value: "RECIBIDO", label: "Recibidas", count: count("RECIBIDO") },
-          { value: "ANULADO", label: "Anuladas", count: count("ANULADO") },
+          { value: "BORRADOR", label: "Por aprobar", count: count("BORRADOR"), tone: ORDER_STATUS.BORRADOR.tone },
+          { value: "APROBADO_PARA_COMPRA", label: "Por emitir", count: count("APROBADO_PARA_COMPRA"), tone: ORDER_STATUS.APROBADO_PARA_COMPRA.tone },
+          { value: "EMITIDA", label: "Por recibir", count: count("EMITIDA"), tone: ORDER_STATUS.EMITIDA.tone },
+          { value: "RECIBIDO", label: "Recibidas", count: count("RECIBIDO"), tone: ORDER_STATUS.RECIBIDO.tone },
+          { value: "ANULADO", label: "Anuladas", count: count("ANULADO"), tone: ORDER_STATUS.ANULADO.tone },
         ]}
         chip={filter}
         onChip={setFilter}
@@ -151,6 +153,7 @@ export function OrdersView({ project, orders, currency, onNew, onRefresh, showTo
               <thead className="text-left text-xs text-slate-500">
                 <tr className="border-b border-slate-100">
                   <th className="px-5 py-3">Orden</th>
+                  {showProject && <th className="px-3 py-3">Obra</th>}
                   <th className="px-3 py-3">Proveedor</th>
                   <th className="px-3 py-3">Pedido</th>
                   <th className="px-3 py-3 text-right">Total</th>
@@ -167,11 +170,12 @@ export function OrdersView({ project, orders, currency, onNew, onRefresh, showTo
                         <p className="font-medium text-slate-900">{o.number}</p>
                         <p className="text-xs text-slate-500">{fmtDate(o.issueDate ?? o.createdAt)}</p>
                       </td>
+                      {showProject && <td className="px-3 py-3 text-slate-700">{o.project?.name ?? "—"}</td>}
                       <td className="px-3 py-3 text-slate-700">{o.partner?.name ?? "—"}</td>
                       <td className="px-3 py-3 text-slate-500">{o.materialRequest?.number ?? "—"}</td>
                       <td className="px-3 py-3 text-right font-medium tabular-nums">{money(o.totalAmount)}</td>
                       <td className="px-3 py-3">
-                        <Badge tone={st.tone}>{st.label}</Badge>
+                        <StatusPill tone={st.tone}>{st.label}</StatusPill>
                       </td>
                       <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1">
@@ -184,7 +188,7 @@ export function OrdersView({ project, orders, currency, onNew, onRefresh, showTo
                 })}
                 {visible.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-5 py-8 text-center text-slate-400">
+                    <td colSpan={showProject ? 7 : 6} className="px-5 py-8 text-center text-slate-400">
                       No hay órdenes con ese filtro.
                     </td>
                   </tr>
@@ -198,7 +202,7 @@ export function OrdersView({ project, orders, currency, onNew, onRefresh, showTo
       {detail && (
         <Drawer title={`Orden ${detail.number}`} onClose={() => setDetail(null)}>
           <div className="flex items-center justify-between">
-            <Badge tone={ORDER_STATUS[detail.status].tone}>{ORDER_STATUS[detail.status].label}</Badge>
+            <StatusPill tone={ORDER_STATUS[detail.status].tone}>{ORDER_STATUS[detail.status].label}</StatusPill>
             {nextAction(detail)}
           </div>
           <dl className="grid grid-cols-2 gap-3 text-sm">
@@ -308,7 +312,7 @@ export function OrdersView({ project, orders, currency, onNew, onRefresh, showTo
           number={printing.number}
           onClose={() => setPrinting(null)}
           meta={[
-            { label: "Obra", value: `${project.code} · ${project.name}` },
+            { label: "Obra", value: `${(printing.project ?? project).code} · ${(printing.project ?? project).name}` },
             { label: "Proveedor", value: `${printing.partner?.name ?? "—"}${printing.partner?.taxId ? ` (RUC ${printing.partner.taxId})` : ""}` },
             { label: "Pedido", value: printing.materialRequest?.number ?? "—" },
             { label: "Fecha", value: fmtDate(printing.fecha) },

@@ -143,7 +143,7 @@ export const CertificateExcelPreview: React.FC<CertificateExcelPreviewProps> = (
           res.measurementWarnings?.length
             ? `\n\n⚠ Supera la medición oficial:\n${res.measurementWarnings.map((w) => "• " + w).join("\n")}`
             : ""
-        }`
+        }${res.avisos?.length ? `\n\n${res.avisos.map((a) => "• " + a).join("\n")}` : ""}`
       );
       onRefresh();
     } catch (err: any) {

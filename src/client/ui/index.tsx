@@ -4,7 +4,7 @@
  * tablas cortas y estados vacíos que indican el próximo paso.
  */
 import React, { useEffect } from "react";
-import { X } from "lucide-react";
+import { ArrowLeft, X } from "lucide-react";
 import { formatMoney } from "../utils/format";
 import { formatGs, formatPct, formatQty } from "../utils/numbers";
 
@@ -12,8 +12,8 @@ export const cx = (...classes: (string | false | null | undefined)[]) => classes
 
 /* ─── Estructura de página ─────────────────────────────────────────────── */
 
-export function Page({ children, className }: { children: React.ReactNode; className?: string }) {
-  return <div className={cx("mx-auto w-full max-w-7xl space-y-6 pb-12", className)}>{children}</div>;
+export function Page({ children, className, fluid }: { children: React.ReactNode; className?: string; fluid?: boolean }) {
+  return <div className={cx("mx-auto w-full space-y-6 pb-12", fluid ? "max-w-none" : "max-w-7xl", className)}>{children}</div>;
 }
 
 export function PageHeader({
@@ -197,6 +197,68 @@ export function Tabs<T extends string>({
   );
 }
 
+/* ─── Navegación por secciones (home de un módulo con submódulos) ────────── */
+
+export interface SectionNavItem<T extends string> {
+  value: T;
+  label: string;
+  description?: string;
+  icon?: React.ReactNode;
+  badge?: number;
+}
+
+export interface SectionNavGroup<T extends string> {
+  title: string;
+  items: SectionNavItem<T>[];
+}
+
+/**
+ * Home de un módulo con varios submódulos: un título por grupo y, debajo, tarjetas clicables
+ * (ícono + nombre + descripción de una línea). Reemplaza las filas de pestañas/pills cuando un
+ * módulo tiene muchos sub-destinos (Finanzas, Centro de Costos, Compras).
+ */
+export function SectionNav<T extends string>({ groups, onSelect }: { groups: SectionNavGroup<T>[]; onSelect: (value: T) => void }) {
+  return (
+    <div className="space-y-6">
+      {groups.map((group) => (
+        <div key={group.title}>
+          <h3 className="mb-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500">{group.title}</h3>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {group.items.map((item) => (
+              <button
+                key={item.value}
+                onClick={() => onSelect(item.value)}
+                className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-xs transition hover:border-brand-300 hover:bg-brand-50/40 hover:shadow-sm cursor-pointer"
+              >
+                {item.icon && <span className="mt-0.5 shrink-0 text-slate-500">{item.icon}</span>}
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-2">
+                    <span className="truncate text-sm font-semibold text-slate-900">{item.label}</span>
+                    {item.badge !== undefined && item.badge > 0 && (
+                      <span className="rounded-full bg-slate-100 px-1.5 text-[11px] font-semibold text-slate-600">{item.badge}</span>
+                    )}
+                  </span>
+                  {item.description && <span className="mt-0.5 block text-xs text-slate-500">{item.description}</span>}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** Botón "Volver" para salir de un submódulo y regresar al home de tarjetas (SectionNav). */
+export function BackButton({ onClick, label = "Volver" }: { onClick: () => void; label?: string }) {
+  return (
+    <button onClick={onClick} className="mb-4 inline-flex items-center gap-1.5 text-sm font-medium text-slate-600 hover:text-slate-900 cursor-pointer">
+      <ArrowLeft className="h-4 w-4" />
+      {label}
+    </button>
+  );
+}
+
 const BADGE: Record<Tone, string> = {
   neutral: "bg-slate-100 text-slate-700",
   good: "bg-emerald-50 text-emerald-700",
@@ -211,6 +273,31 @@ export function Badge({ tone = "neutral", children }: { tone?: Tone; children: R
       {children}
     </span>
   );
+}
+
+/** Estados de documentos (pedidos, OC): pastilla redondeada con punto de color. */
+export type PillTone = Tone | "info" | "violet";
+const PILL: Record<PillTone, { box: string; dot: string }> = {
+  neutral: { box: "bg-slate-100 text-slate-700 ring-slate-200", dot: "bg-slate-400" },
+  info: { box: "bg-sky-50 text-sky-800 ring-sky-200", dot: "bg-sky-500" },
+  violet: { box: "bg-violet-50 text-violet-800 ring-violet-200", dot: "bg-violet-500" },
+  warn: { box: "bg-amber-50 text-amber-800 ring-amber-200", dot: "bg-amber-500" },
+  good: { box: "bg-emerald-50 text-emerald-800 ring-emerald-200", dot: "bg-emerald-500" },
+  bad: { box: "bg-rose-50 text-rose-700 ring-rose-200", dot: "bg-rose-500" },
+  brand: { box: "bg-brand-50 text-brand-700 ring-brand-200", dot: "bg-brand-500" },
+};
+
+export function StatusPill({ tone = "neutral", children }: { tone?: PillTone; children: React.ReactNode }) {
+  return (
+    <span className={cx("inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset", PILL[tone].box)}>
+      <span className={cx("h-1.5 w-1.5 rounded-full", PILL[tone].dot)} />
+      {children}
+    </span>
+  );
+}
+
+export function StatusDot({ tone = "neutral" }: { tone?: PillTone }) {
+  return <span className={cx("inline-block h-2 w-2 rounded-full", PILL[tone].dot)} />;
 }
 
 export function EmptyState({

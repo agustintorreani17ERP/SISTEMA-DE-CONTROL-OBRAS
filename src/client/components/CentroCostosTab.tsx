@@ -1,17 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
-  ChevronDown,
-  ChevronRight,
-  Edit2,
+  Calculator,
   FileSpreadsheet,
+  FileText,
   Layers,
   Plus,
   RefreshCw,
   Scale,
   Search,
+  Settings,
   SlidersHorizontal,
-  Trash2,
+  TrendingUp,
+  Users,
   X,
 } from "lucide-react";
 import { api } from "../api";
@@ -21,7 +22,7 @@ import { ExcelBudgetImporter } from "./ExcelBudgetImporter";
 import { RubrosExtrasTab } from "./RubrosExtrasTab";
 import { BudgetItemSelect } from "./BudgetItemSelect";
 import { LaborPricesPanel } from "./LaborPricesPanel";
-import { Button, EmptyState, Page, PageHeader, Stat, StatGrid, Tabs } from "../ui";
+import { BackButton, Button, EmptyState, Modal, Page, PageHeader, SectionNav } from "../ui";
 import { MoreMenu } from "../ui/actions";
 import { CostSheet } from "../costos/CostSheet";
 import { buildSheetRows } from "../costos/sheetModel";
@@ -80,15 +81,13 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
   initialOpenImporter = false,
   laborImportNonce,
 }) => {
-  const [subTab, setSubTab] = useState<SubTab>(initialOpenImporter ? "importer" : "control");
+  const [subTab, setSubTab] = useState<SubTab | null>(initialOpenImporter ? "importer" : null);
   const [data, setData] = useState<CostControlData | null>(null);
   const [loading, setLoading] = useState(false);
-  const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState("");
   const [onlyOver, setOnlyOver] = useState(false);
   const [onlyPareto, setOnlyPareto] = useState(false);
   const [acuItemId, setAcuItemId] = useState<number | null>(null);
-  const [view, setView] = useState<"tecnica" | "costos">("tecnica");
   const [rubroFilter, setRubroFilter] = useState<number | "">("");
   const [collapsedSheet, setCollapsedSheet] = useState<Set<number>>(new Set());
   const [collapseInit, setCollapseInit] = useState(false);
@@ -96,6 +95,7 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
   const [movements, setMovements] = useState<BudgetMovement[]>([]);
   const [itemModal, setItemModal] = useState<{ mode: "create" | "edit"; node?: CostNode } | null>(null);
   const [adjustOpen, setAdjustOpen] = useState(false);
+  const [paramsOpen, setParamsOpen] = useState(false);
 
   const money = (v: number) => formatMoney(v, currency);
 
@@ -137,41 +137,12 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
     [data, rubroFilter, onlyOver, onlyPareto, search, collapsedSheet]
   );
 
-  const children = useMemo(() => {
-    const map = new Map<number | null, CostNode[]>();
-    for (const n of data?.nodes ?? []) {
-      const key = n.parentId;
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(n);
-    }
-    return map;
-  }, [data]);
-
-  // Con búsqueda o filtro se muestran las partidas que coinciden y sus rubros.
-  const visible = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q && !onlyOver) return null;
-    const byId = new Map((data?.nodes ?? []).map((n) => [n.id, n]));
-    const keep = new Set<number>();
-    for (const n of data?.nodes ?? []) {
-      const matches = (!q || `${n.code} ${n.name}`.toLowerCase().includes(q)) && (!onlyOver || n.overBudget);
-      if (!matches) continue;
-      let cur: CostNode | undefined = n;
-      while (cur) {
-        keep.add(cur.id);
-        cur = cur.parentId === null ? undefined : byId.get(cur.parentId);
-      }
-    }
-    return keep;
-  }, [data, search, onlyOver]);
-
-  const toggle = (id: number) =>
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  // Áreas = rubros raíz del presupuesto (no de sistema): filtran la planilla y generan los
+  // frentes de trabajo del parte diario (sync automático en el backend).
+  const areas = useMemo(
+    () => (data?.nodes ?? []).filter((n) => n.parentId === null && n.nodeKind !== "ITEM" && !n.isSystem),
+    [data]
+  );
 
   const openDetail = async (node: CostNode) => {
     setDetail(node);
@@ -215,70 +186,10 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
     }
   };
 
-  const renderRows = (parentId: number | null, depth: number): React.ReactNode =>
-    (children.get(parentId) ?? [])
-      .filter((n) => !visible || visible.has(n.id))
-      .map((n) => {
-        const isItem = n.nodeKind === "ITEM";
-        const open = visible ? true : expanded.has(n.id);
-        return (
-          <React.Fragment key={n.id}>
-            <tr
-              onClick={() => (isItem ? openDetail(n) : toggle(n.id))}
-              className={`cursor-pointer border-b border-stone-100 hover:bg-amber-50/40 ${
-                n.nodeKind === "RUBRO" ? "bg-stone-50 font-semibold" : ""
-              } ${n.overBudget ? "bg-rose-50/70" : ""}`}
-            >
-              <td className="py-1.5 pr-2 font-mono text-[11px] text-stone-500" style={{ paddingLeft: depth * 16 + 8 }}>
-                <span className="inline-flex items-center gap-1">
-                  {!isItem &&
-                    (open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />)}
-                  {n.code}
-                </span>
-              </td>
-              <td className="max-w-[320px] truncate py-1.5 pr-2" title={n.name}>
-                {n.name}
-                {n.isSystem && n.nodeKind === "RUBRO" && (
-                  <span className="ml-2 rounded bg-stone-200 px-1 text-[10px] font-normal text-stone-600">sistema</span>
-                )}
-              </td>
-              <td className="py-1.5 pr-2 text-stone-500">{isItem ? n.unit : ""}</td>
-              <td className="py-1.5 pr-2 text-right font-mono">{isItem ? qty(n.totalQuantity) : ""}</td>
-              <td className="py-1.5 pr-2 text-right font-mono">{isItem ? money(n.unitPrice) : ""}</td>
-              <td className="py-1.5 pr-2 text-right font-mono">{money(n.budget)}</td>
-              <td className="py-1.5 pr-2 text-right font-mono text-amber-800">{money(n.committed)}</td>
-              <td className="py-1.5 pr-2 text-right font-mono text-stone-700">{money(n.actual)}</td>
-              <td className="py-1.5 pr-2 text-right font-mono text-indigo-700">{isItem && n.subcontractQuantity ? qty(n.subcontractQuantity) : ""}</td>
-              <td className={`py-1.5 pr-2 text-right font-mono font-bold ${n.balance < 0 ? "text-rose-700" : "text-emerald-700"}`}>
-                {money(n.balance)}
-              </td>
-              <td className="py-1.5 pr-2 text-right font-mono text-emerald-800">
-                {isItem ? `${qty(n.certifiedQuantity)} · ${pct(n.progressPct)}` : pct(n.progressPct)}
-              </td>
-              <td className="py-1.5 pr-2 text-right" onClick={(e) => e.stopPropagation()}>
-                {!n.isSystem && (
-                  <span className="inline-flex gap-1">
-                    <button onClick={() => setItemModal({ mode: "edit", node: n })} className="rounded p-1 text-stone-400 hover:text-stone-800" aria-label="Editar">
-                      <Edit2 className="h-3.5 w-3.5" />
-                    </button>
-                    <button onClick={() => removeItem(n)} className="rounded p-1 text-stone-400 hover:text-rose-600" aria-label="Borrar">
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </span>
-                )}
-              </td>
-            </tr>
-            {!isItem && open && renderRows(n.id, depth + 1)}
-          </React.Fragment>
-        );
-      });
-
-  const k = data?.kpis;
-  const sourceTotal = Object.entries(k?.bySource ?? {}).reduce((a, [, v]) => a + (v ?? 0), 0);
   const empty = (data?.nodes ?? []).filter((n) => !n.isSystem).length === 0;
 
   return (
-    <Page>
+    <Page fluid={subTab === "control"}>
       <PageHeader
         title="Centro de Costos"
         help="Previsto contra ejecutado por ítem, y todo lo que se descontó: compras, subcontratos, caja chica y certificados."
@@ -300,87 +211,40 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
         }
       />
 
-      <Tabs
-        value={subTab}
-        onChange={setSubTab}
-        items={[
-          { value: "control", label: "Control" },
-          { value: "acu", label: "ACU", count: data?.kpis.itemsConAcu },
-          { value: "avance", label: "Avance y cierres" },
-          { value: "costo-real", label: "Costo real" },
-          { value: "mano-obra", label: "Precios de mano de obra" },
-          { value: "adendas", label: "Adendas y extras" },
-          { value: "importer", label: "Importar presupuesto" },
-        ]}
-      />
+      {subTab === null ? (
+        <SectionNav<SubTab>
+          onSelect={setSubTab}
+          groups={[
+            {
+              title: "Presupuesto",
+              items: [
+                { value: "control", label: "Control", description: "Previsto contra ejecutado por ítem", icon: <Layers className="h-5 w-5" /> },
+                { value: "importer", label: "Importar presupuesto", description: "Cargar o reemplazar el presupuesto desde Excel", icon: <FileSpreadsheet className="h-5 w-5" /> },
+              ],
+            },
+            {
+              title: "Costos",
+              items: [
+                { value: "acu", label: "ACU", description: "Análisis de costo unitario por ítem", icon: <Calculator className="h-5 w-5" />, badge: data?.kpis.itemsConAcu },
+                { value: "costo-real", label: "Costo real", description: "Costo incurrido por ítem en el rango", icon: <Scale className="h-5 w-5" /> },
+                { value: "mano-obra", label: "Precios de mano de obra", description: "Lista de precios de subcontratistas", icon: <Users className="h-5 w-5" /> },
+              ],
+            },
+            {
+              title: "Avance",
+              items: [
+                { value: "avance", label: "Avance y cierres", description: "Mediciones y cierres oficiales del período", icon: <TrendingUp className="h-5 w-5" /> },
+                { value: "adendas", label: "Adendas y extras", description: "Rubros y partidas fuera del presupuesto base", icon: <FileText className="h-5 w-5" /> },
+              ],
+            },
+          ]}
+        />
+      ) : (
+        <BackButton onClick={() => setSubTab(null)} />
+      )}
 
       {subTab === "control" && (
         <>
-          {data && project && !empty && (
-            <CostParamsBar
-              projectId={project.id}
-              coeficienteK={data.project.coeficienteK}
-              ivaPct={data.project.ivaPct}
-              onSaved={load}
-              showToast={showToast}
-            />
-          )}
-          {k && (
-            <StatGrid>
-              <Stat label="Total previsto" value={money(k.budget)} hint={`${data?.nodes.filter((n) => n.nodeKind === "ITEM" && !n.isSystem).length} partidas`} />
-              <Stat label="Total ejecutado" value={money(k.certified)} tone="brand" hint={`${pct(k.budget > 0 ? k.certified / k.budget : 0, 1)} de avance físico`} />
-              <Stat label="Costo comprometido" value={money(k.committed)} tone="warn" hint={`Saldo de costo ${money(k.balance)}`} />
-              <button
-                onClick={() => {
-                  setView("tecnica");
-                  setOnlyOver(true);
-                }}
-                className="text-left"
-                title="Ver solo los ítems con desvío"
-              >
-                <Stat
-                  label="Ítems con excedente"
-                  value={k.exceededItems}
-                  tone={k.exceededItems > 0 ? "bad" : "good"}
-                  hint={k.exceededItems > 0 ? "Ejecutado supera lo previsto · tocá para verlos" : "Ningún ítem supera lo previsto"}
-                />
-              </button>
-            </StatGrid>
-          )}
-          {k && !empty && (
-            <StatGrid>
-              <Stat
-                label="Costo meta (sin IVA)"
-                value={money(k.costoMeta)}
-                hint={`${k.itemsConAcu} ítems con ACU${k.itemsSinCostoMeta ? ` · ${k.itemsSinCostoMeta} sin costo meta` : ""}`}
-              />
-              <Stat
-                label="Margen previsto s/ venta sin IVA"
-                value={k.margenPct === null ? "—" : pct(k.margenPct)}
-                tone={k.margenPct !== null && k.margenPct < 0 ? "bad" : "neutral"}
-                hint={`${money(k.margenPrevisto)} sobre ${money(k.ventaSinIva)} de venta sin IVA`}
-              />
-              <button onClick={() => setSubTab("acu")} className="text-left" title="Ver los ACU">
-                <Stat
-                  label="ACU que superan la oferta"
-                  value={k.itemsSuperanOferta}
-                  tone={k.itemsSuperanOferta > 0 ? "bad" : "neutral"}
-                  hint={k.itemsSuperanOferta > 0 ? "Pierden margen antes de empezar · tocá para verlos" : "Ningún ACU supera PU ÷ K"}
-                />
-              </button>
-              <button
-                onClick={() => {
-                  setView("tecnica");
-                  setOnlyPareto(true);
-                }}
-                className="text-left"
-                title="Filtrar la planilla por Pareto"
-              >
-                <Stat label="Pareto 80 %" value={`${k.itemsPareto} ítems`} hint="Concentran el 80 % del monto · tocá para filtrar" />
-              </button>
-            </StatGrid>
-          )}
-
           {empty ? (
             <EmptyState
               icon={<Scale className="h-10 w-10" />}
@@ -396,37 +260,25 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
             <>
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                 <div className="flex flex-wrap items-center gap-2">
-                  <div className="flex rounded-xl border border-slate-200 bg-white p-0.5 text-sm font-medium">
-                    {(
-                      [
-                        ["tecnica", "Planilla técnica"],
-                        ["costos", "Costos"],
-                      ] as const
-                    ).map(([v, label]) => (
+                  <div className="flex flex-wrap rounded-xl border border-slate-200 bg-white p-0.5 text-sm font-medium">
+                    <button
+                      onClick={() => setRubroFilter("")}
+                      className={`rounded-lg px-3 py-1.5 ${rubroFilter === "" ? "bg-slate-900 text-white" : "text-slate-600"}`}
+                    >
+                      Todas las áreas
+                    </button>
+                    {areas.map((a) => (
                       <button
-                        key={v}
-                        onClick={() => setView(v)}
-                        className={`rounded-lg px-3 py-1.5 ${view === v ? "bg-slate-900 text-white" : "text-slate-600"}`}
+                        key={a.id}
+                        onClick={() => setRubroFilter(a.id)}
+                        title={a.name}
+                        className={`max-w-48 truncate rounded-lg px-3 py-1.5 ${rubroFilter === a.id ? "bg-slate-900 text-white" : "text-slate-600"}`}
                       >
-                        {label}
+                        {a.code ? `${a.code} · ` : ""}
+                        {a.name}
                       </button>
                     ))}
                   </div>
-                  <select
-                    value={rubroFilter}
-                    onChange={(e) => setRubroFilter(e.target.value ? Number(e.target.value) : "")}
-                    className="max-w-64 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm"
-                  >
-                    <option value="">Todos los rubros</option>
-                    {(data?.nodes ?? [])
-                      .filter((n) => n.parentId === null && n.nodeKind !== "ITEM")
-                      .map((n) => (
-                        <option key={n.id} value={n.id}>
-                          {n.code ? `${n.code} · ` : ""}
-                          {n.name}
-                        </option>
-                      ))}
-                  </select>
                   <button
                     onClick={() => setOnlyOver(!onlyOver)}
                     className={`rounded-full border px-3 py-1.5 text-sm font-medium ${
@@ -455,21 +307,25 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
                       className="w-56 rounded-xl border border-slate-200 bg-white py-2 pl-8 pr-3 text-sm focus:border-brand-500 focus:outline-none"
                     />
                   </div>
+                  {project && (
+                    <button
+                      onClick={() => setParamsOpen(true)}
+                      title="K e IVA de la obra"
+                      className="rounded-xl border border-slate-200 bg-white p-2 text-slate-600 hover:bg-slate-50"
+                      aria-label="K e IVA de la obra"
+                    >
+                      <Settings className="h-4 w-4" />
+                    </button>
+                  )}
                   <MoreMenu
                     items={[
                       {
                         label: "Expandir todo",
-                        onClick: () => {
-                          setCollapsedSheet(new Set());
-                          setExpanded(new Set(headingIds));
-                        },
+                        onClick: () => setCollapsedSheet(new Set()),
                       },
                       {
                         label: "Contraer todo",
-                        onClick: () => {
-                          setCollapsedSheet(new Set(headingIds));
-                          setExpanded(new Set());
-                        },
+                        onClick: () => setCollapsedSheet(new Set(headingIds)),
                       },
                       {
                         label: "Exportar todo a Excel",
@@ -488,54 +344,43 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
                 </div>
               </div>
 
-              {view === "tecnica" ? (
-                <CostSheet
-                  rows={sheetRows}
-                  nodes={data?.nodes ?? []}
-                  filtered={sheetFiltered}
-                  collapsed={collapsedSheet}
-                  onToggle={(id) =>
-                    setCollapsedSheet((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(id)) next.delete(id);
-                      else next.add(id);
-                      return next;
-                    })
-                  }
-                  onOpenItem={openDetail}
-                  onOpenAcu={(n) => {
-                    setAcuItemId(n.id);
-                    setSubTab("acu");
-                  }}
-                />
-              ) : (
-                <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
-                  <table className="w-full min-w-[1100px] text-xs">
-                    <thead className="border-b border-slate-200 text-[10px] uppercase tracking-wider text-slate-500">
-                      <tr>
-                        <th className="py-2 pl-2 text-left">Código</th>
-                        <th className="py-2 text-left">Descripción</th>
-                        <th className="py-2 text-left">Un.</th>
-                        <th className="py-2 pr-2 text-right">Cant.</th>
-                        <th className="py-2 pr-2 text-right">P. unit.</th>
-                        <th className="py-2 pr-2 text-right">Previsto</th>
-                        <th className="py-2 pr-2 text-right">Comprometido</th>
-                        <th className="py-2 pr-2 text-right">Gastado</th>
-                        <th className="py-2 pr-2 text-right" title="Cantidad ejecutada por subcontratistas (interno)">
-                          Subc. cant.
-                        </th>
-                        <th className="py-2 pr-2 text-right">Saldo de costo</th>
-                        <th className="py-2 pr-2 text-right" title="Certificado al cliente">
-                          Avance real
-                        </th>
-                        <th className="py-2 pr-2"></th>
-                      </tr>
-                    </thead>
-                    <tbody>{renderRows(null, 0)}</tbody>
-                  </table>
-                </div>
-              )}
+              <CostSheet
+                rows={sheetRows}
+                nodes={data?.nodes ?? []}
+                filtered={sheetFiltered}
+                collapsed={collapsedSheet}
+                onToggle={(id) =>
+                  setCollapsedSheet((prev) => {
+                    const next = new Set(prev);
+                    if (next.has(id)) next.delete(id);
+                    else next.add(id);
+                    return next;
+                  })
+                }
+                onOpenItem={openDetail}
+                onOpenAcu={(n) => {
+                  setAcuItemId(n.id);
+                  setSubTab("acu");
+                }}
+                onEdit={(n) => setItemModal({ mode: "edit", node: n })}
+                onDelete={removeItem}
+              />
             </>
+          )}
+
+          {paramsOpen && project && data && (
+            <Modal title="K e IVA de la obra" size="lg" onClose={() => setParamsOpen(false)}>
+              <CostParamsBar
+                projectId={project.id}
+                coeficienteK={data.project.coeficienteK}
+                ivaPct={data.project.ivaPct}
+                onSaved={() => {
+                  load();
+                  setParamsOpen(false);
+                }}
+                showToast={showToast}
+              />
+            </Modal>
           )}
         </>
       )}

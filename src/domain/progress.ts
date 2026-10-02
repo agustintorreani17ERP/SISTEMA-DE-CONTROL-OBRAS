@@ -1,5 +1,5 @@
 import { Prisma, PrismaClient } from "@prisma/client";
-import { DomainError } from "../errors/domain";
+import { DomainError, NotFoundError } from "../errors/domain";
 import { moneyNumber } from "../lib/money";
 import { computeItemsAcu } from "./acu";
 import { toDay, today } from "./prices";
@@ -27,10 +27,17 @@ export async function assertOpenPeriod(db: Db, projectId: number, fecha: Date | 
   if (cierre) {
     throw new DomainError(
       "PERIOD_CLOSED",
-      `${que} tiene fecha ${fmt(day)} y la obra está cerrada oficialmente hasta el ${fmt(cierre.hasta)}: lo cerrado no se edita`,
+      `${que} tiene fecha ${fmt(day)} y la obra está cerrada oficialmente hasta el ${fmt(cierre.hasta)}: lo cerrado no se edita. ` +
+        `Cargalo con fecha posterior al ${fmt(cierre.hasta)} o pedí a un administrador que reabra el último cierre (Centro de Costos › Avance › Cierres oficiales).`,
       409
     );
   }
+}
+
+/** Última fecha cerrada oficialmente de la obra (inclusive), o null si no hay cierres. */
+export async function cerradoHasta(db: Db, projectId: number): Promise<Date | null> {
+  const last = await db.cierrePeriodo.findFirst({ where: { projectId }, orderBy: { hasta: "desc" } });
+  return last?.hasta ?? null;
 }
 
 /**
@@ -45,6 +52,10 @@ export async function fechaContable(db: Db, projectId: number, fecha: Date | str
   next.setUTCDate(next.getUTCDate() + 1);
   return { fecha: next, desplazada: true };
 }
+
+/** Aviso para un documento que se contabilizó el primer día abierto. */
+export const avisoTardio = (que: string, d: { fechaDocumento: Date; fechaContable: Date }) =>
+  `${que} tiene fecha ${fmt(d.fechaDocumento)}, en un período cerrado: su costo se contabiliza el ${fmt(d.fechaContable)} (primer día abierto).`;
 
 export async function loadFacts(db: Db, projectId: number, hasta?: Date | string) {
   const rows = await db.avanceItem.findMany({
@@ -173,10 +184,18 @@ export async function progressReport(db: Db, projectId: number, desde: string, h
 
 async function closingChecks(db: Db, projectId: number, desde: Date, hasta: Date) {
   if (desde > hasta) throw new DomainError("INVALID_RANGE", "La fecha desde es posterior a la fecha hasta", 400);
-  if (hasta > today()) throw new DomainError("FUTURE_CLOSE", "No se puede cerrar un período que todavía no terminó", 400);
+  if (hasta > today()) {
+    throw new DomainError("FUTURE_CLOSE", `No se puede cerrar un período que todavía no terminó: elegí como fecha hasta el ${fmt(today())} o antes.`, 400);
+  }
   const last = await db.cierrePeriodo.findFirst({ where: { projectId }, orderBy: { hasta: "desc" } });
   if (last && desde <= last.hasta) {
-    throw new DomainError("CLOSE_OVERLAP", `El nuevo cierre tiene que empezar después del último (${fmt(last.hasta)})`, 409);
+    const next = new Date(last.hasta);
+    next.setUTCDate(next.getUTCDate() + 1);
+    throw new DomainError(
+      "CLOSE_OVERLAP",
+      `El nuevo cierre tiene que empezar después del último (cerrado hasta el ${fmt(last.hasta)}): usá como desde el ${fmt(next)}. Para corregir el último cierre, reabrilo primero.`,
+      409
+    );
   }
   const blockers: string[] = [];
   const abiertas = await db.certification.findMany({
@@ -221,6 +240,44 @@ export async function closePeriod(
       createdBy: params.createdBy || null,
     },
   });
+}
+
+/**
+ * Reabre el último cierre oficial de la obra (los anteriores no se reabren): guarda una copia con
+ * su snapshot y el motivo en CierreReapertura y lo borra, así sus fechas vuelven a estar abiertas.
+ * La factura al cliente que tuviera queda vigente (desvinculada): lo facturado se descuenta al volver a cerrar.
+ */
+export async function reopenLastClosing(tx: Prisma.TransactionClient, cierreId: number, params: { motivo: string; usuario?: string | null }) {
+  const motivo = params.motivo.trim();
+  if (motivo.length < 10) throw new DomainError("REOPEN_REASON", "Escribí el motivo de la reapertura (al menos 10 caracteres).", 422);
+  const cierre = await tx.cierrePeriodo.findUnique({ where: { id: cierreId }, include: { factura: { select: { id: true, numeroFactura: true } } } });
+  if (!cierre) throw new NotFoundError("Cierre", cierreId);
+  const last = await tx.cierrePeriodo.findFirst({ where: { projectId: cierre.projectId }, orderBy: { hasta: "desc" } });
+  if (last && last.id !== cierre.id) {
+    throw new DomainError(
+      "REOPEN_NOT_LAST",
+      `Solo se puede reabrir el último cierre (${fmt(last.desde)} – ${fmt(last.hasta)}); los cierres anteriores no se reabren.`,
+      409
+    );
+  }
+  const archivo = await tx.cierreReapertura.create({
+    data: {
+      projectId: cierre.projectId,
+      cierreIdOriginal: cierre.id,
+      desde: cierre.desde,
+      hasta: cierre.hasta,
+      snapshot: cierre.snapshot as Prisma.InputJsonValue,
+      notas: cierre.notas,
+      cerradoPor: cierre.createdBy,
+      cerradoEl: cierre.createdAt,
+      facturaId: cierre.factura?.id ?? null,
+      motivo,
+      reabiertoPor: params.usuario || null,
+    },
+  });
+  if (cierre.factura) await tx.invoice.update({ where: { id: cierre.factura.id }, data: { cierreId: null } });
+  await tx.cierrePeriodo.delete({ where: { id: cierre.id } });
+  return { archivo, cierre: { id: cierre.id, projectId: cierre.projectId, desde: iso(cierre.desde), hasta: iso(cierre.hasta) }, factura: cierre.factura ?? null };
 }
 
 /** Cierre que contiene la fecha, o null. */

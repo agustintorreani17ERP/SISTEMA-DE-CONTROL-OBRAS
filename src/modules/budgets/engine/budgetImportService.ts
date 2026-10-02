@@ -3,6 +3,7 @@ import { prisma } from "../../../lib/prisma";
 import { DomainError, NotFoundError } from "../../../errors/domain";
 import { ensureGeneralExpenses } from "../../../domain/generalExpenses";
 import { recalculateProjectFinancials } from "../../../domain/projectFinancials";
+import { syncWorkFrontsFromAreas } from "../../../domain/workFrontSync";
 import { buildBudgetTree } from "./budgetTree";
 import { ExtractedWorkbook } from "./matrixExtractor";
 import { generatePreview } from "./preview";
@@ -200,6 +201,7 @@ export class BudgetImportService {
           },
         });
         await recalculateProjectFinancials(tx, project.id);
+        await syncWorkFrontsFromAreas(tx, project.id);
 
         return {
           success: true,

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { PageHeader } from "../ui";
+import { BackButton, PageHeader, SectionNav } from "../ui";
 import {
   DollarSign,
   Receipt,
@@ -32,6 +32,8 @@ import {
   Loader2,
   Scale,
   Landmark,
+  BookOpen,
+  BarChart3,
 } from "lucide-react";
 import {
   Project,
@@ -49,8 +51,12 @@ import { RegisterPaymentModal } from "./RegisterPaymentModal";
 import { NewInvoiceModal } from "./NewInvoiceModal";
 import { PettyCashPanel } from "./PettyCashPanel";
 import { BancosCajasPanel } from "./BancosCajasPanel";
+import { CuentasCorrientesPanel } from "./CuentasCorrientesPanel";
+import { LibrosPanel } from "./LibrosPanel";
+import { ReportesPanel } from "./ReportesPanel";
 import { ConciliacionPanel } from "../contabilidad/ConciliacionPanel";
 import { ImputarFacturaModal } from "../contabilidad/ImputarFacturaModal";
+import { SolicitudesFondosPanel } from "../fondos/SolicitudesFondosPanel";
 import { api } from "../api";
 
 import { formatGs } from "../utils/numbers";
@@ -64,10 +70,10 @@ interface ContabilidadFinanzasTabProps {
   currency: "PYG" | "USD";
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
   onRefresh: () => void;
-  initialSubTab?: "facturas" | "auditoria-match" | "cuentas-pagar" | "cuentas-cobrar" | "caja-chica" | "bancos-cajas" | "conciliacion";
+  initialSubTab?: SubTab | null;
 }
 
-type SubTab = "facturas" | "auditoria-match" | "cuentas-pagar" | "cuentas-cobrar" | "caja-chica" | "bancos-cajas" | "conciliacion";
+type SubTab = "facturas" | "auditoria-match" | "cuentas-pagar" | "cuentas-cobrar" | "solicitudes-fondos" | "caja-chica" | "bancos-cajas" | "libros" | "reportes" | "conciliacion";
 
 /** Factura recibida sin OC ni certificado que todavía no se imputó por renglón. */
 const needsImputation = (inv: any) =>
@@ -87,9 +93,9 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
   currency,
   showToast,
   onRefresh,
-  initialSubTab = "facturas",
+  initialSubTab = null,
 }) => {
-  const [subTab, setSubTab] = useState<SubTab>(initialSubTab);
+  const [subTab, setSubTab] = useState<SubTab | null>(initialSubTab);
 
   // API Invoices State
   const [apiInvoices, setApiInvoices] = useState<any[]>([]);
@@ -478,108 +484,46 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
         </div>
       </div>
 
-      {/* Navigation Subtabs Bar */}
-      <div className="border-b border-slate-200 pb-2">
-        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1">
-          <button
-            onClick={() => setSubTab("facturas")}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-              subTab === "facturas"
-                ? "bg-blue-50 text-blue-700 border border-blue-200 shadow-xs"
-                : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
-            }`}
-          >
-            <Receipt className="w-4 h-4" />
-            <span>Recepción de Facturas Fiscales</span>
-            <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-slate-200 text-slate-700">
-              {apiInvoices.length}
-            </span>
-          </button>
-
-          <button
-            onClick={() => setSubTab("auditoria-match")}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-              subTab === "auditoria-match"
-                ? "bg-blue-50 text-blue-700 border border-blue-200 shadow-xs"
-                : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
-            }`}
-          >
-            <ShieldCheck className="w-4 h-4 text-emerald-600" />
-            <span>Auditoría Three-Way Match (Matriz)</span>
-            {countEnRevisionMatch > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">
-                {countEnRevisionMatch}
-              </span>
-            )}
-          </button>
-
-          <button
-            onClick={() => setSubTab("cuentas-pagar")}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-              subTab === "cuentas-pagar"
-                ? "bg-blue-50 text-blue-700 border border-blue-200 shadow-xs"
-                : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
-            }`}
-          >
-            <Clock className="w-4 h-4" />
-            <span>Cuentas por Pagar (Corrida)</span>
-            {totalVencido > 0 && (
-              <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700">
-                Alerta
-              </span>
-            )}
-          </button>
-
-          <button
-            onClick={() => setSubTab("cuentas-cobrar")}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-              subTab === "cuentas-cobrar"
-                ? "bg-blue-50 text-blue-700 border border-blue-200 shadow-xs"
-                : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
-            }`}
-          >
-            <FileCheck className="w-4 h-4" />
-            <span>Cuentas por Cobrar (Cliente)</span>
-            <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
-              {clientCerts.length}
-            </span>
-          </button>
-
-          <button
-            onClick={() => setSubTab("caja-chica")}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-              subTab === "caja-chica"
-                ? "bg-blue-50 text-blue-700 border border-blue-200 shadow-xs"
-                : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
-            }`}
-          >
-            <Banknote className="w-4 h-4" />
-            <span>Fondo Fijo / Caja Chica</span>
-          </button>
-
-          <button
-            onClick={() => setSubTab("bancos-cajas")}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-              subTab === "bancos-cajas"
-                ? "bg-blue-50 text-blue-700 border border-blue-200 shadow-xs"
-                : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
-            }`}
-          >
-            <Landmark className="w-4 h-4" />
-            <span>Bancos y cajas</span>
-          </button>
-
-          <button
-            onClick={() => setSubTab("conciliacion")}
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
-              subTab === "conciliacion" ? "border border-slate-900 text-slate-900" : "text-slate-600 hover:text-slate-900 hover:bg-slate-50"
-            }`}
-          >
-            <Scale className="w-4 h-4" />
-            <span>Conciliación con costos</span>
-          </button>
-        </div>
-      </div>
+      {/* Home de tarjetas por submódulo, o botón volver + contenido del submódulo elegido */}
+      {subTab === null ? (
+        <SectionNav<SubTab>
+          onSelect={setSubTab}
+          groups={[
+            {
+              title: "Facturación",
+              items: [
+                { value: "facturas", label: "Recepción de facturas fiscales", description: "Three-way match y registro de facturas", icon: <Receipt className="h-5 w-5" />, badge: apiInvoices.length },
+                { value: "auditoria-match", label: "Auditoría de match", description: "Matriz comparativa OC / certificado / factura", icon: <ShieldCheck className="h-5 w-5 text-emerald-600" />, badge: countEnRevisionMatch },
+              ],
+            },
+            {
+              title: "Cuentas corrientes",
+              items: [
+                { value: "cuentas-cobrar", label: "A cobrar", description: "Facturas al cliente, saldo y antigüedad", icon: <FileCheck className="h-5 w-5" />, badge: clientCerts.length },
+                { value: "cuentas-pagar", label: "A pagar", description: "Corrida de vencimientos a proveedores", icon: <Clock className="h-5 w-5" /> },
+                { value: "solicitudes-fondos", label: "Solicitudes de fondos", description: "Aprobar, programar y pagar (certificados y anticipos)", icon: <Send className="h-5 w-5" /> },
+              ],
+            },
+            {
+              title: "Caja y bancos",
+              items: [
+                { value: "caja-chica", label: "Fondo fijo / Caja chica", description: "Gastos y rendiciones del fondo de obra", icon: <Banknote className="h-5 w-5" /> },
+                { value: "bancos-cajas", label: "Bancos y cajas", description: "Saldos, movimientos, cheques y transferencias", icon: <Landmark className="h-5 w-5" /> },
+              ],
+            },
+            {
+              title: "Libros y reportes",
+              items: [
+                { value: "libros", label: "Libros", description: "Diario, mayor, IVA compras/ventas", icon: <BookOpen className="h-5 w-5" /> },
+                { value: "reportes", label: "Reportes", description: "Estado de resultados, balance, flujo de caja", icon: <BarChart3 className="h-5 w-5" /> },
+                { value: "conciliacion", label: "Conciliación con costos", description: "Documentos vs. libro mayor vs. motor de costos", icon: <Scale className="h-5 w-5" /> },
+              ],
+            },
+          ]}
+        />
+      ) : (
+        <BackButton onClick={() => setSubTab(null)} />
+      )}
 
       {/* VIEW 1: RECEPCION DE FACTURAS FISCALES & THREE-WAY MATCH */}
       {subTab === "facturas" && (
@@ -1065,6 +1009,8 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
       {/* VIEW 3: CUENTAS POR PAGAR (CORRIDA SEMANAL DE VENCIMIENTOS) */}
       {subTab === "cuentas-pagar" && (
         <div className="space-y-4">
+          <CuentasCorrientesPanel project={project} tipo="RECIBIDA" partners={partners} showToast={showToast} />
+
           <div className="p-3.5 rounded-xl bg-amber-50/80 border border-amber-200 flex items-start gap-3">
             <Clock className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
             <div className="text-xs leading-relaxed text-slate-700">
@@ -1227,6 +1173,8 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
       {/* VIEW 4: CUENTAS POR COBRAR (CLIENTE / ENTE CONTRATANTE) */}
       {subTab === "cuentas-cobrar" && (
         <div className="space-y-4">
+          <CuentasCorrientesPanel project={project} tipo="EMITIDA" partners={partners} showToast={showToast} />
+
           <div className="p-3.5 rounded-xl bg-emerald-50/80 border border-emerald-200 flex items-start justify-between gap-4">
             <div className="flex items-start gap-3">
               <FileCheck className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
@@ -1333,7 +1281,13 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
         <PettyCashPanel project={project} currency={currency} showToast={showToast} onChanged={loadPettySummary} />
       )}
 
+      {subTab === "solicitudes-fondos" && project && <SolicitudesFondosPanel project={project} showToast={showToast} />}
+
       {subTab === "bancos-cajas" && <BancosCajasPanel project={project} showToast={showToast} />}
+
+      {subTab === "libros" && <LibrosPanel showToast={showToast} />}
+
+      {subTab === "reportes" && <ReportesPanel showToast={showToast} />}
 
       {/* VIEW 6: CONCILIACIÓN DOCUMENTOS ↔ LIBRO MAYOR ↔ MOTOR DE COSTOS */}
       {subTab === "conciliacion" && project && <ConciliacionPanel project={project} showToast={showToast} />}
@@ -1390,6 +1344,10 @@ export const ContabilidadFinanzasTab: React.FC<ContabilidadFinanzasTabProps> = (
           onProceedPayment={(inv) => {
             setSelectedInvoiceMatch(null);
             setSelectedInvoicePay(inv);
+          }}
+          onImputar={(inv) => {
+            setSelectedInvoiceMatch(null);
+            setFacturaImputar(inv);
           }}
           onMatchUpdated={() => {
             fetchInvoices();

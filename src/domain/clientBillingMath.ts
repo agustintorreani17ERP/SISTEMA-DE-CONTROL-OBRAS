@@ -46,3 +46,35 @@ export function buildClientInvoice(rows: BillingRow[], ivaPct: number, retencion
   const retencion = Math.round((total * retencionPct) / 100);
   return { lineas, total, iva, sinIva: total - iva, ivaPct, retencionPct, retencion, netoACobrar: total - retencion, negativos };
 }
+
+/**
+ * Pendiente de facturar por ítem: medición oficial acumulada − lo ya facturado al cliente
+ * (certificados aprobados, cierres y cierres reabiertos). Es la regla que evita la doble facturación.
+ */
+export function pendienteDeFacturar(oficial: Map<number, number>, facturado: Map<number, number>): Map<number, number> {
+  const out = new Map<number, number>();
+  for (const id of new Set([...oficial.keys(), ...facturado.keys()])) {
+    const p = Math.round(((oficial.get(id) ?? 0) - (facturado.get(id) ?? 0)) * 10_000) / 10_000;
+    if (p !== 0) out.set(id, p);
+  }
+  return out;
+}
+
+/**
+ * Cantidades a facturar de las líneas de un certificado: cada una hasta lo pendiente de su ítem
+ * (lo que ya facturó un cierre no se vuelve a facturar). Las negativas (correcciones) pasan igual
+ * y terminan como nota de crédito. Puro.
+ */
+export function limitarAPendiente<T extends { budgetItemId: number; cantidad: number }>(lineas: T[], pendiente: Map<number, number>) {
+  const resto = new Map(pendiente);
+  const recortadas: T[] = [];
+  const out = lineas.map((l) => {
+    if (l.cantidad <= 0) return l;
+    const disponible = Math.max(0, resto.get(l.budgetItemId) ?? 0);
+    const cantidad = Math.min(l.cantidad, disponible);
+    resto.set(l.budgetItemId, disponible - cantidad);
+    if (cantidad < l.cantidad) recortadas.push(l);
+    return { ...l, cantidad };
+  });
+  return { lineas: out, recortadas };
+}

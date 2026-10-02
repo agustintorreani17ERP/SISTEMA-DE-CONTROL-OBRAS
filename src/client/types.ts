@@ -242,6 +242,61 @@ export interface Cheque {
   notas?: string | null;
 }
 
+export type AgingBucket = "A_VENCER" | "0-30" | "31-60" | "61-90" | "+90";
+
+export interface FacturaCuentaCorriente {
+  id: number;
+  numeroFactura: string;
+  tipo: "EMITIDA" | "RECIBIDA";
+  estado: string;
+  partner?: { id: number; name: string; taxId: string } | null;
+  fechaEmision: string;
+  fechaVencimiento: string;
+  total: number;
+  montoRetenido: number;
+  totalPagado: number;
+  saldo: number;
+  bucket: AgingBucket | null;
+  diasVencido: number;
+}
+
+export interface Anticipo {
+  id: number;
+  projectId: number;
+  partnerId?: number | null;
+  partner?: { id: number; name: string } | null;
+  tipo: "OTORGADO" | "RECIBIDO";
+  monto: number;
+  fecha: string;
+  concepto?: string | null;
+  saldoAplicado: number;
+  saldoPendiente: number;
+  estado: "PENDIENTE" | "PARCIAL" | "LIBERADO";
+}
+
+export interface RetencionFondo {
+  id: number;
+  projectId: number;
+  partnerId?: number | null;
+  partner?: { id: number; name: string } | null;
+  tipo: "FONDO_REPARO" | "RETENCION_GARANTIA";
+  monto: number;
+  fecha: string;
+  sourceType: string;
+  sourceId: number;
+  saldoLiberado: number;
+  saldoPendiente: number;
+  estado: "PENDIENTE" | "PARCIAL" | "LIBERADO";
+  notas?: string | null;
+}
+
+export interface ConfigRetencionesAnticipos {
+  projectId: number;
+  pctFondoReparo: number;
+  pctRetencionGarantia: number;
+  pctAnticipo: number;
+}
+
 export interface WorkFront {
   id: number;
   projectId: number;
@@ -249,6 +304,8 @@ export interface WorkFront {
   name: string;
   chiefId?: number | null;
   chief?: Personnel | null;
+  /** Rubro raíz del presupuesto que generó este frente automáticamente; null = frente manual. */
+  budgetItemId?: number | null;
 }
 
 export interface Personnel {
@@ -303,7 +360,7 @@ export interface MaterialRequest {
   workFront?: WorkFront | null;
   requestedBy?: Personnel | null;
   details?: MaterialRequestDetail[];
-  purchaseOrders?: { id: number; number: string; status: string }[];
+  purchaseOrders?: { id: number; number: string; status: MaterialRequest["status"] }[];
   createdAt: string;
 }
 
@@ -701,7 +758,8 @@ export interface ProjectOverview {
     overBudget: boolean;
   }[];
   pending: PendingItem[];
-  cash: { receivable: number; payable: number };
+  /** requested = solicitudes de fondos sin pagar (saldo). */
+  cash: { receivable: number; payable: number; requested: number };
   curve: { label: string; values: { certified: number; cost: number } }[];
 }
 
@@ -1292,4 +1350,85 @@ export interface ParteEquipoRow {
   nota: string | null;
   insumo?: { code: string; description: string; unit: string };
   budgetItem?: { code: string; name: string } | null;
+}
+
+// Solicitudes de fondos (tesorería)
+export type EstadoSolicitudFondo = "PENDIENTE" | "APROBADA" | "RECHAZADA" | "PROGRAMADA" | "PAGADA_PARCIAL" | "PAGADA" | "ANULADA";
+export type OrigenSolicitudFondo = "CERT_SUBCONTRATISTA" | "ANTICIPO" | "FACTURA";
+
+export interface SolicitudFondo {
+  id: number;
+  projectId: number;
+  numero: number;
+  origen: OrigenSolicitudFondo;
+  sourceType: string;
+  sourceId: number;
+  partnerId: number;
+  invoiceId?: number | null;
+  anticipoId?: number | null;
+  concepto: string;
+  montoBruto: number;
+  descuentoReparo: number;
+  descuentoRetenciones: number;
+  descuentoAnticipo: number;
+  montoNeto: number;
+  montoPagado: number;
+  saldo: number;
+  fechaVencimiento: string;
+  fechaProgramada?: string | null;
+  estado: EstadoSolicitudFondo;
+  vencida: boolean;
+  cuentaFinancieraId?: number | null;
+  motivoRechazo?: string | null;
+  creadoPor: string;
+  aprobadoPor?: string | null;
+  createdAt: string;
+  project?: { id: number; code: string; name: string };
+  partner?: { id: number; name: string; taxId: string };
+  invoice?: { id: number; numeroFactura: string; estado: string } | null;
+  cuentaFinanciera?: { id: number; nombre: string } | null;
+}
+
+export interface SolicitudesFondosFiltros {
+  projectId?: number;
+  estado?: EstadoSolicitudFondo[];
+  origen?: OrigenSolicitudFondo | "";
+  partnerId?: number;
+  desde?: string;
+  hasta?: string;
+  vencidas?: "1" | "";
+  montoMin?: number;
+  montoMax?: number;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface SolicitudesFondosPage {
+  rows: SolicitudFondo[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totales: Record<EstadoSolicitudFondo, { cantidad: number; neto: number; pagado: number; saldo: number }>;
+  solicitadoSinPagar: number;
+}
+
+export interface PagoSolicitudInput {
+  cuentaFinancieraId?: number | null;
+  fecha?: string;
+  metodo?: "TRANSFERENCIA" | "EFECTIVO";
+  referencia: string;
+}
+
+export interface AnticipoOtorgado {
+  id: number;
+  projectId: number;
+  partnerId: number | null;
+  partner?: { id: number; name: string } | null;
+  monto: number;
+  fecha: string;
+  concepto?: string | null;
+  saldoAplicado: number;
+  saldoPendiente: number;
+  anuladoAt?: string | null;
+  solicitud: { id: number; numero: number; estado: EstadoSolicitudFondo; montoPagado: number } | null;
 }

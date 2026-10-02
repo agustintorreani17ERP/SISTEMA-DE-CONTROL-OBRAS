@@ -12,7 +12,8 @@ import {
   WarehouseStock,
   WorkFront,
 } from "../types";
-import { Page, PageHeader, Tabs } from "../ui";
+import { PackageSearch, ShoppingCart } from "lucide-react";
+import { BackButton, Page, PageHeader, SectionNav } from "../ui";
 import { RequestsView } from "../compras/RequestsView";
 import { OrdersView } from "../compras/OrdersView";
 import { RequestForm } from "../compras/RequestForm";
@@ -22,6 +23,7 @@ export type ComprasIntent = { action: "new-request" | "new-order"; nonce: number
 
 interface SuministrosTabProps {
   project?: Project | null;
+  /** Pedidos y OC de todas las obras: el filtro de alcance decide cuáles se ven. */
   materialRequests: MaterialRequest[];
   purchaseOrders: PurchaseOrder[];
   stock: WarehouseStock[];
@@ -36,11 +38,21 @@ interface SuministrosTabProps {
   intent?: ComprasIntent;
   onRefresh: () => void;
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
-  initialSubTab?: "pedidos" | "compras" | "stock" | "materiales" | "proveedores";
-  onSubTabChange?: (sub: "pedidos" | "compras" | "stock" | "materiales" | "proveedores") => void;
+  initialSubTab?: "pedidos" | "compras" | "stock" | "materiales" | "proveedores" | null;
+  onSubTabChange?: (sub: "pedidos" | "compras" | "stock" | "materiales" | "proveedores" | null) => void;
 }
 
 type Sub = "pedidos" | "compras";
+type Alcance = "obra" | "todas";
+const ALCANCE_KEY = "compras.alcance";
+
+const readAlcance = (): Alcance => {
+  try {
+    return localStorage.getItem(ALCANCE_KEY) === "todas" ? "todas" : "obra";
+  } catch {
+    return "obra";
+  }
+};
 
 /** Compras: 1. Pedidos de obra → 2. Órdenes de compra. El stock tiene su propio módulo. */
 export const SuministrosTab: React.FC<SuministrosTabProps> = ({
@@ -59,11 +71,21 @@ export const SuministrosTab: React.FC<SuministrosTabProps> = ({
   initialSubTab,
   onSubTabChange,
 }) => {
-  const [sub, setSubState] = useState<Sub>(initialSubTab === "compras" ? "compras" : "pedidos");
+  const [sub, setSubState] = useState<Sub | null>(initialSubTab === "compras" || initialSubTab === "pedidos" ? initialSubTab : null);
   const [requestFormOpen, setRequestFormOpen] = useState(false);
   const [orderForm, setOrderForm] = useState<{ requestId: number | null } | null>(null);
+  const [alcance, setAlcanceState] = useState<Alcance>(readAlcance);
 
-  const setSub = (value: Sub) => {
+  const setAlcance = (value: Alcance) => {
+    setAlcanceState(value);
+    try {
+      localStorage.setItem(ALCANCE_KEY, value);
+    } catch {
+      /* sin almacenamiento: solo dura la sesión */
+    }
+  };
+
+  const setSub = (value: Sub | null) => {
     setSubState(value);
     onSubTabChange?.(value);
   };
@@ -87,25 +109,61 @@ export const SuministrosTab: React.FC<SuministrosTabProps> = ({
 
   if (!project) return null;
 
-  const pendingRequests = materialRequests.filter((r) => r.status === "BORRADOR" || r.status === "APROBADO_PARA_COMPRA").length;
-  const pendingOrders = purchaseOrders.filter((o) => ["BORRADOR", "APROBADO_PARA_COMPRA", "EMITIDA"].includes(o.status)).length;
+  // Los formularios de OC siempre trabajan sobre la obra seleccionada
+  const projectRequests = materialRequests.filter((r) => r.projectId === project.id);
+  const projectOrders = purchaseOrders.filter((o) => o.projectId === project.id);
+  const todas = alcance === "todas";
+  const requests = todas ? materialRequests : projectRequests;
+  const orders = todas ? purchaseOrders : projectOrders;
+
+  const pendingRequests = requests.filter((r) => r.status === "BORRADOR" || r.status === "APROBADO_PARA_COMPRA").length;
+  const pendingOrders = orders.filter((o) => ["BORRADOR", "APROBADO_PARA_COMPRA", "EMITIDA"].includes(o.status)).length;
+
+  const alcanceToggle = (
+    <div className="inline-flex rounded-lg border border-slate-200 bg-white p-0.5 text-xs font-medium">
+      {(
+        [
+          ["obra", `Esta obra · ${project.name}`],
+          ["todas", "Todas las obras"],
+        ] as const
+      ).map(([value, label]) => (
+        <button
+          key={value}
+          onClick={() => setAlcance(value)}
+          className={`max-w-[220px] truncate rounded-md px-3 py-1.5 transition ${alcance === value ? "bg-slate-900 text-white" : "text-slate-600 hover:text-slate-900"}`}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
 
   return (
     <Page>
       <PageHeader title="Compras" help="Pedido de obra → orden de compra. Al emitir la OC se descuenta del rubro; al recibirla entra al stock." />
-      <Tabs
-        value={sub}
-        onChange={setSub}
-        items={[
-          { value: "pedidos", label: "1. Pedidos", count: pendingRequests },
-          { value: "compras", label: "2. Órdenes de compra", count: pendingOrders },
-        ]}
-      />
+      <div className="flex justify-end">{alcanceToggle}</div>
+      {sub === null ? (
+        <SectionNav<Sub>
+          onSelect={setSub}
+          groups={[
+            {
+              title: "Compras",
+              items: [
+                { value: "pedidos", label: "1. Pedidos", description: "Pedidos de materiales del frente de obra", icon: <PackageSearch className="h-5 w-5" />, badge: pendingRequests },
+                { value: "compras", label: "2. Órdenes de compra", description: "Emitir y recibir órdenes de compra", icon: <ShoppingCart className="h-5 w-5" />, badge: pendingOrders },
+              ],
+            },
+          ]}
+        />
+      ) : (
+        <BackButton onClick={() => setSub(null)} />
+      )}
 
-      {sub === "pedidos" ? (
+      {sub === "pedidos" && (
         <RequestsView
           project={project}
-          requests={materialRequests}
+          requests={requests}
+          showProject={todas}
           onNew={() => setRequestFormOpen(true)}
           onCreateOrder={(r) => {
             setSub("compras");
@@ -114,10 +172,13 @@ export const SuministrosTab: React.FC<SuministrosTabProps> = ({
           onRefresh={onRefresh}
           showToast={showToast}
         />
-      ) : (
+      )}
+
+      {sub === "compras" && (
         <OrdersView
           project={project}
-          orders={purchaseOrders}
+          orders={orders}
+          showProject={todas}
           currency={currency}
           onNew={() => setOrderForm({ requestId: null })}
           onRefresh={onRefresh}
@@ -145,8 +206,8 @@ export const SuministrosTab: React.FC<SuministrosTabProps> = ({
       {orderForm && (
         <OrderForm
           project={project}
-          requests={materialRequests}
-          orders={purchaseOrders}
+          requests={projectRequests}
+          orders={projectOrders}
           partners={partners}
           initialRequestId={orderForm.requestId}
           currency={currency}

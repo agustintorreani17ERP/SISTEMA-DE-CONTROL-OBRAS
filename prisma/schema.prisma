@@ -174,38 +174,43 @@ model Project {
   createdAt              DateTime      @default(now())
   updatedAt              DateTime      @updatedAt
 
-  budgetItems        BudgetItem[]
-  budgetImports      BudgetImport[]
-  budgetMovements    BudgetMovement[]
-  laborPrices        LaborPrice[]
-  pettyCashFunds     PettyCashFund[]
-  workFronts         WorkFront[]
-  materialRequests   MaterialRequest[]
-  purchaseOrders     PurchaseOrder[]
-  subcontracts       SubcontractorContract[]
-  warehouseStock     WarehouseStock[]
-  stockMovements     StockMovement[]
-  stockTransfersIn   StockMovement[]         @relation("StockTransferCounterpart")
-  avances            AvanceItem[]
-  avancesPlan        AvancePlanificado[]
-  cierres            CierrePeriodo[]
-  partesEquipo       ParteEquipo[]
-  partesDiarios      ParteDiario[]
-  horasPersonal      ParteHoraPersonal[]
-  cargasCombustible  CargaCombustible[]
-  viajesCamion       ViajeCamion[]
-  conteos            ConteoInventario[]
-  certificaciones    Certificacion[]
-  certifications     Certification[]
-  backups            ProjectBackup[]
-  invoices           Invoice[]
-  empleados          Empleado[]
-  asistencias        Asistencia[]
-  liquidaciones      LiquidacionPersonal[]
-  rrhhConfig         RRHHConfig?
-  asientos           Asiento[]
-  lineasAsiento      LineaAsiento[]
-  cuentasFinancieras CuentaFinanciera[]
+  budgetItems                BudgetItem[]
+  budgetImports              BudgetImport[]
+  budgetMovements            BudgetMovement[]
+  laborPrices                LaborPrice[]
+  pettyCashFunds             PettyCashFund[]
+  workFronts                 WorkFront[]
+  materialRequests           MaterialRequest[]
+  purchaseOrders             PurchaseOrder[]
+  subcontracts               SubcontractorContract[]
+  warehouseStock             WarehouseStock[]
+  stockMovements             StockMovement[]
+  stockTransfersIn           StockMovement[]             @relation("StockTransferCounterpart")
+  avances                    AvanceItem[]
+  avancesPlan                AvancePlanificado[]
+  cierres                    CierrePeriodo[]
+  reaperturas                CierreReapertura[]
+  partesEquipo               ParteEquipo[]
+  partesDiarios              ParteDiario[]
+  horasPersonal              ParteHoraPersonal[]
+  cargasCombustible          CargaCombustible[]
+  viajesCamion               ViajeCamion[]
+  conteos                    ConteoInventario[]
+  certificaciones            Certificacion[]
+  certifications             Certification[]
+  backups                    ProjectBackup[]
+  invoices                   Invoice[]
+  empleados                  Empleado[]
+  asistencias                Asistencia[]
+  liquidaciones              LiquidacionPersonal[]
+  rrhhConfig                 RRHHConfig?
+  asientos                   Asiento[]
+  lineasAsiento              LineaAsiento[]
+  cuentasFinancieras         CuentaFinanciera[]
+  anticipos                  Anticipo[]
+  retencionesFondo           RetencionFondo[]
+  configRetencionesAnticipos ConfigRetencionesAnticipos?
+  solicitudesFondo           SolicitudFondo[]
 
   @@index([status])
 }
@@ -281,6 +286,7 @@ model BudgetItem {
   viajesCamion       ViajeCamion[]
   facturaItems       InvoiceItem[]
   lineasAsiento      LineaAsiento[]
+  workFront          WorkFront?
 
   @@unique([projectId, path])
   @@index([projectId])
@@ -314,25 +320,27 @@ model BudgetImport {
 
 /// Libro mayor presupuestario: cada descuento es una fila; anular crea un reverso, nunca borra.
 model BudgetMovement {
-  id           Int                  @id @default(autoincrement())
-  projectId    Int
-  budgetItemId Int
+  id             Int                  @id @default(autoincrement())
+  projectId      Int
+  budgetItemId   Int
   /// Insumo del hecho (renglón de OC, gasto de caja chica, MO del subcontratista…), si se conoce.
-  insumoId     Int?
-  source       BudgetMovementSource
-  stage        BudgetMovementStage
-  amount       Decimal              @db.Decimal(18, 2)
-  quantity     Decimal?             @db.Decimal(18, 4)
-  sourceType   String
-  sourceId     Int
-  sourceNumber String?
+  insumoId       Int?
+  source         BudgetMovementSource
+  stage          BudgetMovementStage
+  amount         Decimal              @db.Decimal(18, 2)
+  quantity       Decimal?             @db.Decimal(18, 4)
+  sourceType     String
+  sourceId       Int
+  sourceNumber   String?
   /// Fecha del hecho (OC, recepción, transferencia…). createdAt es solo la hora de registro.
-  fecha        DateTime             @default(now()) @db.Date
-  reversalOfId Int?
-  overBudget   Boolean              @default(false)
-  note         String?
-  createdBy    String?
-  createdAt    DateTime             @default(now())
+  fecha          DateTime             @default(now()) @db.Date
+  /// Fecha real del documento cuando llegó tarde (período cerrado) y se contabilizó en `fecha`, el primer día abierto.
+  fechaDocumento DateTime?            @db.Date
+  reversalOfId   Int?
+  overBudget     Boolean              @default(false)
+  note           String?
+  createdBy      String?
+  createdAt      DateTime             @default(now())
 
   project     Project              @relation(fields: [projectId], references: [id], onDelete: Restrict)
   budgetItem  BudgetItem           @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
@@ -405,15 +413,18 @@ model Personnel {
 }
 
 model WorkFront {
-  id        Int    @id @default(autoincrement())
-  projectId Int
-  name      String
-  chiefId   Int?
+  id           Int    @id @default(autoincrement())
+  projectId    Int
+  name         String
+  chiefId      Int?
+  /// Rubro raíz (Área) del presupuesto que generó este frente automáticamente. Null = frente manual.
+  budgetItemId Int?   @unique
 
-  project  Project           @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  chief    Personnel?        @relation(fields: [chiefId], references: [id], onDelete: Restrict)
-  requests MaterialRequest[]
-  partes   ParteDiario[]
+  project    Project           @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  chief      Personnel?        @relation(fields: [chiefId], references: [id], onDelete: Restrict)
+  budgetItem BudgetItem?       @relation(fields: [budgetItemId], references: [id], onDelete: SetNull)
+  requests   MaterialRequest[]
+  partes     ParteDiario[]
 
   @@index([projectId])
 }
@@ -430,13 +441,16 @@ model Partner {
   active         Boolean     @default(true)
   createdAt      DateTime    @default(now())
 
-  purchaseOrders  PurchaseOrder[]
-  subcontracts    SubcontractorContract[]
-  certificaciones Certificacion[]
-  certifications  Certification[]
-  invoices        Invoice[]
-  lineasAsiento   LineaAsiento[]
-  cheques         Cheque[]
+  purchaseOrders   PurchaseOrder[]
+  subcontracts     SubcontractorContract[]
+  certificaciones  Certificacion[]
+  certifications   Certification[]
+  invoices         Invoice[]
+  lineasAsiento    LineaAsiento[]
+  cheques          Cheque[]
+  anticipos        Anticipo[]
+  retencionesFondo RetencionFondo[]
+  solicitudesFondo SolicitudFondo[]
 }
 
 /// Vía de imputación al Centro de Costos (ver CLAUDE.md).
@@ -699,6 +713,8 @@ model StockMovement {
   /// Con signo: entradas positivas, salidas negativas.
   quantity             Decimal           @db.Decimal(18, 4)
   fecha                DateTime          @default(now()) @db.Date
+  /// Fecha real del documento (recepción tardía) cuando `fecha` se movió al primer día abierto.
+  fechaDocumento       DateTime?         @db.Date
   /// Ítem de destino (salida directa).
   budgetItemId         Int?
   /// Otra obra de una transferencia.
@@ -766,6 +782,8 @@ model Invoice {
   montoIva5        Decimal       @default(0) @db.Decimal(18, 2)
   montoIva10       Decimal       @default(0) @db.Decimal(18, 2)
   total            Decimal       @db.Decimal(18, 2)
+  /// Fondo de reparo retenido por el comitente (EMITIDA): se cobra después, al liberarse (RetencionFondo).
+  montoRetenido    Decimal       @default(0) @db.Decimal(18, 2)
 
   // Three-Way Match audit fields
   threeWayMatchPassed Boolean   @default(false)
@@ -792,12 +810,15 @@ model Invoice {
   cierreId Int?           @unique
   cierre   CierrePeriodo? @relation(fields: [cierreId], references: [id], onDelete: Restrict)
 
-  items    InvoiceItem[]
-  payments Payment[]
+  items            InvoiceItem[]
+  payments         Payment[]
+  solicitudesFondo SolicitudFondo[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// Una factura emitida (al cliente) y una recibida (del subcontratista) por certificado, como máximo.
+  @@unique([certificationId, tipo])
   @@index([projectId, tipo, estado])
   @@index([partnerId])
   @@index([numeroFactura, timbrado])
@@ -835,14 +856,18 @@ model Payment {
   referenciaBanco    String
   comprobanteUrl     String?
   notas              String?
+  /// Agrupa pagos creados en una misma corrida que cancela varias facturas (pago múltiple).
+  grupoPagoId        String?
   createdAt          DateTime      @default(now())
 
-  invoice          Invoice          @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
-  cuentaFinanciera CuentaFinanciera @relation(fields: [cuentaFinancieraId], references: [id], onDelete: Restrict)
+  invoice          Invoice             @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  cuentaFinanciera CuentaFinanciera    @relation(fields: [cuentaFinancieraId], references: [id], onDelete: Restrict)
   cheque           Cheque?
+  pagoSolicitud    PagoSolicitudFondo?
 
   @@index([invoiceId])
   @@index([cuentaFinancieraId])
+  @@index([grupoPagoId])
 }
 
 /// Banco o caja de la obra. Todo Payment usa una CuentaFinanciera; el saldo nunca se guarda
@@ -869,6 +894,8 @@ model CuentaFinanciera {
   cheques               Cheque[]
   transferenciasOrigen  TransferenciaCuenta[]        @relation("TransferenciaOrigen")
   transferenciasDestino TransferenciaCuenta[]        @relation("TransferenciaDestino")
+  solicitudesFondo      SolicitudFondo[]
+  pagosSolicitud        PagoSolicitudFondo[]
 
   @@index([projectId])
 }
@@ -933,6 +960,99 @@ model TransferenciaCuenta {
 
   @@index([cuentaOrigenId])
   @@index([cuentaDestinoId])
+}
+
+enum TipoAnticipo {
+  OTORGADO
+  RECIBIDO
+}
+
+enum TipoRetencion {
+  FONDO_REPARO
+  RETENCION_GARANTIA
+}
+
+enum EstadoSaldoPendiente {
+  PENDIENTE
+  PARCIAL
+  LIBERADO
+}
+
+/// Anticipo dado a un subcontratista/proveedor (OTORGADO) o recibido del cliente (RECIBIDO).
+/// partnerId null = comitente (cliente de la obra). El saldo pendiente de aplicar se calcula
+/// como monto - saldoAplicado (nunca se sobreescribe el monto original).
+model Anticipo {
+  id            Int                  @id @default(autoincrement())
+  projectId     Int
+  partnerId     Int?
+  tipo          TipoAnticipo
+  monto         Decimal              @db.Decimal(18, 2)
+  fecha         DateTime             @db.Date
+  concepto      String?
+  saldoAplicado Decimal              @default(0) @db.Decimal(18, 2)
+  estado        EstadoSaldoPendiente @default(PENDIENTE)
+  /// Anulado: no se borra (puede tener su solicitud de fondos ANULADA).
+  anuladoAt     DateTime?
+  createdAt     DateTime             @default(now())
+
+  project          Project              @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  partner          Partner?             @relation(fields: [partnerId], references: [id], onDelete: SetNull)
+  aplicaciones     AplicacionAnticipo[]
+  solicitudesFondo SolicitudFondo[]
+
+  @@index([projectId, partnerId])
+}
+
+/// Cada vez que un anticipo se descuenta de una factura o certificado (hecho fechado).
+model AplicacionAnticipo {
+  id         Int      @id @default(autoincrement())
+  anticipoId Int
+  monto      Decimal  @db.Decimal(18, 2)
+  fecha      DateTime @db.Date
+  sourceType String
+  sourceId   Int
+  createdAt  DateTime @default(now())
+
+  anticipo Anticipo @relation(fields: [anticipoId], references: [id], onDelete: Cascade)
+
+  @@index([anticipoId])
+  @@index([sourceType, sourceId])
+}
+
+/// Fondo de reparo o retención de garantía: un monto retenido pendiente de devolución/liberación
+/// a favor de un tercero (partnerId) o del comitente (partnerId null = retenido por nosotros al
+/// cliente, es decir que ESE monto nos lo queda debiendo la obra). saldoLiberado nunca excede monto.
+model RetencionFondo {
+  id            Int                  @id @default(autoincrement())
+  projectId     Int
+  partnerId     Int?
+  tipo          TipoRetencion
+  monto         Decimal              @db.Decimal(18, 2)
+  fecha         DateTime             @db.Date
+  sourceType    String
+  sourceId      Int
+  saldoLiberado Decimal              @default(0) @db.Decimal(18, 2)
+  estado        EstadoSaldoPendiente @default(PENDIENTE)
+  notas         String?
+  createdAt     DateTime             @default(now())
+
+  project Project  @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  partner Partner? @relation(fields: [partnerId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, partnerId])
+  @@index([sourceType, sourceId])
+}
+
+/// Porcentajes por defecto de fondo de reparo / retención / anticipo de la obra (config, no código).
+model ConfigRetencionesAnticipos {
+  id                   Int      @id @default(autoincrement())
+  projectId            Int      @unique
+  pctFondoReparo       Decimal  @default(5) @db.Decimal(7, 4)
+  pctRetencionGarantia Decimal  @default(0) @db.Decimal(7, 4)
+  pctAnticipo          Decimal  @default(0) @db.Decimal(7, 4)
+  updatedAt            DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 }
 
 model Certification {
@@ -1265,6 +1385,28 @@ model CierrePeriodo {
   @@index([projectId, hasta])
 }
 
+/// Cierre oficial reabierto: copia del cierre (con su snapshot) antes de borrarlo. Solo se reabre el último.
+model CierreReapertura {
+  id               Int      @id @default(autoincrement())
+  projectId        Int
+  cierreIdOriginal Int
+  desde            DateTime @db.Date
+  hasta            DateTime @db.Date
+  snapshot         Json
+  notas            String?
+  cerradoPor       String?
+  cerradoEl        DateTime
+  /// Factura al cliente que tenía el cierre (queda vigente, desvinculada del cierre).
+  facturaId        Int?
+  motivo           String
+  reabiertoPor     String?
+  createdAt        DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Restrict)
+
+  @@index([projectId, hasta])
+}
+
 /// Horas de un equipo (insumo TIEMPO) en la obra, del parte diario. Sin ítem: se prorratea.
 /// Son la llave de reparto de los costos por tiempo (vía C), no un costo en sí.
 model ParteEquipo {
@@ -1472,4 +1614,90 @@ model LineaAsiento {
   @@index([asientoId])
   @@index([cuentaId])
   @@index([projectId])
+}
+
+enum OrigenSolicitudFondo {
+  CERT_SUBCONTRATISTA
+  ANTICIPO
+  FACTURA
+}
+
+enum EstadoSolicitudFondo {
+  PENDIENTE
+  APROBADA
+  RECHAZADA
+  PROGRAMADA
+  PAGADA_PARCIAL
+  PAGADA
+  ANULADA
+}
+
+/// Pedido de pago a tesorería, generado por el documento que crea la deuda (certificado de
+/// subcontratista aprobado, anticipo otorgado, factura). Una por origen (sourceType + sourceId).
+/// Es tesorería: nunca toca BudgetMovement (el costo ya entró con el documento origen).
+/// montoPagado es caché de la suma de sus PagoSolicitudFondo.
+model SolicitudFondo {
+  id                   Int                  @id @default(autoincrement())
+  projectId            Int
+  /// Correlativo por obra.
+  numero               Int
+  origen               OrigenSolicitudFondo
+  sourceType           String
+  sourceId             Int
+  partnerId            Int
+  invoiceId            Int?
+  anticipoId           Int?
+  concepto             String
+  montoBruto           Decimal              @db.Decimal(18, 2)
+  descuentoReparo      Decimal              @default(0) @db.Decimal(18, 2)
+  descuentoRetenciones Decimal              @default(0) @db.Decimal(18, 2)
+  descuentoAnticipo    Decimal              @default(0) @db.Decimal(18, 2)
+  montoNeto            Decimal              @db.Decimal(18, 2)
+  fechaVencimiento     DateTime             @db.Date
+  estado               EstadoSolicitudFondo @default(PENDIENTE)
+  fechaProgramada      DateTime?            @db.Date
+  cuentaFinancieraId   Int?
+  montoPagado          Decimal              @default(0) @db.Decimal(18, 2)
+  motivoRechazo        String?
+  creadoPor            String
+  aprobadoPor          String?
+  createdAt            DateTime             @default(now())
+  updatedAt            DateTime             @updatedAt
+
+  project          Project              @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  partner          Partner              @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  invoice          Invoice?             @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  anticipo         Anticipo?            @relation(fields: [anticipoId], references: [id], onDelete: SetNull)
+  cuentaFinanciera CuentaFinanciera?    @relation(fields: [cuentaFinancieraId], references: [id], onDelete: SetNull)
+  pagos            PagoSolicitudFondo[]
+
+  @@unique([sourceType, sourceId])
+  @@unique([projectId, numero])
+  @@index([projectId, estado])
+  @@index([partnerId])
+  @@index([fechaVencimiento])
+}
+
+/// Cada pago (parcial o total) de una solicitud: hecho fechado. Con factura enlaza el Payment;
+/// sin factura (anticipo) solo el egreso de la cuenta.
+model PagoSolicitudFondo {
+  id                 Int           @id @default(autoincrement())
+  solicitudId        Int
+  cuentaFinancieraId Int
+  monto              Decimal       @db.Decimal(18, 2)
+  fecha              DateTime      @db.Date
+  metodo             PaymentMethod @default(TRANSFERENCIA)
+  referencia         String
+  paymentId          Int?          @unique
+  /// Pago en lote: mismo id para todas las solicitudes de la corrida.
+  grupoPagoId        String?
+  usuario            String?
+  createdAt          DateTime      @default(now())
+
+  solicitud        SolicitudFondo   @relation(fields: [solicitudId], references: [id], onDelete: Restrict)
+  cuentaFinanciera CuentaFinanciera @relation(fields: [cuentaFinancieraId], references: [id], onDelete: Restrict)
+  payment          Payment?         @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  @@index([solicitudId])
+  @@index([grupoPagoId])
 }

@@ -12,8 +12,8 @@ import { recordStockMovement } from "../../domain/stock";
 import { ledgerLines, resolveLineItem } from "../../domain/imputation";
 import { EVENTO, postAsientoDesdeRegla } from "../../domain/contabilidad";
 import { toDay } from "../../domain/prices";
-import { assertOpenPeriod } from "../../domain/progress";
 import { toDecimal } from "../../lib/money";
+import { avisoTardio } from "../../domain/progress";
 import { recalculateProjectFinancials } from "../../domain/projectFinancials";
 
 export const purchaseOrdersRouter = Router();
@@ -76,7 +76,7 @@ purchaseOrdersRouter.post(
           );
         }
 
-        await assertOpenPeriod(tx, request.projectId, body.fecha, "La orden de compra");
+        // Una OC con fecha de un período cerrado se acepta: conserva su fecha y su costo entra el primer día abierto.
         const partner = await tx.partner.findUnique({ where: { id: body.partnerId } });
         if (!partner) throw new NotFoundError("Proveedor", body.partnerId);
         if (partner.kind === "SUBCONTRACTOR") {
@@ -199,13 +199,13 @@ purchaseOrdersRouter.post(
           throw new TraceabilityError("La OC no está vinculada a un Pedido de Material");
         }
         assertDocTransition(order.status, DocumentStatus.EMITIDA);
-        await assertOpenPeriod(tx, order.projectId, order.fecha, "La orden de compra");
 
         // DIRECTO (y TIEMPO con ítem) a su ítem; COMÚN y TIEMPO sin ítem al pozo "a distribuir".
         const lines = await ledgerLines(tx, order.projectId, order.details);
         const budgetWarnings: BudgetWarning[] = [];
+        const avisos: string[] = [];
         for (const { budgetItemId, insumoId, amount } of lines) {
-          const { warnings } = await postMovement(tx, {
+          const { warnings, desplazado } = await postMovement(tx, {
             projectId: order.projectId,
             budgetItemId,
             insumoId,
@@ -219,6 +219,7 @@ purchaseOrdersRouter.post(
             fecha: order.fecha,
           });
           budgetWarnings.push(...warnings);
+          if (desplazado && !avisos.length) avisos.push(avisoTardio("La OC", desplazado));
         }
 
         const next = await tx.purchaseOrder.update({
@@ -241,7 +242,7 @@ purchaseOrdersRouter.post(
           toStatus: next.status,
           payload: budgetWarnings.length ? { budgetWarnings: budgetWarnings.map((w) => w.message) } : undefined,
         });
-        return { ...next, budgetWarnings };
+        return { ...next, budgetWarnings, avisos };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
     );
@@ -269,7 +270,6 @@ purchaseOrdersRouter.post(
         });
         if (!order) throw new NotFoundError("Orden de compra", id);
         assertDocTransition(order.status, DocumentStatus.RECIBIDO);
-        await assertOpenPeriod(tx, order.projectId, fecha, "La recepción");
         if (fecha < order.fecha) {
           throw new DomainError("RECEIPT_BEFORE_ORDER", "La recepción no puede ser anterior a la fecha de la OC", 422);
         }
@@ -284,6 +284,8 @@ purchaseOrdersRouter.post(
             sourceId: order.id,
             unitCost: d.unitPrice,
             note: body.remito ? `Remito ${body.remito}` : null,
+            // Recepción tardía: si su fecha está cerrada, entra el primer día abierto.
+            tardio: true,
           };
           await recordStockMovement(tx, { ...base, kind: "RECEIPT", quantity: d.quantity });
           // DIRECTO: entra y sale en el mismo acto hacia su ítem (hormigón por remito, acero, etc.).
@@ -298,8 +300,9 @@ purchaseOrdersRouter.post(
         }
         const lines = await ledgerLines(tx, order.projectId, order.details);
         // El compromiso ya existe desde la emisión: aquí solo pasa a costo incurrido.
+        const avisos: string[] = [];
         for (const { budgetItemId, insumoId, amount } of lines) {
-          await postMovement(tx, {
+          const { desplazado } = await postMovement(tx, {
             projectId: order.projectId,
             budgetItemId,
             insumoId,
@@ -312,6 +315,7 @@ purchaseOrdersRouter.post(
             note: `Recepción OC ${order.number}${body.remito ? ` · remito ${body.remito}` : ""}`,
             fecha,
           });
+          if (desplazado && !avisos.length) avisos.push(avisoTardio("La recepción", desplazado));
         }
         const totalLines = lines.reduce((acc, l) => acc.plus(l.amount), toDecimal(0));
         if (totalLines.gt(0)) {
@@ -344,7 +348,7 @@ purchaseOrdersRouter.post(
           fromStatus: order.status,
           toStatus: next.status,
         });
-        return next;
+        return { ...next, avisos };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
     );

@@ -12,6 +12,8 @@ import { toDecimal } from "../../lib/money";
 import { recalculateProjectFinancials } from "../../domain/projectFinancials";
 import { subcontractOverMeasured } from "../../domain/progress";
 import { EVENTO, postAsientoDesdeRegla } from "../../domain/contabilidad";
+import { anularSolicitudPorOrigen, solicitudDesdeCertificadoSubcontrato } from "../../domain/fondos";
+import { usuarioDe } from "../../http/usuario";
 
 export const subcontractsRouter = Router();
 
@@ -126,7 +128,7 @@ subcontractsRouter.post(
 );
 
 /** Certificar = aprobar el avance: descuenta costo (y cantidad) de la partida del contrato. */
-async function certifyCertificate(id: number) {
+async function certifyCertificate(id: number, usuario: string) {
   return prisma.$transaction(
     async (tx) => {
       const cert = await tx.subcontractorCertificate.findUnique({
@@ -134,7 +136,11 @@ async function certifyCertificate(id: number) {
         include: { contract: true },
       });
       if (!cert) throw new NotFoundError("Certificado", id);
-      if (cert.status === SubcontractStatus.CERTIFICADO) return { ...cert, budgetWarnings: [] as BudgetWarning[] };
+      if (cert.status === SubcontractStatus.CERTIFICADO) {
+        // Idempotente: genera la solicitud de fondos si faltaba (certificado anterior al módulo).
+        const solicitudFondo = await solicitudDesdeCertificadoSubcontrato(tx, id, usuario);
+        return { ...cert, solicitudFondo, budgetWarnings: [] as BudgetWarning[] };
+      }
       assertSubTransition(cert.status, SubcontractStatus.CERTIFICADO);
 
       const remainingContract = toDecimal(cert.contract.contractAmount).minus(
@@ -173,6 +179,25 @@ async function certifyCertificate(id: number) {
         haber: [{ monto: cert.amount, partnerId: cert.contract.partnerId }],
       });
 
+      const retentionPct = toDecimal(cert.contract.retentionPct);
+      if (retentionPct.gt(0)) {
+        const retencion = toDecimal(cert.amount).times(retentionPct).div(100);
+        if (retencion.gt(0)) {
+          await tx.retencionFondo.create({
+            data: {
+              projectId: cert.contract.projectId,
+              partnerId: cert.contract.partnerId,
+              tipo: "FONDO_REPARO",
+              monto: retencion,
+              fecha: new Date(),
+              sourceType: SUB_CERT,
+              sourceId: cert.id,
+              notas: `Fondo de reparo ${retentionPct}% — certificado ${cert.number} / ${cert.contract.number}`,
+            },
+          });
+        }
+      }
+
       const next = await tx.subcontractorCertificate.update({
         where: { id },
         data: { status: SubcontractStatus.CERTIFICADO, issuedAt: new Date() },
@@ -185,6 +210,8 @@ async function certifyCertificate(id: number) {
         },
       });
       await recalculateProjectFinancials(tx, cert.contract.projectId);
+      // Pedido de pago a tesorería: neto = monto − fondo de reparo − retenciones − anticipo aplicado.
+      const solicitudFondo = await solicitudDesdeCertificadoSubcontrato(tx, id, usuario);
       await audit(tx, {
         entity: SUB_CERT,
         entityId: id,
@@ -192,7 +219,7 @@ async function certifyCertificate(id: number) {
         fromStatus: cert.status,
         toStatus: next.status,
       });
-      return { ...next, budgetWarnings, measurementWarnings };
+      return { ...next, solicitudFondo, budgetWarnings, measurementWarnings };
     },
     { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
   );
@@ -201,7 +228,7 @@ async function certifyCertificate(id: number) {
 subcontractsRouter.post(
   "/certificados/:id/certificar",
   asyncHandler(async (req, res) => {
-    ok(res, await certifyCertificate(Number(req.params.id)));
+    ok(res, await certifyCertificate(Number(req.params.id), usuarioDe(req) || "sistema"));
   })
 );
 
@@ -209,7 +236,7 @@ subcontractsRouter.post(
 subcontractsRouter.post(
   "/certificados/:id/aprobar",
   asyncHandler(async (req, res) => {
-    ok(res, await certifyCertificate(Number(req.params.id)));
+    ok(res, await certifyCertificate(Number(req.params.id), usuarioDe(req) || "sistema"));
   })
 );
 
@@ -221,6 +248,8 @@ subcontractsRouter.post(
       const cert = await tx.subcontractorCertificate.findUnique({ where: { id }, include: { contract: true } });
       if (!cert) throw new NotFoundError("Certificado", id);
       assertSubTransition(cert.status, SubcontractStatus.ANULADO);
+      // Su solicitud de fondos queda ANULADA; si ya tiene pagos, no se puede anular.
+      await anularSolicitudPorOrigen(tx, SUB_CERT, id);
 
       if (cert.status === SubcontractStatus.CERTIFICADO) {
         await reverseMovements(tx, { sourceType: SUB_CERT, sourceId: id, note: `Anulación ${cert.number}` });

@@ -4,7 +4,7 @@
  */
 import React, { useEffect, useRef, useState } from "react";
 import { Check, MoreHorizontal, Search } from "lucide-react";
-import { cx } from "./index";
+import { cx, StatusDot, type PillTone } from "./index";
 
 /* ─── Menú desplegable ─────────────────────────────────────────────────── */
 
@@ -107,6 +107,8 @@ export interface Chip<T extends string> {
   value: T;
   label: string;
   count?: number;
+  /** Punto de color del estado (mismo tono que su StatusPill). */
+  tone?: PillTone;
 }
 
 export function ActionBar<T extends string>({
@@ -138,6 +140,7 @@ export function ActionBar<T extends string>({
               chip === c.value ? "border-brand-600 bg-brand-600 text-white" : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
             )}
           >
+            {c.tone && <StatusDot tone={c.tone} />}
             {c.label}
             {c.count !== undefined && (
               <span className={cx("rounded-full px-1.5 text-[11px]", chip === c.value ? "bg-white/20" : "bg-slate-100 text-slate-500")}>

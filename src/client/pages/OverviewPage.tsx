@@ -192,6 +192,10 @@ export const OverviewPage: React.FC<OverviewPageProps> = ({
               <dt className="text-xs text-slate-500">Por pagar a proveedores</dt>
               <dd className="text-xl font-semibold tabular-nums text-slate-900">{money(data.cash.payable)}</dd>
             </div>
+            <div>
+              <dt className="text-xs text-slate-500">Solicitado sin pagar</dt>
+              <dd className="text-xl font-semibold tabular-nums text-slate-900">{money(data.cash.requested ?? 0)}</dd>
+            </div>
           </dl>
           <Button size="sm" variant="ghost" className="mt-3 -ml-2" onClick={() => onNavigate("contabilidad-finanzas")}>
             Ver finanzas
