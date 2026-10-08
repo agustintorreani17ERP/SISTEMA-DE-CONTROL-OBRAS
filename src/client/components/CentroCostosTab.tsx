@@ -369,11 +369,12 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
           )}
 
           {paramsOpen && project && data && (
-            <Modal title="K e IVA de la obra" size="lg" onClose={() => setParamsOpen(false)}>
+            <Modal title="Parámetros de la obra" size="lg" onClose={() => setParamsOpen(false)}>
               <CostParamsBar
                 projectId={project.id}
                 coeficienteK={data.project.coeficienteK}
                 ivaPct={data.project.ivaPct}
+                controlMedicionSub={data.project.controlMedicionSub}
                 onSaved={() => {
                   load();
                   setParamsOpen(false);

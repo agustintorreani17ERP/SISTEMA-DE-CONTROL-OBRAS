@@ -45,6 +45,7 @@ function createInitialStore() {
     certificationItem: [] as any[],
     auxiliaryCalculation: [] as any[],
     itemPhoto: [] as any[],
+    subPlanillaLinea: [] as any[],
   };
 }
 

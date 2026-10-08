@@ -1,4 +1,4 @@
-import { Prisma, PrismaClient } from "@prisma/client";
+import { ControlMedicionSub, Prisma, PrismaClient } from "@prisma/client";
 import { DomainError, NotFoundError } from "../errors/domain";
 import { moneyNumber } from "../lib/money";
 import { computeItemsAcu } from "./acu";
@@ -301,12 +301,12 @@ export async function syncOfficialMeasurement(tx: Prisma.TransactionClient, cert
   if (cert.estado === "MEDICION_BORRADOR") return;
   const fecha = measurementDate(cert);
   await assertOpenPeriod(tx, cert.projectId, fecha, "La medición oficial");
-  const rows = cert.items.filter((i) => moneyNumber(i.cantidadPresente) !== 0);
+  const rows = cert.items.filter((i) => moneyNumber(i.cantidadPresente) !== 0 && i.budgetItemId !== null);
   if (!rows.length) return;
   await tx.avanceItem.createMany({
     data: rows.map((i) => ({
       projectId: cert.projectId,
-      budgetItemId: i.budgetItemId,
+      budgetItemId: i.budgetItemId as number,
       fecha: toDay(fecha),
       cantidad: i.cantidadPresente,
       origen: "MEDICION_OFICIAL" as const,
@@ -348,4 +348,35 @@ export async function subcontractOverMeasured(db: Db, projectId: number, lines: 
     }
   }
   return out;
+}
+
+export async function modoControlMedicion(db: Db, projectId: number): Promise<ControlMedicionSub> {
+  const project = await db.project.findUnique({ where: { id: projectId }, select: { controlMedicionSub: true } });
+  if (!project) throw new NotFoundError("Obra", projectId);
+  return project.controlMedicionSub;
+}
+
+/**
+ * subcontractOverMeasured según la configuración de la obra (Project.controlMedicionSub):
+ * NO_CONTROLAR → sin avisos; AVISAR → avisos; BLOQUEAR → DomainError 409 OVER_MEASURED con el detalle.
+ * `soloAvisar` (verificación de pantalla) devuelve los avisos aunque la obra bloquee.
+ */
+export async function controlMedicionSubcontratistas(
+  db: Db,
+  projectId: number,
+  lines: { budgetItemId: number; quantity: number }[],
+  opts: { soloAvisar?: boolean } = {}
+): Promise<string[]> {
+  const modo = await modoControlMedicion(db, projectId);
+  if (modo === "NO_CONTROLAR") return [];
+  const avisos = await subcontractOverMeasured(db, projectId, lines);
+  if (modo === "BLOQUEAR" && avisos.length && !opts.soloAvisar) {
+    throw new DomainError(
+      "OVER_MEASURED",
+      `Los subcontratistas superan la medición oficial acumulada: ${avisos.join("; ")}`,
+      409,
+      avisos
+    );
+  }
+  return avisos;
 }

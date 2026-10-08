@@ -1,10 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Building2, Camera, ChevronLeft, ChevronRight, ClipboardCheck, FileText, HardHat, Pencil, Plus, Ruler, Search, UserPlus } from "lucide-react";
 import { api } from "../api";
-import { Certification, LaborPrice, Partner, Project, SubcontractorContract } from "../types";
+import { Certification, Partner, Project, SubcontractorContract } from "../types";
 import { Badge, Button, Card, EmptyState, Field, Modal, ProgressBar, cx, inputClass } from "../ui";
 import { formatMoney } from "../utils/format";
 import { CERT_STATUS, periodLabel } from "./status";
+import { agruparPorFrente, type FrenteRef } from "./porFrente";
 
 /**
  * Fichas por contratista, para Mediciones y para Certificados.
@@ -112,17 +113,9 @@ export function ContratistasBoard({ modo, project, partners, subcontracts, certs
   const [selected, setSelected] = useState<Key | null>(null);
   const [filtro, setFiltro] = useState<Filtro>("TODOS");
   const [search, setSearch] = useState("");
-  const [laborPrices, setLaborPrices] = useState<LaborPrice[]>([]);
   const [editando, setEditando] = useState<Partner | "nuevo" | null>(null);
   const money = (v: number) => formatMoney(v, currency);
   const txt = modo === "MEDICION" ? TEXTOS_MEDICION : TEXTOS_CERT;
-
-  useEffect(() => {
-    api
-      .getLaborPrices(project.id)
-      .then(setLaborPrices)
-      .catch(() => setLaborPrices([]));
-  }, [project.id]);
 
   const resumenes = useMemo(() => {
     const projectContracts = subcontracts.filter((c) => c.projectId === project.id);
@@ -195,7 +188,6 @@ export function ContratistasBoard({ modo, project, partners, subcontracts, certs
             modo={modo}
             r={actual}
             posicion={idx >= 0 ? `${idx + 1} de ${visibles.length}` : ""}
-            laborPrices={laborPrices}
             money={money}
             onBack={() => setSelected(null)}
             onPrev={() => nav(-1)}
@@ -412,6 +404,19 @@ function TarjetaContratista({
   );
 }
 
+interface FilaLinea {
+  id: number;
+  numero: string;
+  rubroMO: string;
+  unit: string;
+  frente: FrenteRef | null;
+  rubro: string | null;
+  precio: number;
+  acumulado: number;
+  monto: number;
+  enCurso: number;
+}
+
 interface FilaPlanilla {
   budgetItemId: number;
   code: string;
@@ -429,7 +434,6 @@ function FichaContratista({
   modo,
   r,
   posicion,
-  laborPrices,
   money,
   onBack,
   onPrev,
@@ -441,7 +445,6 @@ function FichaContratista({
   modo: ModoFichas;
   r: Resumen;
   posicion: string;
-  laborPrices: LaborPrice[];
   money: (v: number) => string;
   onBack: () => void;
   onPrev: () => void;
@@ -456,28 +459,25 @@ function FichaContratista({
   /** Planilla general: todos los ítems que trabajó (contratos + documentos) con su precio de mano de obra. */
   const planilla = useMemo(() => {
     const filas = new Map<number, FilaPlanilla>();
-    const lp = new Map(laborPrices.filter((l) => l.budgetItemId).map((l) => [l.budgetItemId as number, l]));
-    const base = (id: number, bi?: { code?: string; name?: string; unit?: string | null; totalQuantity?: unknown } | null): FilaPlanilla => {
-      const l = lp.get(id);
-      return {
-        budgetItemId: id,
-        code: bi?.code ?? l?.budgetItem?.code ?? l?.code ?? String(id),
-        name: bi?.name ?? l?.budgetItem?.name ?? l?.description ?? "",
-        unit: bi?.unit ?? l?.unit ?? "",
-        precio: !esCliente && l ? n(l.unitPrice) : 0,
-        fuente: !esCliente && l ? "Lista de MO" : "—",
-        cantPresupuesto: n(bi?.totalQuantity),
-        acumulado: 0,
-        monto: 0,
-        enCurso: 0,
-      };
-    };
+    const base = (id: number, bi?: { code?: string; name?: string; unit?: string | null; totalQuantity?: unknown } | null): FilaPlanilla => ({
+      budgetItemId: id,
+      code: bi?.code ?? String(id),
+      name: bi?.name ?? "",
+      unit: bi?.unit ?? "",
+      precio: 0,
+      fuente: "—",
+      cantPresupuesto: n(bi?.totalQuantity),
+      acumulado: 0,
+      monto: 0,
+      enCurso: 0,
+    });
     for (const c of r.contratos) {
       if (!filas.has(c.budgetItemId)) filas.set(c.budgetItemId, base(c.budgetItemId, c.budgetItem as any));
     }
     // De los más viejos a los más nuevos, así el precio queda el del último documento.
     for (const c of [...r.certs].reverse()) {
       for (const i of c.items ?? []) {
+        if (i.budgetItemId === null) continue; // renglón de borrador sin rubro asignado
         const f = filas.get(i.budgetItemId) ?? base(i.budgetItemId, i.budgetItem as any);
         if (i.budgetItem) {
           f.code = i.budgetItem.code;
@@ -499,7 +499,41 @@ function FichaContratista({
       }
     }
     return [...filas.values()].sort((a, b) => a.code.localeCompare(b.code, "es", { numeric: true }));
-  }, [r, laborPrices, esCliente]);
+  }, [r]);
+
+  /** Subcontratista: sus líneas de planilla (frente + rubro MO) agrupadas por frente. */
+  const lineas = useMemo(() => {
+    const filas = new Map<number, FilaLinea>();
+    for (const c of [...r.certs].reverse()) {
+      for (const i of c.items ?? []) {
+        const l = i.planillaLinea;
+        if (!l) continue;
+        const f =
+          filas.get(l.id) ??
+          ({
+            id: l.id,
+            numero: l.numero,
+            rubroMO: l.laborPrice?.description ?? "",
+            unit: l.laborPrice?.unit ?? "",
+            frente: l.workFront ?? null,
+            rubro: null,
+            precio: 0,
+            acumulado: 0,
+            monto: 0,
+            enCurso: 0,
+          } as FilaLinea);
+        f.rubro = i.budgetItem ? `${i.budgetItem.code} · ${i.budgetItem.name}` : f.rubro;
+        if (n(i.precioUnitario)) f.precio = n(i.precioUnitario);
+        if (c.estado === "APROBADO") {
+          f.acumulado += n(i.cantidadPresente);
+          f.monto += n(i.montoTotal);
+        } else f.enCurso += n(i.cantidadPresente);
+        filas.set(l.id, f);
+      }
+    }
+    return agruparPorFrente([...filas.values()], (f) => f.frente, (f) => f.numero).map((g) => ({ ...g, subtotal: g.rows.reduce((a, f) => a + f.monto, 0) }));
+  }, [r]);
+  const usaLineas = !esCliente && lineas.length > 0;
 
   const totalPlanilla = planilla.reduce((a, f) => a + f.monto, 0);
   const p = r.partner;
@@ -592,10 +626,69 @@ function FichaContratista({
 
       <Card
         title={esCliente ? "Planilla general (precios de venta)" : "Planilla general de mano de obra"}
-        action={<span className="text-xs text-slate-600">{planilla.length} ítem(s)</span>}
+        action={
+          <span className="text-xs text-slate-600">
+            {usaLineas ? `${lineas.reduce((a, g) => a + g.rows.length, 0)} línea(s) · ${lineas.length} frente(s)` : `${planilla.length} ítem(s)`}
+          </span>
+        }
         padded={false}
       >
-        {planilla.length === 0 ? (
+        {usaLineas ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[860px] text-sm text-slate-900">
+              <thead className="text-left text-xs">
+                <tr className="border-b border-slate-900">
+                  <th className="px-4 py-2">N°</th>
+                  <th className="px-3 py-2">Rubro de MO</th>
+                  <th className="px-3 py-2">Ud.</th>
+                  <th className="px-3 py-2 text-right">PU</th>
+                  <th className="px-3 py-2 text-right">Acum. aprobado</th>
+                  <th className="px-3 py-2 text-right">Monto acum.</th>
+                  <th className="px-3 py-2 text-right">En curso</th>
+                  <th className="px-4 py-2">Rubro presupuestario</th>
+                </tr>
+              </thead>
+              {lineas.map((g) => (
+                <tbody key={g.key}>
+                  <tr>
+                    <td colSpan={8} className="px-4 pb-1 pt-3 font-semibold">
+                      {g.label}
+                    </td>
+                  </tr>
+                  {g.rows.map((f) => (
+                    <tr key={f.id} className="border-b border-slate-100">
+                      <td className="px-4 py-1.5 tabular-nums">{f.numero}</td>
+                      <td className="px-3 py-1.5">{f.rubroMO}</td>
+                      <td className="px-3 py-1.5">{f.unit}</td>
+                      <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums">{f.precio ? money(f.precio) : "—"}</td>
+                      <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums">{qty(f.acumulado)}</td>
+                      <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums">{money(f.monto)}</td>
+                      <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums">{f.enCurso ? qty(f.enCurso) : ""}</td>
+                      <td className={cx("px-4 py-1.5 text-xs", !f.rubro && "font-semibold text-red-600")}>{f.rubro ?? "Sin asignar"}</td>
+                    </tr>
+                  ))}
+                  <tr className="border-b border-slate-900 font-semibold">
+                    <td colSpan={5} className="px-4 py-1.5 text-right">
+                      Subtotal {g.label}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums">{money(g.subtotal)}</td>
+                    <td colSpan={2} />
+                  </tr>
+                </tbody>
+              ))}
+              <tfoot>
+                <tr className="font-semibold">
+                  <td colSpan={5} className="px-4 py-2 text-right">
+                    Total certificado aprobado
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">{money(lineas.reduce((a, g) => a + g.subtotal, 0))}</td>
+                  <td colSpan={2} />
+                </tr>
+              </tfoot>
+            </table>
+            <p className="px-4 py-2 text-xs text-slate-600">«En curso»: cantidades en mediciones o certificados todavía sin aprobar.</p>
+          </div>
+        ) : planilla.length === 0 ? (
           <p className="px-5 py-4 text-sm text-slate-600">Todavía no hay ítems medidos ni contratados.</p>
         ) : (
           <div className="overflow-x-auto">

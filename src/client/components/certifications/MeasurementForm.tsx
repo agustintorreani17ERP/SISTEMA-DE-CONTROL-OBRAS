@@ -127,8 +127,10 @@ export const MeasurementForm: React.FC<MeasurementFormProps> = ({
 
     api
       .getCertificationRubrosDisponibles(selectedProjectId, partnerIdParam)
-      .then((data) => {
-        const rows: FormRubroRow[] = data.map((r: any) => ({
+      .then((data: any) => {
+        // Subcontratista: la respuesta trae la planilla (frentes, lista de MO, líneas) y los ítems.
+        const list: any[] = Array.isArray(data) ? data : data.items ?? [];
+        const rows: FormRubroRow[] = list.map((r: any) => ({
           budgetItemId: r.id,
           code: r.code,
           name: r.name,

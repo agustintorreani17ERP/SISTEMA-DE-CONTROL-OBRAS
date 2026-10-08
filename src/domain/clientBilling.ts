@@ -252,7 +252,7 @@ export async function facturarCertificadoCliente(tx: Prisma.TransactionClient, c
   const hasta = measurementDate(cert);
   const pendiente = pendienteDeFacturar(await oficialAcumulado(tx, cert.projectId, hasta), await facturadoHasta(tx, cert.projectId, hasta));
   const { lineas, recortadas } = limitarAPendiente(
-    cert.items.map(
+    cert.items.flatMap((i) => (i.budgetItemId !== null && i.budgetItem ? [{ ...i, budgetItemId: i.budgetItemId, budgetItem: i.budgetItem }] : [])).map(
       (i): BillingRow => ({
         budgetItemId: i.budgetItemId,
         code: i.budgetItem.code,

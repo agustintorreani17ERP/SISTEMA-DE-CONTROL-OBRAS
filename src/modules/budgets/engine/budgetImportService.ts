@@ -105,6 +105,8 @@ export class BudgetImportService {
             where: { budgetItemId: { in: oldIds } },
             include: { budgetItem: { select: { path: true } } },
           });
+          // Líneas de planilla de subcontratistas sin certificados (las usadas bloquean arriba).
+          await tx.subPlanillaLinea.deleteMany({ where: { budgetItemId: { in: oldIds }, items: { none: {} } } });
           await tx.budgetItem.updateMany({ where: { id: { in: oldIds } }, data: { parentId: null } });
           await tx.budgetItem.deleteMany({ where: { id: { in: oldIds } } });
         }

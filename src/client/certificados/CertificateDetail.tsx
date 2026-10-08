@@ -1,12 +1,13 @@
 import React, { useCallback, useEffect, useState } from "react";
 import * as XLSX from "xlsx";
-import { CheckCircle2, Download, FileSpreadsheet, XCircle } from "lucide-react";
+import { CheckCircle2, Download, FileSpreadsheet, Info, Printer, XCircle } from "lucide-react";
 import { api } from "../api";
 import { CertificateSummaryData, Project } from "../types";
 import { Badge, Button, Card, cx, inputClass, Modal, pct } from "../ui";
 import { auxFormula } from "../../modules/certifications/certMath";
 import { formatMoney } from "../utils/format";
 import { CERT_STATUS, destinoLabel, periodLabel } from "./status";
+import { agruparPorFrente } from "./porFrente";
 
 import { formatQty } from "../utils/numbers";
 interface CertificateDetailProps {
@@ -25,6 +26,8 @@ export function CertificateDetail({ certificationId, project, currency, onClose,
   const [data, setData] = useState<CertificateSummaryData | null>(null);
   const [retention, setRetention] = useState("");
   const [busy, setBusy] = useState(false);
+  /** Subcontratista: "CONTRATISTA" = lo que se le entrega; "INTERNA" agrega el rubro presupuestario. */
+  const [vista, setVista] = useState<"CONTRATISTA" | "INTERNA">("CONTRATISTA");
   const money = (v: number) => formatMoney(v, currency);
 
   const load = useCallback(async () => {
@@ -53,6 +56,25 @@ export function CertificateDetail({ certificationId, project, currency, onClose,
   const n = String(cert.numero).padStart(2, "0");
   const status = CERT_STATUS[cert.estado];
   const editable = cert.estado !== "APROBADO";
+  const esSub = Boolean(cert.partnerId);
+  const interna = vista === "INTERNA";
+
+  /** Planilla del subcontratista agrupada por frente (pantalla, Excel e impresión). */
+  const grupos = agruparPorFrente(
+    s.rows.map((r, idx) => {
+      const it = cert.items[idx];
+      return {
+        ...r,
+        monto: r.periodAmount,
+        rubro: it?.budgetItem ? `${it.budgetItem.code} · ${it.budgetItem.name}` : null,
+        frente: it?.planillaLinea?.workFront ?? null,
+      };
+    }),
+    (f) => f.frente,
+    (f) => f.code
+  ).map((g) => ({ ...g, subtotal: g.rows.reduce((a, f) => a + f.monto, 0) }));
+  const sinAsignar = grupos.reduce((a, g) => a + g.rows.filter((f) => !f.rubro).length, 0);
+  const subHead = ["N°", "Rubro de MO", "Unidad", "Anterior", "Presente", "Acumulado", "PU", "Monto", ...(interna ? ["Rubro presupuestario"] : [])];
 
   const act = async (fn: () => Promise<any>, msg: string) => {
     setBusy(true);
@@ -60,7 +82,7 @@ export function CertificateDetail({ certificationId, project, currency, onClose,
       const res = await fn();
       showToast(msg);
       res?.budgetWarnings?.forEach((w: { message: string }) => showToast(`Presupuesto: ${w.message}`, "info"));
-      res?.measurementWarnings?.forEach((w: string) => showToast(`Supera la medición oficial: ${w}`, "error"));
+      res?.measurementWarnings?.forEach((w: string) => showToast(`Pendiente de certificar al cliente: ${w}`, "info"));
       res?.priceWarnings?.forEach((w: string) => showToast(`Precio: ${w}`, "error"));
       res?.avisos?.forEach((a: string) => showToast(a, "info"));
       if (res?.message) showToast(res.message, "info");
@@ -81,7 +103,7 @@ export function CertificateDetail({ certificationId, project, currency, onClose,
       (it.auxiliaryCalculations ?? []).forEach((a) => {
         const r = comp.length + 1;
         comp.push([
-          it.budgetItem?.code,
+          it.planillaLinea?.numero ?? it.budgetItem?.code,
           a.location || a.descripcion,
           Number(a.factor_repeticion),
           Number(a.largo) || "",
@@ -94,6 +116,36 @@ export function CertificateDetail({ certificationId, project, currency, onClose,
       })
     );
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(comp), `Computo (${n})`);
+
+    if (esSub) {
+      const cer: any[][] = [
+        [`${project.name} — ${cert.partner?.name ?? ""}`],
+        [`Certificado N° ${n} · ${periodLabel(cert)}${interna ? " · vista interna" : ""}`],
+        [],
+        subHead,
+      ];
+      const subtotales: number[] = [];
+      grupos.forEach((g) => {
+        cer.push([g.label]);
+        const desde = cer.length + 1;
+        g.rows.forEach((f) => {
+          const i = cer.length + 1;
+          cer.push([f.code, f.name, f.unit, f.previousQuantity, f.periodQuantity, { f: `D${i}+E${i}` }, f.unitPrice, { f: `ROUND(E${i}*G${i},0)` }, ...(interna ? [f.rubro ?? "SIN ASIGNAR"] : [])]);
+        });
+        cer.push(["", `Subtotal ${g.label}`, "", "", "", "", "", { f: `SUM(H${desde}:H${cer.length})` }]);
+        subtotales.push(cer.length);
+        cer.push([]);
+      });
+      const t = cer.length + 1;
+      cer.push(["", "Total", "", "", "", "", "", { f: subtotales.length ? subtotales.map((r) => `H${r}`).join("+") : "0" }]);
+      cer.push(["", `Fondo de reparo ${s.retentionPct}%`, "", "", "", "", "", { f: `ROUND(H${t}*${s.retentionPct}/100,0)` }]);
+      cer.push(["", "Neto a pagar", "", "", "", "", "", { f: `H${t}-H${t + 1}` }]);
+      const ws = XLSX.utils.aoa_to_sheet(cer);
+      ws["!cols"] = [{ wch: 8 }, { wch: 48 }, { wch: 8 }, { wch: 12 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 16 }, ...(interna ? [{ wch: 48 }] : [])];
+      XLSX.utils.book_append_sheet(wb, ws, `Cert (${n})`);
+      XLSX.writeFile(wb, `${project.code}_${(cert.partner?.name ?? "sub").replace(/[^\w]+/g, "_")}_Cert_${n}${interna ? "_interna" : ""}.xlsx`);
+      return;
+    }
 
     const med: any[][] = [["Ítem", "Descripción", "Unidad", "Contratado", "Acumulado anterior", "Período", "Acumulado actual", "% avance"]];
     s.rows.forEach((r) => {
@@ -143,9 +195,49 @@ export function CertificateDetail({ certificationId, project, currency, onClose,
     URL.revokeObjectURL(a.href);
   };
 
-  const check = (ok: boolean, label: string) => (
-    <li className={cx("flex items-center gap-2", ok ? "text-emerald-700" : "text-rose-700")}>
-      {ok ? <CheckCircle2 className="h-4 w-4" /> : <XCircle className="h-4 w-4" />} {label}
+  /** Impresión del certificado del subcontratista: planilla por frente en una ventana aparte. */
+  const imprimir = () => {
+    const esc = (v: unknown) => String(v ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
+    const extra = interna ? "<td></td>" : "";
+    const q = (v: number) => `<td class="r">${esc(qty(v))}</td>`;
+    const gs = (v: number) => `<td class="r">${esc(money(v))}</td>`;
+    const body = grupos
+      .map(
+        (g) =>
+          `<tr class="g"><td colspan="${subHead.length}">${esc(g.label)}</td></tr>` +
+          g.rows
+            .map(
+              (f) =>
+                `<tr><td>${esc(f.code)}</td><td>${esc(f.name)}</td><td>${esc(f.unit)}</td>${q(f.previousQuantity)}${q(f.periodQuantity)}${q(f.accumulatedQuantity)}${gs(f.unitPrice)}${gs(f.monto)}${
+                  interna ? `<td${f.rubro ? "" : ' class="a"'}>${esc(f.rubro ?? "Sin asignar")}</td>` : ""
+                }</tr>`
+            )
+            .join("") +
+          `<tr class="s"><td colspan="7">Subtotal ${esc(g.label)}</td>${gs(g.subtotal)}${extra}</tr>`
+      )
+      .join("");
+    const pie = (label: string, v: string) => `<tr class="s"><td colspan="7">${esc(label)}</td><td class="r">${esc(v)}</td>${extra}</tr>`;
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Cert ${n} ${esc(cert.partner?.name)}</title><style>
+@page{size:A4 landscape;margin:12mm}body{font:11px Arial,sans-serif;color:#000}h1{font-size:15px;margin:0}p{margin:2px 0 10px}
+table{width:100%;border-collapse:collapse}th,td{border:1px solid #000;padding:3px 5px;text-align:left}.r{text-align:right;white-space:nowrap}
+tr.g td{font-weight:bold;padding-top:8px}tr.s td{font-weight:bold}tr.s td:first-child{text-align:right}.a{color:#c00;font-weight:bold}
+</style></head><body><h1>${esc(project.name)} — Certificado N° ${n}</h1>
+<p>Subcontratista: ${esc(cert.partner?.name)} · ${esc(periodLabel(cert))}${cert.contract ? ` · Contrato ${esc(cert.contract.number)}` : ""}${interna ? " · Vista interna" : ""}</p>
+<table><thead><tr>${subHead.map((h, i) => `<th${i >= 3 && i <= 7 ? ' class="r"' : ""}>${h}</th>`).join("")}</tr></thead><tbody>${body}
+${pie("Total", money(s.periodAmount))}${pie(`Fondo de reparo ${s.retentionPct}%`, `− ${money(s.retentionAmount)}`)}${pie("Neto a pagar", money(s.netAmount))}
+</tbody></table></body></html>`;
+    const w = window.open("", "_blank");
+    if (!w) return showToast("El navegador bloqueó la ventana de impresión", "error");
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+    w.print();
+  };
+
+  /** `informativo`: si no se cumple es un aviso (texto negro), no una alerta. */
+  const check = (ok: boolean, label: string, informativo = false) => (
+    <li className={cx("flex items-center gap-2", ok ? "text-emerald-700" : informativo ? "text-slate-900" : "text-rose-700")}>
+      {ok ? <CheckCircle2 className="h-4 w-4" /> : informativo ? <Info className="h-4 w-4" /> : <XCircle className="h-4 w-4" />} {label}
     </li>
   );
 
@@ -159,6 +251,11 @@ export function CertificateDetail({ certificationId, project, currency, onClose,
           <Button icon={<FileSpreadsheet className="h-4 w-4" />} onClick={exportExcel}>
             Excel
           </Button>
+          {esSub && (
+            <Button icon={<Printer className="h-4 w-4" />} onClick={imprimir}>
+              Imprimir
+            </Button>
+          )}
           <Button icon={<Download className="h-4 w-4" />} onClick={exportCsv}>
             CSV para ERP
           </Button>
@@ -186,6 +283,82 @@ export function CertificateDetail({ certificationId, project, currency, onClose,
         {cert.contract && <span>· Contrato {cert.contract.number}</span>}
       </div>
 
+      {esSub && (
+        <Card
+          title={`Cert (${n}) · planilla por frente`}
+          padded={false}
+          action={
+            <div className="flex gap-1 text-xs">
+              {(["CONTRATISTA", "INTERNA"] as const).map((v) => (
+                <button key={v} onClick={() => setVista(v)} className={cx("rounded-md border px-2 py-1", vista === v ? "border-slate-900 font-semibold" : "border-slate-200")}>
+                  {v === "CONTRATISTA" ? "Contratista" : "Interna"}
+                </button>
+              ))}
+            </div>
+          }
+        >
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[860px] text-sm text-slate-900">
+              <thead className="text-left text-xs">
+                <tr className="border-b border-slate-900">
+                  {subHead.map((h, i) => (
+                    <th key={h} className={cx("px-3 py-2", i >= 3 && i <= 7 && "text-right")}>
+                      {h}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              {grupos.map((g) => (
+                <tbody key={g.key}>
+                  <tr>
+                    <td colSpan={subHead.length} className="px-3 pb-1 pt-3 font-semibold">
+                      {g.label}
+                    </td>
+                  </tr>
+                  {g.rows.map((f, i) => (
+                    <tr key={i} className="border-b border-slate-100">
+                      <td className="px-3 py-1.5 tabular-nums">{f.code}</td>
+                      <td className="px-3 py-1.5">{f.name}</td>
+                      <td className="px-3 py-1.5">{f.unit}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{qty(f.previousQuantity)}</td>
+                      <td className="px-3 py-1.5 text-right font-medium tabular-nums">{qty(f.periodQuantity)}</td>
+                      <td className="px-3 py-1.5 text-right tabular-nums">{qty(f.accumulatedQuantity)}</td>
+                      <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums">{money(f.unitPrice)}</td>
+                      <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums">{money(f.monto)}</td>
+                      {interna && <td className={cx("px-3 py-1.5 text-xs", !f.rubro && "font-semibold text-red-600")}>{f.rubro ?? "Sin asignar"}</td>}
+                    </tr>
+                  ))}
+                  <tr className="border-b border-slate-900 font-semibold">
+                    <td colSpan={7} className="px-3 py-1.5 text-right">
+                      Subtotal {g.label}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums">{money(g.subtotal)}</td>
+                    {interna && <td />}
+                  </tr>
+                </tbody>
+              ))}
+              <tfoot className="font-semibold">
+                {[
+                  ["Total", money(s.periodAmount)],
+                  [`Fondo de reparo ${s.retentionPct}%`, `− ${money(s.retentionAmount)}`],
+                  ["Neto a pagar", money(s.netAmount)],
+                ].map(([l, v]) => (
+                  <tr key={l}>
+                    <td colSpan={7} className="px-3 py-1.5 text-right">
+                      {l}
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-1.5 text-right tabular-nums">{v}</td>
+                    {interna && <td />}
+                  </tr>
+                ))}
+              </tfoot>
+            </table>
+          </div>
+          {interna && sinAsignar > 0 && <p className="px-4 py-2 text-xs font-semibold text-red-600">{sinAsignar} línea(s) sin rubro presupuestario: asignalas antes de aprobar.</p>}
+        </Card>
+      )}
+
+      {!esSub && (
       <Card title={`Medición (${n})`} padded={false}>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[720px] text-sm">
@@ -219,8 +392,9 @@ export function CertificateDetail({ certificationId, project, currency, onClose,
           </table>
         </div>
       </Card>
+      )}
 
-      <Card title={`Cert (${n})`}>
+      <Card title={esSub ? "Resumen y fondo de reparo" : `Cert (${n})`}>
         <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
           {[
             ["Monto contractual", s.contractAmount],
@@ -252,7 +426,7 @@ export function CertificateDetail({ certificationId, project, currency, onClose,
             </dd>
           </div>
         </dl>
-        <div className="mt-4 flex items-center justify-between rounded-xl bg-slate-900 px-4 py-3 text-white">
+        <div className="mt-4 flex items-center justify-between rounded-xl border border-slate-900 px-4 py-3 text-slate-900">
           <span className="text-sm">Neto a pagar</span>
           <span className="text-lg font-semibold tabular-nums">{money(s.netAmount)}</span>
         </div>
@@ -266,6 +440,10 @@ export function CertificateDetail({ certificationId, project, currency, onClose,
           {check(checks.overContract.length === 0, checks.overContract.length ? `Superan lo contratado: ${checks.overContract.join(", ")}` : "Ningún ítem supera lo contratado")}
           {cert.partnerId && (
             <>
+              {check(
+                !checks.sinRubro?.length,
+                checks.sinRubro?.length ? `Líneas sin rubro presupuestario (no se puede aprobar): N° ${checks.sinRubro.join(", ")}` : "Todas las líneas tienen rubro presupuestario"
+              )}
               {check(!checks.priceWarnings?.length, checks.priceWarnings?.length ? "Precios distintos del sugerido (lista de MO):" : "Todos los precios son los sugeridos de la lista de MO")}
               {checks.priceWarnings?.map((w) => (
                 <li key={w} className="pl-6 text-red-600">
@@ -273,10 +451,20 @@ export function CertificateDetail({ certificationId, project, currency, onClose,
                 </li>
               ))}
               {editable &&
-                check(!checks.overMeasured?.length, checks.overMeasured?.length ? "Supera lo medido oficialmente:" : "No supera la medición oficial acumulada")}
+                checks.controlMedicionSub !== "NO_CONTROLAR" &&
+                check(
+                  !checks.overMeasured?.length,
+                  checks.overMeasured?.length
+                    ? checks.controlMedicionSub === "BLOQUEAR"
+                      ? "Supera la medición oficial: no se puede certificar hasta medirlo al cliente:"
+                      : "Pendiente de certificar al cliente:"
+                    : "No supera la medición oficial acumulada",
+                  checks.controlMedicionSub !== "BLOQUEAR"
+                )}
               {editable &&
+                checks.controlMedicionSub !== "NO_CONTROLAR" &&
                 checks.overMeasured?.map((w) => (
-                  <li key={w} className="pl-6 text-red-600">
+                  <li key={w} className={checks.controlMedicionSub === "BLOQUEAR" ? "pl-6 text-red-600" : "pl-6 text-slate-900"}>
                     {w}
                   </li>
                 ))}
@@ -304,7 +492,16 @@ export function CertificateDetail({ certificationId, project, currency, onClose,
                 return (
                   <tr key={i.id} className="border-b border-slate-100">
                     <td className="py-1.5">
-                      {i.budgetItem?.code} · {i.budgetItem?.name}
+                      {i.planillaLinea ? (
+                        <>
+                          {i.planillaLinea.numero} · {i.planillaLinea.laborPrice?.description}
+                          <span className="block text-xs">{i.budgetItem ? `Rubro ${i.budgetItem.code} · ${i.budgetItem.name}` : <span className="text-red-600">Sin rubro presupuestario</span>}</span>
+                        </>
+                      ) : (
+                        <>
+                          {i.budgetItem?.code} · {i.budgetItem?.name}
+                        </>
+                      )}
                     </td>
                     <td className={cx("py-1.5 text-right tabular-nums", distinto && "font-semibold text-red-600")}>{money(usado)}</td>
                     <td className="py-1.5 text-right tabular-nums">{sug === null ? "—" : money(sug)}</td>

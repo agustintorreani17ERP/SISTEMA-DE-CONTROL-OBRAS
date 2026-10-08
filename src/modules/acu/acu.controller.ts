@@ -38,20 +38,22 @@ acuRouter.put(
       .object({
         coeficienteK: z.number().positive().max(10).nullable(),
         ivaPct: z.number().min(0).max(100),
+        controlMedicionSub: z.enum(["AVISAR", "BLOQUEAR", "NO_CONTROLAR"]).optional(),
       })
       .parse(req.body);
     const project = await prisma.project.findUnique({ where: { id: projectId } });
     if (!project) throw new NotFoundError("Obra", projectId);
     const updated = await prisma.project.update({
       where: { id: projectId },
-      data: { coeficienteK: body.coeficienteK, ivaPct: body.ivaPct },
-      select: { id: true, coeficienteK: true, ivaPct: true },
+      data: { coeficienteK: body.coeficienteK, ivaPct: body.ivaPct, controlMedicionSub: body.controlMedicionSub },
+      select: { id: true, coeficienteK: true, ivaPct: true, controlMedicionSub: true },
     });
     invalidateCostCache();
     ok(res, {
       id: updated.id,
       coeficienteK: updated.coeficienteK === null ? null : moneyNumber(updated.coeficienteK),
       ivaPct: moneyNumber(updated.ivaPct),
+      controlMedicionSub: updated.controlMedicionSub,
     });
   })
 );

@@ -147,37 +147,47 @@ enum ChequeEstado {
   ANULADO
 }
 
+/// Control de certificados de subcontratistas contra la medición oficial (certificado al cliente).
+enum ControlMedicionSub {
+  AVISAR
+  BLOQUEAR
+  NO_CONTROLAR
+}
+
 model Project {
-  id                     Int           @id @default(autoincrement())
-  code                   String        @unique
+  id                     Int                @id @default(autoincrement())
+  code                   String             @unique
   name                   String
   location               String
   clientName             String?
   executionMonths        Int?
   roadSection            String?
   contractNumber         String?
-  currency               String        @default("PYG")
-  globalBudget           Decimal       @db.Decimal(18, 2)
-  montoContractualManual Decimal       @default(0) @map("monto_contractual") @db.Decimal(18, 2)
-  montoPresupuestoBase   Decimal       @default(0) @map("monto_presupuesto_base") @db.Decimal(18, 2)
-  montoRealActualizado   Decimal       @default(0) @map("monto_real_actualizado") @db.Decimal(18, 2)
-  totalGastado           Decimal       @default(0) @map("total_gastado") @db.Decimal(18, 2)
+  currency               String             @default("PYG")
+  globalBudget           Decimal            @db.Decimal(18, 2)
+  montoContractualManual Decimal            @default(0) @map("monto_contractual") @db.Decimal(18, 2)
+  montoPresupuestoBase   Decimal            @default(0) @map("monto_presupuesto_base") @db.Decimal(18, 2)
+  montoRealActualizado   Decimal            @default(0) @map("monto_real_actualizado") @db.Decimal(18, 2)
+  totalGastado           Decimal            @default(0) @map("total_gastado") @db.Decimal(18, 2)
   deletedAt              DateTime?
   deletedBy              String?
-  status                 ProjectStatus @default(ACTIVO)
+  status                 ProjectStatus      @default(ACTIVO)
   startDate              DateTime?
   endDate                DateTime?
   /// Coeficiente de pase con IVA: PU = costo directo × K. Sin ACU, costo meta = PU ÷ K.
-  coeficienteK           Decimal?      @db.Decimal(10, 4)
+  coeficienteK           Decimal?           @db.Decimal(10, 4)
   /// IVA incluido en los PU del presupuesto (%). Venta sin IVA = PU ÷ (1 + IVA).
-  ivaPct                 Decimal       @default(10) @db.Decimal(5, 2)
-  createdAt              DateTime      @default(now())
-  updatedAt              DateTime      @updatedAt
+  ivaPct                 Decimal            @default(10) @db.Decimal(5, 2)
+  /// Qué hacer si los subcontratistas certifican más que la medición oficial acumulada.
+  controlMedicionSub     ControlMedicionSub @default(AVISAR)
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
 
   budgetItems                BudgetItem[]
   budgetImports              BudgetImport[]
   budgetMovements            BudgetMovement[]
   laborPrices                LaborPrice[]
+  subPlanillaLineas          SubPlanillaLinea[]
   pettyCashFunds             PettyCashFund[]
   workFronts                 WorkFront[]
   materialRequests           MaterialRequest[]
@@ -272,6 +282,7 @@ model BudgetItem {
   subcontracts       SubcontractorContract[]
   movements          BudgetMovement[]
   laborPrices        LaborPrice[]
+  subPlanillaLineas  SubPlanillaLinea[]
   pettyCashExpenses  PettyCashExpense[]
   certificaciones    Certificacion[]
   certificationItems CertificationItem[]
@@ -412,19 +423,31 @@ model Personnel {
   empleado   Empleado?
 }
 
+/// AREA = generado desde un rubro raíz del presupuesto (budgetItemId != null); AUXILIAR = alta manual.
+enum WorkFrontTipo {
+  AREA
+  AUXILIAR
+}
+
 model WorkFront {
-  id           Int    @id @default(autoincrement())
+  id           Int           @id @default(autoincrement())
   projectId    Int
   name         String
   chiefId      Int?
   /// Rubro raíz (Área) del presupuesto que generó este frente automáticamente. Null = frente manual.
-  budgetItemId Int?   @unique
+  budgetItemId Int?          @unique
+  /// Número del área ("2" de "Área: 2) BLOQUE 6") o, en auxiliares, el siguiente número libre.
+  codigo       String?
+  /// sortOrder del área; los auxiliares van después.
+  orden        Int           @default(0)
+  tipo         WorkFrontTipo @default(AUXILIAR)
 
-  project    Project           @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  chief      Personnel?        @relation(fields: [chiefId], references: [id], onDelete: Restrict)
-  budgetItem BudgetItem?       @relation(fields: [budgetItemId], references: [id], onDelete: SetNull)
-  requests   MaterialRequest[]
-  partes     ParteDiario[]
+  project           Project            @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  chief             Personnel?         @relation(fields: [chiefId], references: [id], onDelete: Restrict)
+  budgetItem        BudgetItem?        @relation(fields: [budgetItemId], references: [id], onDelete: SetNull)
+  requests          MaterialRequest[]
+  partes            ParteDiario[]
+  subPlanillaLineas SubPlanillaLinea[]
 
   @@index([projectId])
 }
@@ -441,16 +464,17 @@ model Partner {
   active         Boolean     @default(true)
   createdAt      DateTime    @default(now())
 
-  purchaseOrders   PurchaseOrder[]
-  subcontracts     SubcontractorContract[]
-  certificaciones  Certificacion[]
-  certifications   Certification[]
-  invoices         Invoice[]
-  lineasAsiento    LineaAsiento[]
-  cheques          Cheque[]
-  anticipos        Anticipo[]
-  retencionesFondo RetencionFondo[]
-  solicitudesFondo SolicitudFondo[]
+  purchaseOrders    PurchaseOrder[]
+  subcontracts      SubcontractorContract[]
+  certificaciones   Certificacion[]
+  certifications    Certification[]
+  invoices          Invoice[]
+  lineasAsiento     LineaAsiento[]
+  cheques           Cheque[]
+  anticipos         Anticipo[]
+  retencionesFondo  RetencionFondo[]
+  solicitudesFondo  SolicitudFondo[]
+  subPlanillaLineas SubPlanillaLinea[]
 }
 
 /// Vía de imputación al Centro de Costos (ver CLAUDE.md).
@@ -1088,7 +1112,10 @@ model Certification {
 model CertificationItem {
   id                Int      @id @default(autoincrement())
   certificationId   Int
-  budgetItemId      Int
+  /// Rubro presupuestario (libro mayor). Null solo en borrador de subcontratista sin asignar.
+  budgetItemId      Int?
+  /// Línea de la planilla del subcontratista (frente + rubro MO + rubro presupuestario).
+  planillaLineaId   Int?
   cantidadAnterior  Decimal  @default(0) @db.Decimal(18, 4)
   cantidadPresente  Decimal  @default(0) @db.Decimal(18, 4)
   cantidadAcumulada Decimal  @default(0) @db.Decimal(18, 4)
@@ -1103,13 +1130,45 @@ model CertificationItem {
   insumoId          Int?
 
   certification         Certification          @relation(fields: [certificationId], references: [id], onDelete: Cascade)
-  budgetItem            BudgetItem             @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+  budgetItem            BudgetItem?            @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+  planillaLinea         SubPlanillaLinea?      @relation(fields: [planillaLineaId], references: [id], onDelete: Restrict)
   insumo                Material?              @relation(fields: [insumoId], references: [id], onDelete: Restrict)
   auxiliaryCalculations AuxiliaryCalculation[]
   photos                ItemPhoto[]
 
   @@index([certificationId])
   @@index([budgetItemId])
+  @@index([planillaLineaId])
+}
+
+/// Línea de la planilla de un subcontratista: frente + rubro de la lista de MO + rubro
+/// presupuestario. Se numera "<código del frente>.<correlativo>" y se reutiliza en todos sus
+/// certificados (anterior y acumulado van por línea).
+model SubPlanillaLinea {
+  id           Int      @id @default(autoincrement())
+  projectId    Int
+  partnerId    Int
+  workFrontId  Int
+  laborPriceId Int
+  budgetItemId Int?
+  numero       String
+  correlativo  Int
+  /// Unidades de avance del ítem por unidad medida en la línea.
+  factorAvance Decimal  @default(1) @db.Decimal(18, 6)
+  /// false = tarea complementaria: cuesta, pero no suma avance al ítem.
+  aportaAvance Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  project    Project             @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  partner    Partner             @relation(fields: [partnerId], references: [id], onDelete: Restrict)
+  workFront  WorkFront           @relation(fields: [workFrontId], references: [id], onDelete: Restrict)
+  laborPrice LaborPrice          @relation(fields: [laborPriceId], references: [id], onDelete: Restrict)
+  budgetItem BudgetItem?         @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+  items      CertificationItem[]
+
+  @@unique([partnerId, workFrontId, laborPriceId, budgetItemId])
+  @@unique([partnerId, workFrontId, correlativo])
+  @@index([projectId])
 }
 
 model AuxiliaryCalculation {
@@ -1148,16 +1207,20 @@ model ItemPhoto {
 model LaborPrice {
   id           Int      @id @default(autoincrement())
   projectId    Int
+  /// Legado: el rubro se asigna en cada medición de subcontratista, no en la lista.
   budgetItemId Int?
   code         String
   description  String
   unit         String?
   unitPrice    Decimal  @db.Decimal(18, 4)
+  /// PLANTA_BAJA / PLANTA_ALTA (u otro sector de la lista).
+  sector       String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  project    Project     @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  budgetItem BudgetItem? @relation(fields: [budgetItemId], references: [id], onDelete: SetNull)
+  project        Project            @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  budgetItem     BudgetItem?        @relation(fields: [budgetItemId], references: [id], onDelete: SetNull)
+  planillaLineas SubPlanillaLinea[]
 
   @@unique([projectId, code])
   @@index([budgetItemId])

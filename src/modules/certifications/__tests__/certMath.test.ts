@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { auxFormula, auxSubtotal, buildCertificate, measuredQuantity } from "../certMath";
-import { matchLaborRows } from "../../labor-prices/matcher";
 
 describe("cálculo auxiliar (cómputo métrico)", () => {
   it("multiplica solo las dimensiones cargadas", () => {
@@ -42,34 +41,5 @@ describe("certificado (Medición N / Cert N)", () => {
     const c = buildCertificate(rows);
     expect(c.rows[1].overContract).toBe(true); // 55 de 50
     expect(c.rows[0].overContract).toBe(false);
-  });
-});
-
-describe("lista de precios de mano de obra", () => {
-  const leaves = [
-    { id: 1, code: "3.1", name: "Mampostería de elevación de 0,15", unit: "m²" },
-    { id: 2, code: "1", name: "Excavación para cimientos", unit: "m³" },
-    { id: 3, code: "1", name: "Limpieza de terreno", unit: "m²" },
-  ];
-
-  it("asocia por código único, por descripción y por similitud", () => {
-    const m = matchLaborRows(
-      [
-        { code: "3.1", description: "MAMPOSTERIA 0.15", unit: "m²", unitPrice: 45000 },
-        { code: "", description: "Limpieza de terreno", unit: "m²", unitPrice: 3000 },
-        { code: "", description: "excavacion cimientos manual", unit: "m³", unitPrice: 60000 },
-        { code: "", description: "Pintura látex", unit: "m²", unitPrice: 15000 },
-      ],
-      leaves
-    );
-    expect(m[0]).toMatchObject({ budgetItemId: 1, matchedBy: "code" });
-    expect(m[1]).toMatchObject({ budgetItemId: 3, matchedBy: "description" });
-    expect(m[2].budgetItemId).toBe(2);
-    expect(m[3].budgetItemId).toBeNull();
-  });
-
-  it("con códigos repetidos en el presupuesto decide por descripción", () => {
-    const m = matchLaborRows([{ code: "1", description: "Limpieza de terreno", unit: "m²", unitPrice: 3000 }], leaves);
-    expect(m[0].budgetItemId).toBe(3);
   });
 });

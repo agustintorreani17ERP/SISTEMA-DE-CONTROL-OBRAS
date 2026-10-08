@@ -1,4 +1,5 @@
 import {
+  ControlMedicionSub,
   DashboardData,
   Project,
   Material,
@@ -14,6 +15,7 @@ import {
   LaborPrice,
   LaborPreviewRow,
   MeasurableItem,
+  PlanillaSubData,
   CertificateSummaryData,
   ProjectOverview,
   PettyCashFund,
@@ -467,6 +469,11 @@ export const api = {
   updateWorkFront: (id: number, body: { name?: string; chiefId?: number | null }) =>
     request<WorkFront>(`/api/work-fronts/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   deleteWorkFront: (id: number) => request<{ deleted: boolean }>(`/api/work-fronts/${id}`, { method: "DELETE" }),
+  syncWorkFronts: (projectId: number) =>
+    request<{ creados: number; actualizados: number; desvinculados: number; borrados: number }>(
+      `/api/projects/${projectId}/work-fronts/sync`,
+      { method: "POST" }
+    ),
 
   // Fotos (medición desde el celular)
   uploadImage: async (file: File): Promise<{ url: string; name: string }> => {
@@ -487,15 +494,22 @@ export const api = {
     const response = await fetch(`/api/projects/${projectId}/labor-prices/preview`, { method: "POST", body: form });
     const payload = await response.json();
     if (!response.ok || payload.success === false) throw new Error(payload.error?.message || "No se pudo leer la planilla");
-    return payload.data as { sheetName: string; rows: LaborPreviewRow[]; summary: { total: number; matched: number } };
+    return payload.data as { sheetName: string; rows: LaborPreviewRow[]; summary: { total: number; errores: number } };
   },
-  commitLaborPrices: (projectId: number, rows: LaborPreviewRow[]) =>
-    request<{ saved: number }>(`/api/projects/${projectId}/labor-prices/commit`, { method: "POST", body: JSON.stringify({ rows }) }),
+  commitLaborPrices: (
+    projectId: number,
+    rows: { code: string; description: string; unit: string; unitPrice: number; sector: string | null }[],
+    fileName?: string
+  ) =>
+    request<{ saved: number; preciosInsumo: number; conflictos: string[] }>(`/api/projects/${projectId}/labor-prices/commit`, {
+      method: "POST",
+      body: JSON.stringify({ rows, fileName }),
+    }),
   saveLaborPrice: (
     projectId: number,
-    body: { code?: string; description: string; unit?: string; unitPrice: number; budgetItemId?: number | null }
+    body: { code: string; description: string; unit?: string; unitPrice: number; sector?: string | null }
   ) => request<LaborPrice>(`/api/projects/${projectId}/labor-prices`, { method: "POST", body: JSON.stringify(body) }),
-  updateLaborPrice: (id: number, body: Partial<{ unitPrice: number; budgetItemId: number | null; description: string }>) =>
+  updateLaborPrice: (id: number, body: Partial<{ unitPrice: number; description: string; unit: string; sector: string | null }>) =>
     request<LaborPrice>(`/api/labor-prices/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteLaborPrice: (id: number) => request<{ deleted: boolean }>(`/api/labor-prices/${id}`, { method: "DELETE" }),
 
@@ -503,8 +517,9 @@ export const api = {
   getCertificateSummary: (id: number) => request<CertificateSummaryData>(`/api/certifications/${id}/summary`),
   setCertificateRetention: (id: number, retentionPct: number) =>
     request<any>(`/api/certifications/${id}/retention`, { method: "PATCH", body: JSON.stringify({ retentionPct }) }),
-  getMeasurableItems: (projectId: number, partnerId?: number | null) =>
-    request<MeasurableItem[]>(`/api/certifications/rubros-disponibles?projectId=${projectId}&partnerId=${partnerId ?? "null"}`),
+  getMeasurableItems: (projectId: number) => request<MeasurableItem[]>(`/api/certifications/rubros-disponibles?projectId=${projectId}&partnerId=null`),
+  getPlanillaSub: (projectId: number, partnerId: number) =>
+    request<PlanillaSubData>(`/api/certifications/rubros-disponibles?projectId=${projectId}&partnerId=${partnerId}`),
 
   // Dashboard: cartera de obras y resumen de una obra
   getPortfolio: () => request<Portfolio>("/api/portfolio"),
@@ -844,7 +859,7 @@ export const api = {
   getCertificationRubrosDisponibles: (projectId: number, partnerId?: number | null) => {
     const query = new URLSearchParams({ projectId: String(projectId) });
     if (partnerId !== undefined) query.set("partnerId", String(partnerId ?? "null"));
-    return request<any[]>(`/api/certifications/rubros-disponibles?${query.toString()}`);
+    return request<any>(`/api/certifications/rubros-disponibles?${query.toString()}`);
   },
   createCertification: (body: any) =>
     request<any>("/api/certifications", {
@@ -967,8 +982,8 @@ export const api = {
       body: JSON.stringify(body),
     }),
   // Centro de costos: K de la obra y ACU por ítem
-  saveCostParams: (projectId: number, body: { coeficienteK: number | null; ivaPct: number }) =>
-    request<{ id: number; coeficienteK: number | null; ivaPct: number }>(`/api/projects/${projectId}/parametros-costo`, {
+  saveCostParams: (projectId: number, body: { coeficienteK: number | null; ivaPct: number; controlMedicionSub?: ControlMedicionSub }) =>
+    request<{ id: number; coeficienteK: number | null; ivaPct: number; controlMedicionSub: ControlMedicionSub }>(`/api/projects/${projectId}/parametros-costo`, {
       method: "PUT",
       body: JSON.stringify(body),
     }),

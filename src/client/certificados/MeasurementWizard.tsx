@@ -1,30 +1,21 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, Building2, Camera, HardHat, ImagePlus, Plus, Trash2, X } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { AlertTriangle, Building2, HardHat, Plus, Trash2 } from "lucide-react";
 import { api } from "../api";
-import { MeasurableItem, Partner, Project, SubcontractorContract } from "../types";
+import { MeasurableItem, Partner, PlanillaSubData, Project, SubcontractorContract } from "../types";
 import { Badge, Button, cx, Field, inputClass, Modal } from "../ui";
 import { Stepper } from "../ui/actions";
-import { auxFormula, auxSubtotal, measuredQuantity } from "../../modules/certifications/certMath";
 import { formatMoney } from "../utils/format";
 
 import { formatQty } from "../utils/numbers";
 import { todayIso } from "../insumos/labels";
-interface AuxRow {
-  key: number;
-  location: string;
-  factor_repeticion: string;
-  largo: string;
-  ancho: string;
-  alto: string;
-  isDeduction: boolean;
-  needsReview: boolean;
-}
+import { auxPayload, ComputoTable, newLine, PhotoStrip, qtyOfLines, type AuxRow, type Photo } from "./computo";
+import { numerarFilas, PlanillaSub, subRowAmount, subRowQty, subRowsPayload, type SubRow } from "./PlanillaSub";
 
 interface Row {
   item: MeasurableItem;
   unitPrice: number;
   lines: AuxRow[];
-  photos: { url: string; name: string }[];
+  photos: Photo[];
 }
 
 interface MeasurementWizardProps {
@@ -39,21 +30,12 @@ interface MeasurementWizardProps {
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
 }
 
-let seq = 1;
-const newLine = (): AuxRow => ({ key: seq++, location: "", factor_repeticion: "1", largo: "", ancho: "", alto: "", isDeduction: false, needsReview: false });
-const num = (v: string) => (v.trim() === "" ? 0 : Number(v.replace(",", ".")));
-const toAux = (l: AuxRow) => ({
-  largo: num(l.largo),
-  ancho: num(l.ancho),
-  alto: num(l.alto),
-  factor_repeticion: l.factor_repeticion.trim() === "" ? 1 : num(l.factor_repeticion),
-  isDeduction: l.isDeduction,
-});
-
 /**
  * Nueva medición en 3 pasos:
  * 1. Destino (avance de obra o subcontratista) · 2. Planilla (rubros, cómputo y fotos) ·
  * 3. Revisión obligatoria → borrador de certificado.
+ * Subcontratista: la planilla va por frente → rubro de la lista de MO (línea numerada) → rubro
+ * presupuestario sugerido; varias líneas y frentes en el mismo certificado.
  */
 export function MeasurementWizard({ project, partners, subcontracts, currency, initialPartnerId, onClose, onCreated, showToast }: MeasurementWizardProps) {
   const [step, setStep] = useState(0);
@@ -67,6 +49,8 @@ export function MeasurementWizard({ project, partners, subcontracts, currency, i
   const [nextLabel, setNextLabel] = useState("");
   const [catalog, setCatalog] = useState<MeasurableItem[]>([]);
   const [rows, setRows] = useState<Row[]>([]);
+  const [planilla, setPlanilla] = useState<PlanillaSubData | null>(null);
+  const [subRows, setSubRows] = useState<SubRow[]>([]);
   const [adding, setAdding] = useState(false);
   const [reviewed, setReviewed] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -83,7 +67,8 @@ export function MeasurementWizard({ project, partners, subcontracts, currency, i
 
   const loadCatalog = async () => {
     try {
-      setCatalog(await api.getMeasurableItems(project.id, effectivePartner));
+      if (effectivePartner) setPlanilla(await api.getPlanillaSub(project.id, effectivePartner));
+      else setCatalog(await api.getMeasurableItems(project.id));
     } catch (err: any) {
       showToast(err.message || "No se pudieron cargar los rubros", "error");
     }
@@ -105,10 +90,28 @@ export function MeasurementWizard({ project, partners, subcontracts, currency, i
     if (destino === "SUB" && !partnerId) return showToast("Elegí el subcontratista", "error");
     await loadCatalog();
     setRows([]);
+    setSubRows([]);
     setStep(1);
   };
 
-  const qtyOf = (r: Row) => measuredQuantity(r.lines.map(toAux));
+  const qtyOf = (r: Row) => qtyOfLines(r.lines);
+  const isSub = destino === "SUB";
+  const numeros = useMemo(() => (planilla ? numerarFilas(subRows, planilla) : new Map()), [subRows, planilla]);
+  const subTotals = useMemo(() => {
+    const amount = subRows.reduce((a, r) => a + subRowAmount(r), 0);
+    const alerts = subRows.flatMap((r) => {
+      const n = numeros.get(r.key)?.numero ?? "";
+      const lp = planilla?.listaMO.find((l) => l.id === r.laborPriceId);
+      const list: string[] = [];
+      if (r.budgetItemId === null) list.push(`${n}: sin rubro presupuestario (no se podrá aprobar)`);
+      if (subRowQty(r) <= 0) list.push(`${n}: la cantidad medida es 0`);
+      if (lp && Math.abs(Number(r.unitPrice.replace(",", ".")) - lp.unitPrice) > 0.5) list.push(`${n}: precio distinto de la lista de MO`);
+      const review = r.lines.filter((l) => l.needsReview).length;
+      if (review) list.push(`${n}: ${review} línea(s) marcadas [?] para revisar`);
+      return list;
+    });
+    return { amount, alerts };
+  }, [subRows, numeros, planilla]);
   const totals = useMemo(() => {
     const amount = rows.reduce((acc, r) => acc + Math.round(qtyOf(r) * r.unitPrice), 0);
     const alerts = rows.flatMap((r) => {
@@ -128,8 +131,6 @@ export function MeasurementWizard({ project, partners, subcontracts, currency, i
   }, [rows]);
 
   const updateRow = (id: number, patch: Partial<Row>) => setRows((prev) => prev.map((r) => (r.item.id === id ? { ...r, ...patch } : r)));
-  const updateLine = (id: number, key: number, patch: Partial<AuxRow>) =>
-    setRows((prev) => prev.map((r) => (r.item.id === id ? { ...r, lines: r.lines.map((l) => (l.key === key ? { ...l, ...patch } : l)) } : r)));
 
   const addPhotos = async (id: number, files: FileList | null) => {
     if (!files?.length) return;
@@ -150,18 +151,15 @@ export function MeasurementWizard({ project, partners, subcontracts, currency, i
         contractId: contractId || null,
         periodFrom: periodFrom || null,
         periodTo: periodTo || null,
-        items: rows.map((r) => ({
-          budgetItemId: r.item.id,
-          precioUnitario: r.unitPrice,
-          priceSource: r.item.priceSource,
-          auxiliaryCalculations: r.lines.map((l) => ({
-            descripcion: l.location || "Medición",
-            location: l.location || null,
-            ...toAux(l),
-            needsReview: l.needsReview,
-          })),
-          photos: r.photos.map((p) => ({ url: p.url, comentario: p.name })),
-        })),
+        items: isSub
+          ? subRowsPayload(subRows, numeros)
+          : rows.map((r) => ({
+              budgetItemId: r.item.id,
+              precioUnitario: r.unitPrice,
+              priceSource: r.item.priceSource,
+              auxiliaryCalculations: auxPayload(r.lines),
+              photos: r.photos.map((p) => ({ url: p.url, comentario: p.name })),
+            })),
       });
       if (asCertificate) await api.closeCertificationMeasurement(created.id);
       showToast(asCertificate ? "Borrador de certificado creado" : "Medición guardada");
@@ -189,7 +187,7 @@ export function MeasurementWizard({ project, partners, subcontracts, currency, i
             </Button>
           )}
           {step === 1 && (
-            <Button variant="primary" onClick={() => setStep(2)} disabled={!rows.length}>
+            <Button variant="primary" onClick={() => setStep(2)} disabled={isSub ? !subRows.length : !rows.length}>
               Siguiente: revisión
             </Button>
           )}
@@ -277,8 +275,13 @@ export function MeasurementWizard({ project, partners, subcontracts, currency, i
         </div>
       )}
 
+      {/* PASO 2 — PLANILLA (subcontratista) */}
+      {step === 1 && isSub && planilla && (
+        <PlanillaSub projectId={project.id} data={planilla} setData={setPlanilla} rows={subRows} setRows={setSubRows} money={money} showToast={showToast} />
+      )}
+
       {/* PASO 2 — PLANILLA */}
-      {step === 1 && (
+      {step === 1 && !isSub && (
         <div className="space-y-4">
           <div className="flex items-center justify-between rounded-xl bg-slate-50 px-4 py-3 text-sm">
             <span className="text-slate-600">
@@ -307,61 +310,8 @@ export function MeasurementWizard({ project, partners, subcontracts, currency, i
                 </div>
 
                 <div className="overflow-x-auto px-4 py-3">
-                  <table className="w-full min-w-[640px] text-sm">
-                    <thead className="text-left text-xs text-slate-500">
-                      <tr>
-                        <th className="pb-2">Sector / ubicación</th>
-                        <th className="w-16 pb-2">Piezas</th>
-                        <th className="w-20 pb-2">Largo</th>
-                        <th className="w-20 pb-2">Ancho</th>
-                        <th className="w-20 pb-2">Alto</th>
-                        <th className="w-16 pb-2 text-center" title="Descuento (vanos, aberturas)">Desc.</th>
-                        <th className="w-12 pb-2 text-center" title="Marcar para revisar">[?]</th>
-                        <th className="pb-2 text-right">Resultado</th>
-                        <th className="w-8"></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {r.lines.map((l) => {
-                        const sub = auxSubtotal(toAux(l));
-                        return (
-                          <tr key={l.key} className={cx(l.needsReview && "bg-amber-50")}>
-                            <td className="py-1 pr-2">
-                              <input value={l.location} onChange={(e) => updateLine(r.item.id, l.key, { location: e.target.value })} placeholder="Ej. Muro eje A" className={inputClass} />
-                            </td>
-                            {(["factor_repeticion", "largo", "ancho", "alto"] as const).map((k) => (
-                              <td key={k} className="py-1 pr-2">
-                                <input inputMode="decimal" value={l[k]} onChange={(e) => updateLine(r.item.id, l.key, { [k]: e.target.value })} className={`${inputClass} px-2`} />
-                              </td>
-                            ))}
-                            <td className="text-center">
-                              <input type="checkbox" checked={l.isDeduction} onChange={(e) => updateLine(r.item.id, l.key, { isDeduction: e.target.checked })} />
-                            </td>
-                            <td className="text-center">
-                              <input type="checkbox" checked={l.needsReview} onChange={(e) => updateLine(r.item.id, l.key, { needsReview: e.target.checked })} />
-                            </td>
-                            <td className="py-1 text-right">
-                              <p className={cx("font-medium tabular-nums", sub < 0 ? "text-rose-600" : "text-slate-900")}>{formatQty(sub)}</p>
-                              <p className="text-[11px] text-slate-400">{auxFormula(toAux(l))}</p>
-                            </td>
-                            <td>
-                              <button
-                                onClick={() => updateRow(r.item.id, { lines: r.lines.length > 1 ? r.lines.filter((x) => x.key !== l.key) : r.lines })}
-                                className="p-1 text-slate-300 hover:text-rose-600"
-                                aria-label="Quitar línea"
-                              >
-                                <X className="h-4 w-4" />
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                  <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                    <Button size="sm" variant="ghost" icon={<Plus className="h-4 w-4" />} onClick={() => updateRow(r.item.id, { lines: [...r.lines, newLine()] })}>
-                      Línea de cómputo
-                    </Button>
+                  <ComputoTable lines={r.lines} onChange={(lines) => updateRow(r.item.id, { lines })} />
+                  <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
                     <p className="text-sm">
                       Cantidad del período:{" "}
                       <strong className="tabular-nums">
@@ -383,8 +333,75 @@ export function MeasurementWizard({ project, partners, subcontracts, currency, i
         </div>
       )}
 
+      {/* PASO 3 — REVISIÓN (subcontratista) */}
+      {step === 2 && isSub && planilla && (
+        <div className="space-y-4 text-black">
+          <p className="text-sm">Revisá la planilla antes de crear el certificado. Las líneas sin rubro presupuestario se pueden guardar, pero no aprobar.</p>
+          <div className="overflow-x-auto border border-slate-300">
+            <table className="w-full min-w-[720px] text-sm">
+              <thead className="text-left text-xs">
+                <tr className="border-b border-slate-300">
+                  <th className="px-3 py-2">N°</th>
+                  <th className="px-3 py-2">Rubro MO</th>
+                  <th className="px-3 py-2">Rubro presupuestario</th>
+                  <th className="px-3 py-2 text-right">Anterior</th>
+                  <th className="px-3 py-2 text-right">Período</th>
+                  <th className="px-3 py-2 text-right">Acumulado</th>
+                  <th className="px-3 py-2 text-right">Monto</th>
+                </tr>
+              </thead>
+              <tbody>
+                {subRows.map((r) => {
+                  const nro = numeros.get(r.key);
+                  const lp = planilla.listaMO.find((l) => l.id === r.laborPriceId);
+                  const it = planilla.items.find((i) => i.id === r.budgetItemId) ?? (r.budgetItemId === planilla.gastosGenerales?.id ? planilla.gastosGenerales : null);
+                  const q = subRowQty(r);
+                  return (
+                    <tr key={r.key} className="border-t border-slate-200">
+                      <td className="px-3 py-2 font-medium">{nro?.numero}</td>
+                      <td className="px-3 py-2">{lp?.description}</td>
+                      <td className={cx("px-3 py-2", !it && "text-red-600")}>
+                        {it ? `${it.code} · ${it.name}` : "Sin asignar"}
+                        {!r.aportaAvance && <span className="block text-xs">Complementaria: sin avance</span>}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">{formatQty(nro?.anterior ?? 0)}</td>
+                      <td className="px-3 py-2 text-right font-medium tabular-nums">{formatQty(q)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{formatQty((nro?.anterior ?? 0) + q)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{money(subRowAmount(r))}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr className="border-t border-slate-300">
+                  <td colSpan={6} className="px-3 py-2 text-right font-medium">
+                    Total del período
+                  </td>
+                  <td className="px-3 py-2 text-right font-semibold tabular-nums">{money(subTotals.amount)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          {subTotals.alerts.length > 0 ? (
+            <div className="space-y-1 text-sm text-red-600">
+              {subTotals.alerts.map((a) => (
+                <p key={a} className="flex items-start gap-2">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /> {a}
+                </p>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm">Sin observaciones</p>
+          )}
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={reviewed} onChange={(e) => setReviewed(e.target.checked)} />
+            Revisé el cómputo y las cantidades
+          </label>
+        </div>
+      )}
+
       {/* PASO 3 — REVISIÓN */}
-      {step === 2 && (
+      {step === 2 && !isSub && (
         <div className="space-y-4">
           <p className="text-sm text-slate-600">Revisá el cómputo antes de crear el certificado. Una vez aprobado, no se puede modificar.</p>
           <div className="overflow-x-auto rounded-xl border border-slate-200">
@@ -467,39 +484,6 @@ export function MeasurementWizard({ project, partners, subcontracts, currency, i
   );
 }
 
-function PhotoStrip({
-  photos,
-  onAdd,
-  onRemove,
-}: {
-  photos: { url: string; name: string }[];
-  onAdd: (files: FileList | null) => void;
-  onRemove: (url: string) => void;
-}) {
-  const camera = useRef<HTMLInputElement>(null);
-  const gallery = useRef<HTMLInputElement>(null);
-  return (
-    <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 px-4 py-3">
-      <input ref={camera} type="file" accept="image/*" capture="environment" className="hidden" onChange={(e) => onAdd(e.target.files)} />
-      <input ref={gallery} type="file" accept="image/*" multiple className="hidden" onChange={(e) => onAdd(e.target.files)} />
-      <Button size="sm" icon={<Camera className="h-4 w-4" />} onClick={() => camera.current?.click()}>
-        Sacar foto
-      </Button>
-      <Button size="sm" icon={<ImagePlus className="h-4 w-4" />} onClick={() => gallery.current?.click()}>
-        Subir imagen
-      </Button>
-      {photos.map((p) => (
-        <div key={p.url} className="group relative">
-          <img src={p.url} alt={p.name} className="h-12 w-12 rounded-lg object-cover ring-1 ring-slate-200" />
-          <button onClick={() => onRemove(p.url)} className="absolute -right-1.5 -top-1.5 hidden rounded-full bg-white p-0.5 text-rose-600 shadow group-hover:block" aria-label="Quitar foto">
-            <X className="h-3 w-3" />
-          </button>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 function AddRubroModal({
   project,
   catalog,
@@ -526,12 +510,6 @@ function AddRubroModal({
     if (selected.missingPrice) {
       unitPrice = Number(price);
       if (!unitPrice) return showToast("Cargá el precio de mano de obra de este rubro", "error");
-      try {
-        await api.saveLaborPrice(project.id, { code: selected.code, description: selected.name, unit: selected.unit, unitPrice, budgetItemId: selected.id });
-        showToast("Precio guardado en la lista de mano de obra");
-      } catch (err: any) {
-        return showToast(err.message || "No se pudo guardar el precio", "error");
-      }
     }
     onAdd(selected, unitPrice);
   };

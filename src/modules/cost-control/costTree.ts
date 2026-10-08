@@ -200,6 +200,7 @@ export async function buildCostTree(projectId: number) {
       contractAmount: moneyNumber(project.montoContractualManual),
       coeficienteK: project.coeficienteK === null ? null : moneyNumber(project.coeficienteK),
       ivaPct: moneyNumber(project.ivaPct),
+      controlMedicionSub: project.controlMedicionSub,
     },
     kpis: {
       budget: sum((n) => n.budget),

@@ -8,7 +8,7 @@ import { DomainError, NotFoundError } from "../../errors/domain";
 import { audit } from "../../domain/audit";
 import { ensureGeneralExpenses } from "../../domain/generalExpenses";
 import { recalculateProjectFinancials } from "../../domain/projectFinancials";
-import { syncWorkFrontsFromAreas } from "../../domain/workFrontSync";
+import { nextAuxiliaryCode, syncWorkFrontsFromAreas } from "../../domain/workFrontSync";
 import { recordEstimate } from "../../domain/prices";
 
 export const catalogsRouter = Router();
@@ -310,14 +310,34 @@ catalogsRouter.post(
     if (body.chiefId && !(await prisma.personnel.findUnique({ where: { id: body.chiefId } }))) {
       throw new NotFoundError("Personal", body.chiefId);
     }
-    ok(
-      res,
-      await prisma.workFront.create({
-        data: { projectId: body.projectId, name: body.name, chiefId: body.chiefId ?? null },
+    // Alta manual = frente AUXILIAR, con el siguiente código libre (24 áreas → 25, 26…).
+    const created = await prisma.$transaction(async (tx) => {
+      const existentes = await tx.workFront.findMany({ where: { projectId: body.projectId }, select: { codigo: true } });
+      const codigo = nextAuxiliaryCode(existentes.map((w) => w.codigo));
+      return tx.workFront.create({
+        data: {
+          projectId: body.projectId,
+          name: body.name,
+          chiefId: body.chiefId ?? null,
+          tipo: "AUXILIAR",
+          codigo,
+          orden: Number(codigo),
+        },
         include: { chief: true },
-      }),
-      201
-    );
+      });
+    });
+    ok(res, created, 201);
+  })
+);
+
+/** POST /api/projects/:id/work-fronts/sync — crea/actualiza los frentes de las Áreas del presupuesto. */
+catalogsRouter.post(
+  "/projects/:id/work-fronts/sync",
+  asyncHandler(async (req, res) => {
+    const projectId = Number(req.params.id);
+    const project = await prisma.project.findUnique({ where: { id: projectId } });
+    if (!project) throw new NotFoundError("Obra", projectId);
+    ok(res, await prisma.$transaction((tx) => syncWorkFrontsFromAreas(tx, projectId)));
   })
 );
 
@@ -326,6 +346,15 @@ catalogsRouter.patch(
   asyncHandler(async (req, res) => {
     const id = Number(req.params.id);
     const body = workFrontSchema.partial().omit({ projectId: true }).parse(req.body);
+    const front = await prisma.workFront.findUnique({ where: { id } });
+    if (!front) throw new NotFoundError("Frente", id);
+    if (front.budgetItemId && body.name !== undefined && body.name !== front.name) {
+      throw new DomainError(
+        "WORK_FRONT_FROM_AREA",
+        "El nombre de un frente de Área viene del presupuesto: renombrá el Área en el Centro de Costos.",
+        409
+      );
+    }
     ok(res, await prisma.workFront.update({ where: { id }, data: body, include: { chief: true } }));
   })
 );
@@ -388,7 +417,7 @@ catalogsRouter.get(
       await prisma.workFront.findMany({
         where: projectId ? { projectId } : undefined,
         include: { chief: true, project: true },
-        orderBy: { id: "asc" },
+        orderBy: [{ tipo: "asc" }, { orden: "asc" }, { id: "asc" }],
       })
     );
   })

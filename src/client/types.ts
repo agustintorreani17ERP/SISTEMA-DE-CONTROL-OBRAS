@@ -114,8 +114,11 @@ export interface CostNode {
   pareto: boolean;
 }
 
+/** Control de certificados de subcontratistas contra la medición oficial (por obra). */
+export type ControlMedicionSub = "AVISAR" | "BLOQUEAR" | "NO_CONTROLAR";
+
 export interface CostControlData {
-  project: { id: number; code: string; name: string; currency: string; contractAmount: number; coeficienteK: number | null; ivaPct: number };
+  project: { id: number; code: string; name: string; currency: string; contractAmount: number; coeficienteK: number | null; ivaPct: number; controlMedicionSub: ControlMedicionSub };
   kpis: {
     budget: number;
     committed: number;
@@ -300,7 +303,10 @@ export interface ConfigRetencionesAnticipos {
 export interface WorkFront {
   id: number;
   projectId: number;
-  code: string;
+  /** Número del Área ("2" de "Área: 2) BLOQUE 6") o código automático del auxiliar. */
+  codigo?: string | null;
+  orden?: number;
+  tipo?: "AREA" | "AUXILIAR";
   name: string;
   chiefId?: number | null;
   chief?: Personnel | null;
@@ -674,7 +680,10 @@ export interface ItemPhoto {
 export interface CertificationItem {
   id?: number;
   certificationId?: number;
-  budgetItemId: number;
+  /** Null: renglón de subcontratista todavía sin rubro presupuestario (solo borrador). */
+  budgetItemId: number | null;
+  planillaLineaId?: number | null;
+  planillaLinea?: SubPlanillaLinea | null;
   cantidadAnterior: number;
   cantidadPresente: number;
   cantidadAcumulada: number;
@@ -792,24 +801,22 @@ export interface Portfolio {
 export interface LaborPrice {
   id: number;
   projectId: number;
-  budgetItemId: number | null;
   code: string;
   description: string;
   unit: string | null;
   unitPrice: number;
-  salePrice: number | null;
-  margin: number | null;
-  budgetItem?: { id: number; code: string; name: string; unit: string | null } | null;
+  sector: string | null;
 }
 
 export interface LaborPreviewRow {
+  rowNumber: number;
   code: string;
   description: string;
   unit: string;
-  unitPrice: number;
-  budgetItemId: number | null;
-  matchedBy: "code" | "description" | "similar" | null;
-  budgetItemLabel: string | null;
+  unitPrice: number | null;
+  sector: string | null;
+  errors: string[];
+  warnings: string[];
 }
 
 export interface MeasurableItem {
@@ -827,6 +834,37 @@ export interface MeasurableItem {
   totalContractQuantity: number;
   cantidadAnterior: number;
   montoAnterior: number;
+  /** Planilla de subcontratista: Área (rubro raíz) y capítulo/planta del ítem. */
+  areaId?: number | null;
+  capitulo?: string;
+}
+
+export interface SubPlanillaLinea {
+  id: number;
+  projectId: number;
+  partnerId: number;
+  workFrontId: number;
+  laborPriceId: number;
+  budgetItemId: number | null;
+  numero: string;
+  correlativo: number;
+  factorAvance: number;
+  aportaAvance: boolean;
+  /** Acumulado aprobado del contratista en esta línea. */
+  cantidadAnterior?: number;
+  workFront?: { id: number; name: string; codigo: string | null };
+  laborPrice?: { id: number; code: string; description: string; unit: string | null };
+}
+
+/** rubros-disponibles con destino subcontratista. */
+export interface PlanillaSubData {
+  tipo: "SUBCONTRATISTA";
+  items: MeasurableItem[];
+  frentes: { id: number; name: string; codigo: string | null; tipo: "AREA" | "AUXILIAR"; budgetItemId: number | null }[];
+  listaMO: { id: number; code: string; description: string; unit: string | null; unitPrice: number; sector: string | null }[];
+  lineas: SubPlanillaLinea[];
+  historial: { id: number; workFrontId: number; laborPriceId: number; budgetItemId: number | null }[];
+  gastosGenerales: { id: number; code: string; name: string; unit: string | null } | null;
 }
 
 export interface CertificateSummaryRow {
@@ -867,8 +905,11 @@ export interface CertificateSummaryData {
     overContract: string[];
     /** Subcontratista: precio distinto del sugerido de la lista de MO. */
     priceWarnings?: string[];
+    /** Subcontratista: N° de líneas sin rubro presupuestario (impiden aprobar). */
+    sinRubro?: string[];
     /** Subcontratista: supera la medición oficial acumulada. */
     overMeasured?: string[];
+    controlMedicionSub?: ControlMedicionSub;
   };
 }
 

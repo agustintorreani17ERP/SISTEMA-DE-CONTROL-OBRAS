@@ -1,7 +1,8 @@
 import type { Prisma } from "@prisma/client";
 import { postCost, postMovement, rebuildItemCache } from "./budget";
 import { recalculateProjectFinancials } from "./projectFinancials";
-import { toDecimal } from "../lib/money";
+import { moneyNumber, toDecimal } from "../lib/money";
+import { avanceDeLinea } from "./asignacionMO";
 import { ledgerItemFor, ledgerLines } from "./imputation";
 
 type Tx = Prisma.TransactionClient;
@@ -57,17 +58,22 @@ export async function rebuildProjectLedger(tx: Tx, projectId: number) {
   // Certificados (medición avanzada) aprobados
   const certifications = await tx.certification.findMany({
     where: { projectId, estado: "APROBADO" },
-    include: { items: true },
+    include: { items: { include: { planillaLinea: true } } },
   });
   for (const cert of certifications) {
     if (await hasMovements("Certification", cert.id)) continue;
     for (const item of cert.items) {
+      if (item.budgetItemId === null) continue;
+      const linea = item.planillaLinea;
       const base = {
         projectId,
         budgetItemId: item.budgetItemId,
         insumoId: item.insumoId,
         amount: item.montoTotal,
-        quantity: item.cantidadPresente,
+        // Subcontratista: avance que aporta la línea (0 si es complementaria).
+        quantity: linea
+          ? toDecimal(avanceDeLinea(moneyNumber(item.cantidadPresente), { factorAvance: moneyNumber(linea.factorAvance), aportaAvance: linea.aportaAvance }))
+          : item.cantidadPresente,
         sourceType: "Certification",
         sourceId: cert.id,
         sourceNumber: `CERT-${String(cert.numero).padStart(2, "0")}`,

@@ -10,7 +10,7 @@ import { audit, nextNumber } from "../../domain/audit";
 import { assertImputableItem, postCost, reverseMovements, type BudgetWarning } from "../../domain/budget";
 import { toDecimal } from "../../lib/money";
 import { recalculateProjectFinancials } from "../../domain/projectFinancials";
-import { subcontractOverMeasured } from "../../domain/progress";
+import { controlMedicionSubcontratistas } from "../../domain/progress";
 import { EVENTO, postAsientoDesdeRegla } from "../../domain/contabilidad";
 import { anularSolicitudPorOrigen, solicitudDesdeCertificadoSubcontrato } from "../../domain/fondos";
 import { usuarioDe } from "../../http/usuario";
@@ -155,7 +155,7 @@ async function certifyCertificate(id: number, usuario: string) {
 
       // Control contra la medición oficial (antes de sumar esta cantidad al libro mayor).
       const measurementWarnings = cert.quantity
-        ? await subcontractOverMeasured(tx, cert.contract.projectId, [
+        ? await controlMedicionSubcontratistas(tx, cert.contract.projectId, [
             { budgetItemId: cert.contract.budgetItemId, quantity: Number(cert.quantity) },
           ])
         : [];
