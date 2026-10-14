@@ -1,5 +1,5 @@
 import { InsumoCategoria, InsumoTipo } from "../types";
-import { localIso } from "../../domain/localDate";
+import { localIso } from "../../core/domain/localDate";
 
 export const TIPO_LABEL: Record<InsumoTipo, string> = { DIRECTO: "Directo", COMUN: "Común", TIEMPO: "Tiempo" };
 export const CATEGORIA_LABEL: Record<InsumoCategoria, string> = {

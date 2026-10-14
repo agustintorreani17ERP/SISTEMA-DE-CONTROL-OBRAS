@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { alertasPrecio, precioMoDesdeAcu, sugerirPrecio } from "../laborPriceMath";
-import { buildClientInvoice } from "../clientBillingMath";
-import { reconcile } from "../reconciliationMath";
+import { alertasPrecio, precioMoDesdeAcu, sugerirPrecio } from "../../ecms/domain/laborPriceMath";
+import { buildClientInvoice } from "../../erp/domain/clientBillingMath";
+import { reconcile } from "../../bridge/domain/reconciliationMath";
 
 describe("precio sugerido de MO para subcontratistas", () => {
   const acu = [

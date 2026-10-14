@@ -3,7 +3,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { api } from "../api";
 import { MeasurableItem, PlanillaSubData } from "../types";
 import { Button, cx, Field, inputClass, Modal } from "../ui";
-import { numeroLinea, siguienteCorrelativo, sugerirRubro, type MotivoSugerencia } from "../../domain/asignacionMO";
+import { numeroLinea, siguienteCorrelativo, sugerirRubro, type MotivoSugerencia } from "../../ecms/domain/asignacionMO";
 import { formatQty } from "../utils/numbers";
 import { auxPayload, ComputoTable, newLine, nextKey, num, PhotoStrip, qtyOfLines, type AuxRow, type Photo } from "./computo";
 
@@ -14,8 +14,6 @@ export interface SubRow {
   laborPriceId: number;
   budgetItemId: number | null;
   motivo: MotivoSugerencia | null;
-  aportaAvance: boolean;
-  factorAvance: string;
   unitPrice: string;
   lines: AuxRow[];
   photos: Photo[];
@@ -66,8 +64,6 @@ export const subRowsPayload = (rows: SubRow[], numeros: ReturnType<typeof numera
     workFrontId: r.workFrontId,
     laborPriceId: r.laborPriceId,
     budgetItemId: r.budgetItemId,
-    aportaAvance: r.aportaAvance,
-    factorAvance: num(r.factorAvance) || 1,
     precioUnitario: num(r.unitPrice),
     priceSource: "MANO_DE_OBRA" as const,
     auxiliaryCalculations: auxPayload(r.lines),
@@ -128,8 +124,6 @@ export function PlanillaSub({
         laborPriceId: lp.id,
         budgetItemId: sugerido?.budgetItemId ?? null,
         motivo: sugerido?.motivo ?? null,
-        aportaAvance: frente.tipo === "AREA",
-        factorAvance: "1",
         unitPrice: String(lp.unitPrice),
         lines: [newLine()],
         photos: [],
@@ -254,17 +248,6 @@ export function PlanillaSub({
                   </optgroup>
                 </select>
               </Field>
-              <div className="flex items-end gap-3">
-                <label className="flex items-center gap-2 pb-2 text-sm">
-                  <input type="checkbox" checked={r.aportaAvance} onChange={(e) => update(r.key, { aportaAvance: e.target.checked })} />
-                  Aporta avance
-                </label>
-                {r.aportaAvance && (
-                  <Field label="Factor de avance" hint="Avance del ítem por unidad medida">
-                    <input inputMode="decimal" value={r.factorAvance} onChange={(e) => update(r.key, { factorAvance: e.target.value })} className={`${inputClass} w-24`} />
-                  </Field>
-                )}
-              </div>
             </div>
 
             <div className="overflow-x-auto px-4 pb-3">
@@ -278,8 +261,7 @@ export function PlanillaSub({
               {distinto && <p className="text-red-600">Precio distinto de la lista ({money(lp?.unitPrice ?? 0)}): se avisará al aprobar.</p>}
               <p>
                 Cantidad: <strong className="tabular-nums">{formatQty(q)} {unidad}</strong>
-                {r.aportaAvance && num(r.factorAvance) !== 1 && <span> · avance {formatQty(q * (num(r.factorAvance) || 1))}</span>}
-                {!r.aportaAvance && <span> · complementaria (sin avance)</span>} · <span className="tabular-nums">{money(subRowAmount(r))}</span>
+                · <span className="tabular-nums">{money(subRowAmount(r))}</span>
               </p>
             </div>
 

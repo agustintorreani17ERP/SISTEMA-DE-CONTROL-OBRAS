@@ -18,7 +18,7 @@
 import { InsumoTipo, PrismaClient } from "@prisma/client";
 import { mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
-import { refreshStockCache } from "../../src/domain/stock";
+import { refreshStockCache } from "../../src/ecms/domain/stock";
 
 const prisma = new PrismaClient();
 const args = process.argv.slice(2);

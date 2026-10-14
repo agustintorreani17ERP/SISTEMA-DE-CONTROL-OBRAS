@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateMatch, MATCH_TOLERANCE_GS } from "../threeWayMatch";
+import { evaluateMatch, MATCH_TOLERANCE_GS } from "../../erp/domain/threeWayMatch";
 
 describe("evaluateMatch", () => {
   it("una factura EMITIDA (venta al cliente) nunca pasa por control de compras", () => {

@@ -19,7 +19,7 @@ import {
 import { api } from "../api";
 import { Project } from "../types";
 import { formatMoney } from "../utils/format";
-import { buildBudgetTree } from "../../modules/budgets/engine/budgetTree";
+import { buildBudgetTree } from "../../ecms/modules/budgets/engine/budgetTree";
 import type {
   ArithmeticStrategy,
   BudgetImportPreview,
@@ -30,7 +30,7 @@ import type {
   RowKind,
   SurchargeTreatment,
   ValidationIssue,
-} from "../../modules/budgets/engine/types";
+} from "../../ecms/modules/budgets/engine/types";
 
 interface ExcelBudgetImporterProps {
   project?: Project | null;

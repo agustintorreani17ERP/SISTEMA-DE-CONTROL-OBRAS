@@ -848,8 +848,6 @@ export interface SubPlanillaLinea {
   budgetItemId: number | null;
   numero: string;
   correlativo: number;
-  factorAvance: number;
-  aportaAvance: boolean;
   /** Acumulado aprobado del contratista en esta línea. */
   cantidadAnterior?: number;
   workFront?: { id: number; name: string; codigo: string | null };
@@ -1050,7 +1048,6 @@ export interface ParteDiarioInput {
   supervisor?: string | null;
   personal: { empleadoId: number; budgetItemId: number | null; horas: number }[];
   equipos: { insumoId: number; budgetItemId: number | null; horas: number }[];
-  avance: { budgetItemId: number; cantidad: number }[];
   combustible: { equipoId: number; litros: number; horometro: number | null; fotoUrl?: string | null; nota?: string | null }[];
   viajes: {
     equipoId: number | null;
@@ -1079,7 +1076,6 @@ export interface ParteDiarioRow {
   supervisor: string | null;
   personal: { id: number; empleado: string; item: ItemRef; horas: number }[];
   equipos: { id: number; equipo: { code: string; description: string }; item: ItemRef; horas: number }[];
-  avance: { id: number; item: { code: string; name: string; unit: string | null }; cantidad: number; origen: string }[];
   combustible: { id: number; equipo: { code: string; description: string }; litros: number; horometro: number | null; fotoUrl: string | null }[];
   viajes: { id: number; camion: string | null; origen: string; destino: string; material: string | null; cantidad: number; unidad: "M3" | "T"; km: number | null; item: ItemRef }[];
 }
@@ -1212,126 +1208,6 @@ export interface AcuBibliotecaItem {
   lineas: { codigo: string; insumo: string; unidad: string; consumo: number; grupo: AcuGrupo }[];
 }
 
-// ─── Avance fechado y cierres ──────────────────────────────────────────────
-
-export interface ProgressRow {
-  budgetItemId: number;
-  code: string;
-  name: string;
-  unit: string | null;
-  contrato: number;
-  puConIva: number;
-  puSinIva: number;
-  costoMetaUnit: number | null;
-  costoMetaFuente: "ACU" | "K" | null;
-  anterior: number;
-  ejecutado: number;
-  acumulado: number;
-  anteriorOficial: number;
-  ejecutadoOficial: number;
-  acumuladoOficial: number;
-  provisorio: number;
-  ultimaOficial: string | null;
-  planificado: number;
-  planAcumulado: number;
-  pctAvance: number | null;
-  cumplimiento: number | null;
-  vp: number | null;
-  vg: number | null;
-  ventaSinIva: number;
-  ip: number | null;
-  excedeContrato: boolean;
-}
-
-export interface ProgressReport {
-  desde: string;
-  hasta: string;
-  soloOficial: boolean;
-  rows: ProgressRow[];
-  totales: { ventaSinIva: number; vp: number; vg: number; ip: number | null; itemsConAvance: number; itemsProvisorios: number; itemsExcedidos: number };
-  ultimoCierre?: { id: number; desde: string; hasta: string } | null;
-}
-
-export interface AvanceHecho {
-  id: number;
-  budgetItemId: number;
-  fecha: string;
-  cantidad: number;
-  origen: "PARTE_DIARIO" | "MEDICION_OFICIAL";
-  sourceType: string | null;
-  sourceId: number | null;
-  nota: string | null;
-  budgetItem?: { code: string; name: string; unit: string | null };
-}
-
-export interface CierreResumen {
-  id: number;
-  desde: string;
-  hasta: string;
-  notas: string | null;
-  createdBy: string | null;
-  createdAt: string;
-  totales: ProgressReport["totales"] | null;
-  avisos: string[];
-  factura: { id: number; numeroFactura: string; total: number } | null;
-}
-
-export interface ClientInvoicePreview {
-  cierre: { id: number; desde: string; hasta: string };
-  project: { id: number; name: string; code: string; clientName: string | null };
-  certificados: { id: number; numero: number; estado: string }[];
-  facturada: { id: number; numeroFactura: string } | null;
-  draft: {
-    lineas: { budgetItemId: number; code: string; name: string; unit: string | null; cantidad: number; puConIva: number; total: number; iva: number; sinIva: number }[];
-    total: number;
-    iva: number;
-    sinIva: number;
-    ivaPct: number;
-    retencionPct: number;
-    retencion: number;
-    netoACobrar: number;
-    negativos: { code: string; name: string; cantidad: number; total: number }[];
-  };
-  avisos: string[];
-}
-
-// ─── Tablero de costos (hoja 8 Resumen) ─────────────────────────────────────
-
-export type { Metrics as DashMetrics, DashItemRow, DashRubroRow, Alerta as DashAlerta, CurvaPunto } from "../domain/dashboardMath";
-
-export interface CostDashboardData {
-  desde: string;
-  hasta: string;
-  inicio: string;
-  origen: "calculado" | "cache" | "snapshot";
-  obra: import("../domain/dashboardMath").Metrics & { perdidas: number; noImputado: number; totalContable: number; validacionOk: boolean };
-  subtotalItems: import("../domain/dashboardMath").Metrics;
-  rubros: import("../domain/dashboardMath").DashRubroRow[];
-  items: import("../domain/dashboardMath").DashItemRow[];
-  alertas: import("../domain/dashboardMath").Alerta[];
-  curva: import("../domain/dashboardMath").CurvaPunto[];
-  avisos: string[];
-}
-
-export interface ItemDrillData {
-  item: { id: number; code: string; name: string; unit: string | null };
-  desde: string;
-  hasta: string;
-  costo: import("../domain/costEngineMath").ItemCost | null;
-  viaA: { sourceType: string; sourceId: number; numero: string | null; fuente: string; fecha: string; monto: number; insumos: string[] }[];
-  viaB: { insumoId: number; code: string; cantidad: number; precio: number | null; monto: number }[];
-  viaC: {
-    total: number;
-    asignado: number;
-    porHoras: number;
-    porVG: number;
-    liquidaciones: { sourceType: string; sourceId: number; numero: string | null; fuente: string; fecha: string; monto: number }[];
-    horasEquipo: { equipo: string; horas: number }[];
-    horasPersonal: { persona: string; horas: number }[];
-    pozo: { pozo: number; porHoras: number; porVG: number; sinDistribuir: number; pesoConItem: number; pesoSinItem: number };
-  };
-}
-
 export type ReconFuente = "OC" | "SUBCONTRATO" | "CAJA_CHICA" | "FACTURA" | "PERSONAL" | "OTROS";
 
 export interface ReconciliationData {
@@ -1364,21 +1240,103 @@ export interface ReconciliationData {
   };
 }
 
-export interface PlanPreview {
-  periodos: string[];
-  filas: { fila: number; codigo: string; budgetItemId: number | null; fecha: string; cantidad: number; error?: string }[];
-  errores: string[];
+// ─── Presupuesto congelado, adendas y Previsto vs Ejecutado ─────────────────
+
+export type AdendaEstado = "BORRADOR" | "APROBADA" | "ANULADA";
+
+export interface AdendaLineaRow {
+  id: number;
+  adendaId: number;
+  tipo: "VARIACION" | "EXTRA";
+  budgetItemId: number | null;
+  deltaQuantity: number;
+  nota: string | null;
+  codigo: string | null;
+  nombre: string | null;
+  unidad: string | null;
+  parentId: number | null;
+  precioUnitario: number | null;
+  budgetItem?: { id: number; code: string; name: string; unit: string | null } | null;
+}
+
+export interface AdendaRow {
+  id: number;
+  projectId: number;
+  numero: number;
+  titulo: string;
+  motivo: string | null;
+  resolucion: string | null;
+  fecha: string;
+  estado: AdendaEstado;
+  approvedAt: string | null;
+  lineas: AdendaLineaRow[];
+}
+
+export interface AdendasData {
+  congelado: boolean;
+  adendas: AdendaRow[];
+}
+
+export interface AdendaLineaInput {
+  tipo: "VARIACION" | "EXTRA";
+  budgetItemId?: number | null;
+  deltaQuantity: number;
+  nota?: string | null;
+  codigo?: string | null;
+  nombre?: string | null;
+  unidad?: string | null;
+  parentId?: number | null;
+  precioUnitario?: number | null;
+}
+
+export interface AdendaInput {
+  titulo: string;
+  motivo?: string | null;
+  resolucion?: string | null;
+  fecha: string;
+  lineas: AdendaLineaInput[];
+}
+
+/** Fila de la planilla Previsto vs Ejecutado (cantidades solo en ítems; los montos de rubro los suma el cliente). */
+export interface PrevistoRow {
+  id: number;
+  parentId: number | null;
+  code: string;
+  name: string;
+  unit: string | null;
+  nodeKind: "RUBRO" | "SUBRUBRO" | "ITEM";
+  sortOrder: number;
+  unitPrice: number | null;
+  isExtra: boolean;
+  extraAdendaNumero: number | null;
+  contractQty: number | null;
+  deltas: Record<number, number>;
+  realQty: number | null;
+  executedQty: number | null;
+  saldoQty: number | null;
+  pct: number | null;
+  exceeded: boolean;
+  contractAmount: number;
+  realAmount: number;
+  executedAmount: number;
+  saldoAmount: number;
+}
+
+export interface PrevistoEjecutadoData {
+  projectId: number;
+  al: string;
+  congelado: boolean;
+  adendas: { id: number; numero: number; titulo: string; fecha: string; resolucion: string | null }[];
+  rows: PrevistoRow[];
 }
 
 // ─── Motor de costos ───────────────────────────────────────────────────────
 
-export type { EngineResult, ItemCost, MaterialResult, EstadoDesvio } from "../domain/costEngineMath";
-import type { EngineResult } from "../domain/costEngineMath";
+export type { EngineResult, ItemCost, MaterialResult, EstadoDesvio } from "../ecms/domain/costEngineMath";
+import type { EngineResult } from "../ecms/domain/costEngineMath";
 
 export interface CostEngineData extends EngineResult {
   projectId: number;
-  soloOficial: boolean;
-  origen: "calculado" | "cache" | "snapshot";
   generadoEl: string;
 }
 

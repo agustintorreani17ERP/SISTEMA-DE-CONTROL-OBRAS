@@ -24,7 +24,6 @@ const k = () => seq++;
 
 interface RowPersonal { key: number; empleadoId: number | null; budgetItemId: number | null; horas: string }
 interface RowEquipo { key: number; insumoId: number | null; budgetItemId: number | null; horas: string }
-interface RowAvance { key: number; budgetItemId: number | null; cantidad: string }
 interface RowCombustible { key: number; equipoId: number | null; litros: string; horometro: string; foto: Blob | null; fotoUrl: string | null }
 interface RowViaje {
   key: number;
@@ -50,7 +49,6 @@ interface FormState {
   supervisor: string;
   personal: RowPersonal[];
   equipos: RowEquipo[];
-  avance: RowAvance[];
   combustible: RowCombustible[];
   viajes: RowViaje[];
 }
@@ -66,7 +64,6 @@ const vacio = (): FormState => ({
   supervisor: cacheGetJson<string>("parte-supervisor") ?? "",
   personal: [],
   equipos: [],
-  avance: [],
   combustible: [],
   viajes: [],
 });
@@ -85,7 +82,6 @@ function desdeOutbox(item: OutboxItem): FormState {
     supervisor: p.supervisor ?? "",
     personal: p.personal.map((r) => ({ key: k(), empleadoId: r.empleadoId, budgetItemId: r.budgetItemId, horas: fromNum(r.horas) })),
     equipos: p.equipos.map((r) => ({ key: k(), insumoId: r.insumoId, budgetItemId: r.budgetItemId, horas: fromNum(r.horas) })),
-    avance: p.avance.map((r) => ({ key: k(), budgetItemId: r.budgetItemId, cantidad: fromNum(r.cantidad) })),
     combustible: p.combustible.map((r, i) => ({ key: k(), equipoId: r.equipoId, litros: fromNum(r.litros), horometro: fromNum(r.horometro), foto: item.fotos[i] ?? null, fotoUrl: r.fotoUrl ?? null })),
     viajes: p.viajes.map((r) => ({
       key: k(),
@@ -176,7 +172,7 @@ export function ParteDiarioForm({
     const d = cacheGetJson<FormState>(draftKey);
     return d ? { ...d, combustible: d.combustible.map((c) => ({ ...c, foto: null })) } : vacio();
   });
-  const [open, setOpen] = useState<Record<string, boolean>>({ datos: true, personal: true, equipos: false, avance: true, combustible: false, viajes: false });
+  const [open, setOpen] = useState<Record<string, boolean>>({ datos: true, personal: true, equipos: false, combustible: false, viajes: false });
   const [saving, setSaving] = useState(false);
   const [errores, setErrores] = useState<string[]>([]);
   const previews = useRef(new Map<Blob, string>());
@@ -204,7 +200,7 @@ export function ParteDiarioForm({
   const equipoById = useMemo(() => new Map(catalogo.equipos.map((e) => [e.id, e])), [catalogo]);
   const empById = useMemo(() => new Map(catalogo.empleados.map((e) => [e.id, e])), [catalogo]);
 
-  type ListKey = "personal" | "equipos" | "avance" | "combustible" | "viajes";
+  type ListKey = "personal" | "equipos" | "combustible" | "viajes";
   const upd = <L extends ListKey>(list: L, key: number, patch: Partial<FormState[L][number]>) =>
     setF((s) => ({ ...s, [list]: (s[list] as { key: number }[]).map((r) => (r.key === key ? { ...r, ...patch } : r)) }));
   const del = (list: ListKey, key: number) => setF((s) => ({ ...s, [list]: (s[list] as { key: number }[]).filter((r) => r.key !== key) }));
@@ -233,15 +229,6 @@ export function ParteDiarioForm({
         return [];
       }
       return [{ insumoId: r.insumoId, budgetItemId: r.budgetItemId, horas: h }];
-    });
-    const avance = f.avance.flatMap((r, i) => {
-      const c = toNum(r.cantidad);
-      if (!r.budgetItemId && !r.cantidad) return [];
-      if (!r.budgetItemId || !Number.isFinite(c) || c === 0) {
-        errs.push(`Avance fila ${i + 1}: elegí el ítem y una cantidad distinta de 0`);
-        return [];
-      }
-      return [{ budgetItemId: r.budgetItemId, cantidad: c }];
     });
     const fotos: Record<number, Blob> = {};
     const combustible = f.combustible.flatMap((r, i) => {
@@ -284,8 +271,8 @@ export function ParteDiarioForm({
     const porEmp = new Map<number, number>();
     for (const p of personal) porEmp.set(p.empleadoId, (porEmp.get(p.empleadoId) ?? 0) + p.horas);
     for (const [id, h] of porEmp) if (h > 24) errs.push(`${empById.get(id)?.fullName}: más de 24 horas en el día`);
-    if (!personal.length && !equipos.length && !avance.length && !combustibleOut.length && !viajes.length && !f.actividades.trim()) {
-      errs.push("El parte está vacío: cargá horas, avance, combustible, viajes o actividades");
+    if (!personal.length && !equipos.length && !combustibleOut.length && !viajes.length && !f.actividades.trim()) {
+      errs.push("El parte está vacío: cargá horas, combustible, viajes o actividades");
     }
     setErrores(errs);
     if (errs.length) return null;
@@ -301,7 +288,6 @@ export function ParteDiarioForm({
         supervisor: f.supervisor.trim() || null,
         personal,
         equipos,
-        avance,
         combustible: combustibleOut,
         viajes,
       },
@@ -444,22 +430,6 @@ export function ParteDiarioForm({
             {f.equipos.length > 0 && <p className="text-sm tabular-nums">{formatQty(horasEquipo, 1)} h de equipo</p>}
           </Section>
 
-          <Section title="Avance del día" count={f.avance.length} open={open.avance} onToggle={() => toggle("avance")}>
-            {f.avance.map((r) => {
-              const it = r.budgetItemId ? itemById.get(r.budgetItemId) : null;
-              return (
-                <RowBox key={r.key} onRemove={() => del("avance", r.key)}>
-                  <SearchPick options={opts.items} value={r.budgetItemId} onChange={(v) => upd("avance", r.key, { budgetItemId: v })} placeholder="Ítem…" />
-                  <div className="flex items-center gap-2">
-                    <input className={cx(numCls, "w-36")} inputMode="decimal" placeholder="Cantidad" value={r.cantidad} onChange={(e) => upd("avance", r.key, { cantidad: e.target.value })} />
-                    <span className="text-sm">{it?.unit}</span>
-                  </div>
-                </RowBox>
-              );
-            })}
-            <AddBtn onClick={() => setF((s) => ({ ...s, avance: [...s.avance, { key: k(), budgetItemId: null, cantidad: "" }] }))}>Agregar avance</AddBtn>
-            <p className="text-xs text-slate-600">Avance provisorio: la medición oficial lo reemplaza al cerrar el período.</p>
-          </Section>
 
           <Section title="Combustible" count={f.combustible.length} open={open.combustible} onToggle={() => toggle("combustible")}>
             {f.combustible.map((r) => {

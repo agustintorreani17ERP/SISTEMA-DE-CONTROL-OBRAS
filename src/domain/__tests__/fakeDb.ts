@@ -1,5 +1,5 @@
 /**
- * Prisma falso en memoria para tests de dominio que cruzan varias tablas (cierres, facturación,
+ * Prisma falso en memoria para tests de dominio que cruzan varias tablas (facturación,
  * libro mayor, stock). Cubre lo que usa el dominio: where con in/not/rangos/OR/AND, orderBy,
  * include/select de relaciones, create anidado, increment, upsert, aggregate _sum y $transaction.
  * No es el simulador de src/lib/prisma.ts (ese persiste en mock-db-store.json).
@@ -9,7 +9,6 @@ type Row = Record<string, any>;
 
 /** Relaciones a muchos (o uno a uno inversas) que no se deducen de un campo `<nombre>Id`. */
 const RELACIONES: Record<string, { table: string; fk: string; many: boolean }> = {
-  "cierrePeriodo.factura": { table: "invoice", fk: "cierreId", many: false },
   "certification.items": { table: "certificationItem", fk: "certificationId", many: true },
   "certification.invoices": { table: "invoice", fk: "certificationId", many: true },
   "invoice.items": { table: "invoiceItem", fk: "invoiceId", many: true },

@@ -1,7 +1,7 @@
 import { DocumentStatus, Prisma, PrismaClient } from "@prisma/client";
-import { ensureGeneralExpenses } from "../src/domain/generalExpenses";
-import { postMovement } from "../src/domain/budget";
-import { recalculateProjectFinancials } from "../src/domain/projectFinancials";
+import { ensureGeneralExpenses } from "../src/ecms/domain/generalExpenses";
+import { postMovement } from "../src/ecms/domain/budget";
+import { recalculateProjectFinancials } from "../src/bridge/domain/projectFinancials";
 
 /**
  * Datos de ejemplo para desarrollo: una obra genérica con presupuesto en árbol, un pedido
@@ -22,9 +22,6 @@ async function reset() {
   await prisma.budgetMovement.deleteMany();
   await prisma.stockMovement.deleteMany();
   await prisma.conteoInventario.deleteMany();
-  await prisma.avanceItem.deleteMany();
-  await prisma.avancePlanificado.deleteMany();
-  await prisma.cierrePeriodo.deleteMany();
   await prisma.parteEquipo.deleteMany();
   await prisma.parteHoraPersonal.deleteMany();
   await prisma.cargaCombustible.deleteMany();
@@ -38,6 +35,8 @@ async function reset() {
   await prisma.materialRequest.deleteMany();
   await prisma.workFront.deleteMany();
   await prisma.budgetItem.updateMany({ data: { parentId: null } });
+  await prisma.adendaLinea.deleteMany();
+  await prisma.adenda.deleteMany();
   await prisma.budgetItem.deleteMany();
   await prisma.budgetImport.deleteMany();
   await prisma.project.deleteMany();

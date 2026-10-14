@@ -10,8 +10,8 @@ import {
   rechazarSolicitud,
   solicitudDesdeCertificacion,
   solicitudDesdeCertificadoSubcontrato,
-} from "../fondos";
-import { calcularNeto, estadoTrasPago, puedeTransicionar, solicitadoSinPagar, totalesPorEstado } from "../fondosMath";
+} from "../../erp/domain/fondos";
+import { calcularNeto, estadoTrasPago, puedeTransicionar, solicitadoSinPagar, totalesPorEstado } from "../../erp/domain/fondosMath";
 
 /**
  * Prisma en memoria (mismo patrón que contabilidad.more.test.ts: arrays + funciones, sin DB).

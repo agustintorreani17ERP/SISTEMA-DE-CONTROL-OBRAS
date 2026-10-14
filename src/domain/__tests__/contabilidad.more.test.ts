@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { anularAsiento, EVENTO, postAsientoDesdeRegla, rebuildProjectAccounting } from "../contabilidad";
+import { anularAsiento, EVENTO, postAsientoDesdeRegla, rebuildProjectAccounting } from "../../erp/domain/contabilidad";
 
 /**
  * Fake de Prisma más completo que el de contabilidad.test.ts: agrega reglaAsientoContable y los

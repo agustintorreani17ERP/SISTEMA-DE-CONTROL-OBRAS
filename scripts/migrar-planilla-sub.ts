@@ -10,7 +10,7 @@
  * Correr antes scripts/sync-frentes.ts para que existan los frentes de las Áreas.
  */
 import { prisma } from "../src/lib/prisma";
-import { resolverLinea } from "../src/domain/subPlanilla";
+import { resolverLinea } from "../src/ecms/domain/subPlanilla";
 
 async function main() {
   const items = await prisma.certificationItem.findMany({

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { postAsiento } from "../contabilidad";
+import { postAsiento } from "../../erp/domain/contabilidad";
 
 function fakeTx() {
   const asientos: any[] = [];

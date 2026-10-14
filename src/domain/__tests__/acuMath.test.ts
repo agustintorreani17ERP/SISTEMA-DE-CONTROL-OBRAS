@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AcuLineInput, computeAcu, paretoIds } from "../acuMath";
+import { AcuLineInput, computeAcu, paretoIds } from "../../ecms/domain/acuMath";
 
 // Datos de las hojas "3 ACU" y "4 Presupuesto control" del Excel CTN.
 const K = 1.3454;

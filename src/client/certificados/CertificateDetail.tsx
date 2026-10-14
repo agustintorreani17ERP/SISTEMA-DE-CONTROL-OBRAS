@@ -4,7 +4,7 @@ import { CheckCircle2, Download, FileSpreadsheet, Info, Printer, XCircle } from 
 import { api } from "../api";
 import { CertificateSummaryData, Project } from "../types";
 import { Badge, Button, Card, cx, inputClass, Modal, pct } from "../ui";
-import { auxFormula } from "../../modules/certifications/certMath";
+import { auxFormula } from "../../ecms/modules/certifications/certMath";
 import { formatMoney } from "../utils/format";
 import { CERT_STATUS, destinoLabel, periodLabel } from "./status";
 import { agruparPorFrente } from "./porFrente";

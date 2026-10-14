@@ -5,7 +5,7 @@ import type { AcuBibliotecaItem, AcuGrupo, CostNode, Insumo, InsumoTipo, ItemAcu
 import { Button, Field, Modal, cx, inputClass } from "../ui";
 import { formatGs, formatPct, formatQty } from "../utils/numbers";
 import { NumCell, cellInputCls, gridKeyDown } from "../components/certifications/sheetGrid";
-import { computeAcu } from "../../domain/acuMath";
+import { computeAcu } from "../../ecms/domain/acuMath";
 import { TIPO_LABEL } from "../insumos/labels";
 
 type Toast = (msg: string, type?: "success" | "error" | "info") => void;

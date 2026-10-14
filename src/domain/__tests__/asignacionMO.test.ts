@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import type { Prisma } from "@prisma/client";
 import {
   acumuladoPorLinea,
-  avanceDeLinea,
   contextoItems,
   lineasSinRubro,
   mensajeLineasSinRubro,
@@ -13,8 +12,8 @@ import {
   similarity,
   sugerirRubro,
   type ItemRef,
-} from "../asignacionMO";
-import { assertSinLineasPendientes, resolverLinea } from "../subPlanilla";
+} from "../../ecms/domain/asignacionMO";
+import { assertSinLineasPendientes, resolverLinea } from "../../ecms/domain/subPlanilla";
 
 describe("normalización de texto y unidades", () => {
   it("H°A°, HºAº, HoAo y hormigón armado son lo mismo; quita «Ejecución de»", () => {
@@ -91,11 +90,7 @@ describe("sugerirRubro", () => {
   });
 });
 
-describe("avance y acumulados por línea", () => {
-  it("avance = cantidad × factor; complementaria (no aporta avance) = 0", () => {
-    expect(avanceDeLinea(10, { factorAvance: 0.5, aportaAvance: true })).toBe(5);
-    expect(avanceDeLinea(10, { factorAvance: 1, aportaAvance: false })).toBe(0);
-  });
+describe("acumulados por línea", () => {
   it("acumulado por planillaLineaId", () => {
     const m = acumuladoPorLinea([
       { planillaLineaId: 1, cantidad: 3 },
@@ -138,7 +133,7 @@ function fakeTx() {
       findUnique: async ({ where }: any) => lineas.find((l) => l.id === where.id) ?? null,
       findMany: async ({ where }: any) => lineas.filter((l) => match(l, where)),
       create: async ({ data }: any) => {
-        const l = { id: lineas.length + 1, factorAvance: 1, aportaAvance: true, ...data };
+        const l = { id: lineas.length + 1, ...data };
         lineas.push(l);
         return l;
       },
@@ -166,9 +161,8 @@ describe("resolverLinea", () => {
   it("una línea sin rubro conserva su número al asignarse", async () => {
     const { tx } = fakeTx();
     const borrador = await resolverLinea(tx, 1, 50, { workFrontId: 10, laborPriceId: 7, budgetItemId: null });
-    const asignada = await resolverLinea(tx, 1, 50, { planillaLineaId: borrador.id, workFrontId: 10, laborPriceId: 7, budgetItemId: 100, aportaAvance: false });
+    const asignada = await resolverLinea(tx, 1, 50, { planillaLineaId: borrador.id, workFrontId: 10, laborPriceId: 7, budgetItemId: 100 });
     expect(asignada.id).toBe(borrador.id);
     expect(asignada.numero).toBe("2.1");
-    expect(asignada.aportaAvance).toBe(false);
   });
 });

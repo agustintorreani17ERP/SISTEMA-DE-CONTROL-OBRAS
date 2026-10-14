@@ -5,7 +5,7 @@ import fs from "fs";
 import { env } from "./config/env";
 import { apiRouter } from "./routes";
 import { errorHandler } from "./middleware/errorHandler";
-import { UPLOADS_DIR } from "./modules/uploads/uploads.controller";
+import { UPLOADS_DIR } from "./core/modules/uploads/uploads.controller";
 
 export function createApp() {
   const app = express();

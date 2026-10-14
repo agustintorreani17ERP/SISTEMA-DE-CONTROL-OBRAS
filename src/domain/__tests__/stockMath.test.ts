@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveCountAdjustments, firstNegativeDay, stockAtDate } from "../stockMath";
+import { deriveCountAdjustments, firstNegativeDay, stockAtDate } from "../../ecms/domain/stockMath";
 
 const compras = [
   { fecha: "2026-03-01", quantity: 1000 },

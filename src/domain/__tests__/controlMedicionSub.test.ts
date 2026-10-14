@@ -1,18 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { DomainError } from "../../errors/domain";
-import { controlMedicionSubcontratistas } from "../progress";
+import { controlMedicionSubcontratistas } from "../../ecms/domain/medicion";
 
 type Modo = "AVISAR" | "BLOQUEAR" | "NO_CONTROLAR";
 
-/** Ítem 10: subcontratistas ya certificaron 40 m³ y la medición oficial acumulada es 50 m³. */
+/** Ítem 10: subcontratistas ya certificaron 40 m³ y los certificados al cliente miden 30 + 20 = 50 m³. */
 function fakeDb(modo: Modo) {
   return {
     project: { findUnique: async () => ({ controlMedicionSub: modo }) },
     budgetItem: {
       findMany: async () => [{ id: 10, code: "1.1", name: "Hormigón", unit: "m3", subcontractQuantity: 40 }],
     },
-    avanceItem: {
-      groupBy: async () => [{ budgetItemId: 10, _sum: { cantidad: 50 } }],
+    certification: {
+      findMany: async () => [
+        { periodTo: new Date("2026-08-31"), fecha: new Date("2026-08-31"), items: [{ budgetItemId: 10, cantidadPresente: 30 }] },
+        { periodTo: null, fecha: new Date("2026-09-30"), items: [{ budgetItemId: 10, cantidadPresente: 20 }, { budgetItemId: null, cantidadPresente: 5 }] },
+      ],
     },
   } as any;
 }

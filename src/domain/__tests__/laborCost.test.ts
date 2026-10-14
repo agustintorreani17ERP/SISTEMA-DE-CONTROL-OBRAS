@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CARGAS_DEFAULT, asistenciaDesdeParte, cargasPct, costoHora, pesosPersonal } from "../laborCost";
+import { CARGAS_DEFAULT, asistenciaDesdeParte, cargasPct, costoHora, pesosPersonal } from "../../ecms/domain/laborCost";
 
 describe("costo hora con cargas", () => {
   it("mensualero: salario ÷ 26 días ÷ 8 h × (1 + IPS 16,5 + aguinaldo 8,33 + vacaciones 4,17)", () => {

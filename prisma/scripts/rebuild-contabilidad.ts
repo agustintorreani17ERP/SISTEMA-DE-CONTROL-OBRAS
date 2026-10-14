@@ -7,7 +7,7 @@
  *   npx tsx prisma/scripts/rebuild-contabilidad.ts --obra 3     # una sola obra
  */
 import { PrismaClient } from "@prisma/client";
-import { rebuildProjectAccounting } from "../../src/domain/contabilidad";
+import { rebuildProjectAccounting } from "../../src/erp/domain/contabilidad";
 
 const prisma = new PrismaClient();
 const args = process.argv.slice(2);

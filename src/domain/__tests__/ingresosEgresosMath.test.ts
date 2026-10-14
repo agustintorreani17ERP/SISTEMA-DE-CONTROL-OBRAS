@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agruparPorBucketAntiguedad, esIngreso, saldoPendiente } from "../ingresosEgresosMath";
+import { agruparPorBucketAntiguedad, esIngreso, saldoPendiente } from "../../erp/domain/ingresosEgresosMath";
 
 describe("esIngreso", () => {
   it("una factura EMITIDA (al cliente) es un ingreso", () => {

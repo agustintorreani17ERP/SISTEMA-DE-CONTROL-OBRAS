@@ -104,24 +104,6 @@ function ParteDetalle({ p }: { p: ParteDiarioRow }) {
           </table>
         </Linea>
       )}
-      {p.avance.length > 0 && (
-        <Linea label="Avance">
-          <table className="w-full">
-            <tbody>
-              {p.avance.map((a) => (
-                <tr key={a.id}>
-                  <td className="py-0.5 pr-2">
-                    {a.item.code} {a.item.name}
-                  </td>
-                  <td className="py-0.5 text-right tabular-nums">
-                    {formatQty(a.cantidad)} {a.item.unit}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Linea>
-      )}
       {p.combustible.length > 0 && (
         <Linea label="Combustible">
           {p.combustible.map((c) => (
@@ -151,7 +133,7 @@ function ParteDetalle({ p }: { p: ParteDiarioRow }) {
 }
 
 /**
- * Parte diario de obra: horas de personal y equipos por ítem, avance del día, combustible y
+ * Parte diario de obra: horas de personal y equipos por ítem, combustible y
  * viajes. Se carga desde el celular aunque no haya señal (cola local) y se envía después.
  */
 export const DailyLogTab: React.FC<{ project?: Project | null; showToast: Toast }> = ({ project, showToast }) => {
@@ -200,7 +182,7 @@ function DailyLog({ project, showToast }: { project: Project; showToast: Toast }
   };
 
   const borrar = async (p: ParteDiarioRow) => {
-    if (!confirm(`¿Borrar el parte del ${fmtDate(p.fecha)}? Se borran sus horas, avance, combustible y viajes.`)) return;
+    if (!confirm(`¿Borrar el parte del ${fmtDate(p.fecha)}? Se borran sus horas, combustible y viajes.`)) return;
     try {
       await api.deleteParteDiario(p.id);
       showToast("Parte borrado", "success");
@@ -259,7 +241,7 @@ function DailyLog({ project, showToast }: { project: Project; showToast: Toast }
               <li key={i.clientUuid} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm">
                 <span className="tabular-nums">{fmtDate(i.payload.fecha)}</span>
                 <span className="text-slate-600">
-                  {i.payload.personal.length} pers. · {i.payload.equipos.length} eq. · {i.payload.avance.length} avance · {i.payload.combustible.length} comb. · {i.payload.viajes.length} viajes
+                  {i.payload.personal.length} pers. · {i.payload.equipos.length} eq. · {i.payload.combustible.length} comb. · {i.payload.viajes.length} viajes
                 </span>
                 {i.estado === "RECHAZADO" ? <span className="w-full text-red-600">{i.error}</span> : <span className="text-slate-600">pendiente</span>}
                 {i.estado === "RECHAZADO" && catalogo && (
@@ -286,7 +268,7 @@ function DailyLog({ project, showToast }: { project: Project; showToast: Toast }
       {partes === null ? (
         <p className="text-sm text-slate-600">Cargando…</p>
       ) : partes.length === 0 ? (
-        <EmptyState title="Sin partes en el rango" help="Cargá el parte del día desde el celular: horas por ítem, avance, combustible y viajes." />
+        <EmptyState title="Sin partes en el rango" help="Cargá el parte del día desde el celular: horas por ítem, combustible y viajes." />
       ) : (
         <div className="border border-slate-300">
           {partes.map((p) => {
@@ -316,7 +298,6 @@ function DailyLog({ project, showToast }: { project: Project; showToast: Toast }
                   {p.clima && <span className="text-slate-600">{CLIMA[p.clima] ?? p.clima}</span>}
                   <span className="tabular-nums">{formatQty(hp, 1)} h personal</span>
                   <span className="tabular-nums">{formatQty(he, 1)} h equipo</span>
-                  {p.avance.length > 0 && <span>{p.avance.length} ítem(s) con avance</span>}
                   {lt > 0 && <span className="tabular-nums">{formatQty(lt, 1)} L</span>}
                   {p.viajes.length > 0 && <span>{p.viajes.length} viaje(s)</span>}
                   <span className="ml-auto text-xs text-slate-600">{p.supervisor}</span>

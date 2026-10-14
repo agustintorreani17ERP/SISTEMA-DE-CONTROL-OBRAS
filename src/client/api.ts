@@ -29,11 +29,6 @@ import {
   WarehouseStock,
   StockMovement,
   ConteoInventario,
-  ProgressReport,
-  AvanceHecho,
-  CierreResumen,
-  PlanPreview,
-  CostEngineData,
   ParteEquipoRow,
   ParteCatalogo,
   ParteDiarioInput,
@@ -41,10 +36,11 @@ import {
   CombustibleData,
   ViajesData,
   CostoHoraData,
-  ClientInvoicePreview,
   ReconciliationData,
-  CostDashboardData,
-  ItemDrillData,
+  AdendasData,
+  AdendaInput,
+  AdendaRow,
+  PrevistoEjecutadoData,
   Insumo,
   InsumoPrecio,
   InsumoTipo,
@@ -71,7 +67,7 @@ import type {
   ImportRow,
   NumberFormat,
   SurchargeTreatment,
-} from "../modules/budgets/engine/types";
+} from "../ecms/modules/budgets/engine/types";
 
 /** Rol del usuario logueado (localStorage), para mostrar acciones de administrador. */
 export function currentRole(): string | null {
@@ -88,7 +84,7 @@ function usuarioHeader(): Record<string, string> {
   try {
     const saved = localStorage.getItem("infratrack_user");
     const user = saved ? (JSON.parse(saved) as { fullName?: string; role?: string }) : undefined;
-    // x-user-role: rol del usuario logueado (provisorio hasta el login real; ej. reabrir cierres es solo ADMIN).
+    // x-user-role: rol del usuario logueado (provisorio hasta el login real).
     return { ...(user?.fullName ? { "x-usuario": encodeURIComponent(user.fullName) } : {}), ...(user?.role ? { "x-user-role": user.role } : {}) };
   } catch {
     return {};
@@ -1001,54 +997,21 @@ export const api = {
   },
   copyAcu: (body: { sourceItemId: number; targetItemIds: number[]; modo: "REEMPLAZAR" | "AGREGAR" }) =>
     request<{ copiados: number; avisos: string[] }>("/api/acu/copiar", { method: "POST", body: JSON.stringify(body) }),
-  // Avance fechado, cronograma y cierres
-  getAvance: (projectId: number, params: { desde?: string; hasta?: string; oficial?: boolean } = {}) => {
-    const qs = new URLSearchParams();
-    if (params.desde) qs.set("desde", params.desde);
-    if (params.hasta) qs.set("hasta", params.hasta);
-    if (params.oficial) qs.set("oficial", "true");
-    return request<ProgressReport>(`/api/projects/${projectId}/avance?${qs}`);
-  },
-  getAvanceHechos: (projectId: number, desde: string, hasta: string, budgetItemId?: number) =>
-    request<AvanceHecho[]>(
-      `/api/projects/${projectId}/avance/hechos?desde=${desde}&hasta=${hasta}${budgetItemId ? `&budgetItemId=${budgetItemId}` : ""}`
-    ),
-  savePartes: (projectId: number, body: { fecha: string; lineas: { budgetItemId: number; cantidad: number; nota?: string | null }[] }) =>
-    request<{ creados: number }>(`/api/projects/${projectId}/avance/partes`, { method: "POST", body: JSON.stringify(body) }),
-  deleteAvance: (id: number) => request<{ deleted: boolean }>(`/api/avance/${id}`, { method: "DELETE" }),
-  previewPlan: (projectId: number, texto: string) =>
-    request<PlanPreview>(`/api/projects/${projectId}/plan/preview`, { method: "POST", body: JSON.stringify({ texto }) }),
-  savePlan: (projectId: number, body: { modo: "REEMPLAZAR" | "COMBINAR"; lineas: { budgetItemId: number; fecha: string; cantidad: number }[] }) =>
-    request<{ guardados: number }>(`/api/projects/${projectId}/plan`, { method: "PUT", body: JSON.stringify(body) }),
-  getCierres: (projectId: number) => request<CierreResumen[]>(`/api/projects/${projectId}/cierres`),
-  getCerradoHasta: (projectId: number) => request<{ hasta: string | null }>(`/api/projects/${projectId}/cerrado-hasta`),
-  reabrirCierre: (cierreId: number, motivo: string) =>
-    request<{ reaperturaId: number; cierre: { desde: string; hasta: string }; avisos: string[] }>(`/api/cierres/${cierreId}/reabrir`, {
-      method: "POST",
-      body: JSON.stringify({ motivo }),
-    }),
-  getFacturaCierre: (cierreId: number) => request<ClientInvoicePreview>(`/api/cierres/${cierreId}/factura`),
-  createFacturaCierre: (cierreId: number, body: { numeroFactura?: string | null; timbrado?: string | null; fechaEmision?: string; diasVencimiento?: number }) =>
-    request<{ id: number; numeroFactura: string }>(`/api/cierres/${cierreId}/factura`, { method: "POST", body: JSON.stringify(body) }),
-  getCostDashboard: (projectId: number, desde: string | null, hasta: string) =>
-    request<CostDashboardData>(`/api/projects/${projectId}/dashboard?${desde ? `desde=${desde}&` : ""}hasta=${hasta}`),
-  getItemDrill: (projectId: number, itemId: number, desde: string, hasta: string) =>
-    request<ItemDrillData>(`/api/projects/${projectId}/dashboard/items/${itemId}?desde=${desde}&hasta=${hasta}`),
   getConciliacion: (projectId: number, desde: string, hasta: string) =>
     request<ReconciliationData>(`/api/projects/${projectId}/conciliacion?desde=${desde}&hasta=${hasta}`),
   imputarFactura: (invoiceId: number, items: { id: number; insumoId: number; budgetItemId: number | null }[]) =>
     request<{ invoice: any; avisos: string[] }>(`/api/invoices/${invoiceId}/imputar`, { method: "POST", body: JSON.stringify({ items }) }),
-  getCierre: (id: number) => request<{ id: number; desde: string; hasta: string; notas: string | null; snapshot: any }>(`/api/cierres/${id}`),
-  previewCierre: (projectId: number, body: { desde: string; hasta: string }) =>
-    request<{ blockers: string[]; avisos: string[]; report: ProgressReport }>(`/api/projects/${projectId}/cierres/preview`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  closePeriodo: (projectId: number, body: { desde: string; hasta: string; notas?: string }) =>
-    request<{ id: number; desde: string; hasta: string }>(`/api/projects/${projectId}/cierres`, { method: "POST", body: JSON.stringify(body) }),
   // Motor de costos
-  getCostos: (projectId: number, desde: string, hasta: string, oficial?: boolean) =>
-    request<CostEngineData>(`/api/projects/${projectId}/costos?desde=${desde}&hasta=${hasta}${oficial === undefined ? "" : `&oficial=${oficial}`}`),
+  congelarPresupuesto: (projectId: number) => request<{ items: number }>(`/api/projects/${projectId}/presupuesto/congelar`, { method: "POST" }),
+  getAdendas: (projectId: number) => request<AdendasData>(`/api/projects/${projectId}/adendas`),
+  createAdenda: (projectId: number, body: AdendaInput) =>
+    request<AdendaRow>(`/api/projects/${projectId}/adendas`, { method: "POST", body: JSON.stringify(body) }),
+  updateAdenda: (id: number, body: AdendaInput) => request<AdendaRow>(`/api/adendas/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteAdenda: (id: number) => request<{ deleted: boolean }>(`/api/adendas/${id}`, { method: "DELETE" }),
+  aprobarAdenda: (id: number) => request<AdendaRow>(`/api/adendas/${id}/aprobar`, { method: "POST" }),
+  anularAdenda: (id: number) => request<AdendaRow>(`/api/adendas/${id}/anular`, { method: "POST" }),
+  getPrevistoEjecutado: (projectId: number, al?: string) =>
+    request<PrevistoEjecutadoData>(`/api/projects/${projectId}/previsto-ejecutado${al ? `?al=${al}` : ""}`),
   getPartesEquipo: (projectId: number, desde: string, hasta: string) =>
     request<ParteEquipoRow[]>(`/api/projects/${projectId}/partes-equipo?desde=${desde}&hasta=${hasta}`),
   savePartesEquipo: (

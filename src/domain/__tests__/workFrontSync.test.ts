@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Prisma } from "@prisma/client";
-import { areaFrontName, nextAuxiliaryCode, syncWorkFrontsFromAreas } from "../workFrontSync";
+import { areaFrontName, nextAuxiliaryCode, syncWorkFrontsFromAreas } from "../../ecms/domain/workFrontSync";
 
 interface Area {
   id: number;

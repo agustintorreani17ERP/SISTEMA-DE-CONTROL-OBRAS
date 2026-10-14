@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { precioVigente } from "../prices";
+import { precioVigente } from "../../core/domain/prices";
 
 const prices = [
   { validFrom: new Date("2026-06-01T00:00:00Z"), price: 120 },

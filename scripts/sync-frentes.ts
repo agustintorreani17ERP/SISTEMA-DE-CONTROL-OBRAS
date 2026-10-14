@@ -9,7 +9,7 @@
  * y volvé a iniciarlo después, si no el servidor pisa lo que se guardó.
  */
 import { prisma } from "../src/lib/prisma";
-import { syncWorkFrontsFromAreas } from "../src/domain/workFrontSync";
+import { syncWorkFrontsFromAreas } from "../src/ecms/domain/workFrontSync";
 
 async function main() {
   const projects = await prisma.project.findMany({ select: { id: true, name: true }, orderBy: { id: "asc" } });

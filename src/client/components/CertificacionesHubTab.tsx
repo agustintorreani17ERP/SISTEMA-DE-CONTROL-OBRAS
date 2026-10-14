@@ -36,7 +36,7 @@ import { api } from "../api";
 import { formatMoney, parseFlexibleNumber, formatQuantity } from "../utils/format";
 import { ExcelBudgetImporter } from "./ExcelBudgetImporter";
 import { SubcontractorsScheduleTab } from "./SubcontractorsScheduleTab";
-import { RubrosExtrasTab } from "./RubrosExtrasTab";
+import { AdendasPanel } from "../adendas/AdendasPanel";
 
 export interface Certificacion {
   id: number;
@@ -1584,8 +1584,8 @@ export const CertificacionesHubTab: React.FC<CertificacionesHubTabProps> = ({
       )}
 
       {/* VIEW: RUBROS EXTRAS & ADENDAS */}
-      {subView === "adendas-extras" && (
-        <RubrosExtrasTab
+      {subView === "adendas-extras" && project && (
+        <AdendasPanel
           project={project}
           budgetItems={localBudgetItems}
           currency={currency}

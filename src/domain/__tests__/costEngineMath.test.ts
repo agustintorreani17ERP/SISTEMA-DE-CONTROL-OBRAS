@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AcuComp, computeCostEngine, EngineInput, EngineInsumo, LedgerLine, teoricoPorInsumo } from "../costEngineMath";
+import { AcuComp, computeCostEngine, EngineInput, EngineInsumo, LedgerLine, teoricoPorInsumo } from "../../ecms/domain/costEngineMath";
 
 /**
  * Mes 3 del Excel docs/Control_Costo_Venta_Ejecutado_CTN.xlsx.

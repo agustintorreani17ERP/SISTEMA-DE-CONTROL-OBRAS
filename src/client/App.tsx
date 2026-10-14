@@ -12,7 +12,6 @@ import { CreateProjectModal } from "./components/CreateProjectModal";
 import { ToastContainer, ToastMessage } from "./components/Toast";
 import { PortfolioPage } from "./pages/PortfolioPage";
 import { OverviewPage } from "./pages/OverviewPage";
-import { DashboardHome } from "./dashboard/DashboardHome";
 import { ConfigPage } from "./pages/ConfigPage";
 import { StockPage } from "./pages/StockPage";
 import { CertificadosPage, CertificadosIntent } from "./certificados/CertificadosPage";
@@ -35,7 +34,6 @@ import {
 } from "./types";
 import { api } from "./api";
 import { cx } from "./ui";
-import { CierreBanner } from "./costos/CierreBanner";
 import { cacheGetJson, cacheSetJson, flushOutbox } from "./offline/outbox";
 
 type FinanzasSubTab = "facturas" | "auditoria-match" | "cuentas-pagar" | "cuentas-cobrar" | "caja-chica";
@@ -345,8 +343,6 @@ export function App() {
             </div>
           )}
 
-          {project && <CierreBanner projectId={project.id} refreshKey={refreshKey} />}
-
           {!project && (
             <PortfolioPage
               currency={currency}
@@ -360,22 +356,16 @@ export function App() {
           )}
 
           {project && activeTab === "dashboard" && (
-            <DashboardHome
+            <OverviewPage
               project={project}
+              currency={currency}
+              onNavigate={navigateFromOverview}
+              onImportBudget={() => {
+                setActiveTab("centro-costos");
+                setOpenImporterTrigger(true);
+              }}
+              refreshKey={refreshKey}
               showToast={showToast}
-              overview={
-                <OverviewPage
-                  project={project}
-                  currency={currency}
-                  onNavigate={navigateFromOverview}
-                  onImportBudget={() => {
-                    setActiveTab("centro-costos");
-                    setOpenImporterTrigger(true);
-                  }}
-                  refreshKey={refreshKey}
-                  showToast={showToast}
-                />
-              }
             />
           )}
 

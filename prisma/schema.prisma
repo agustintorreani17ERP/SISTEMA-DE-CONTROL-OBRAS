@@ -180,11 +180,14 @@ model Project {
   ivaPct                 Decimal            @default(10) @db.Decimal(5, 2)
   /// Qué hacer si los subcontratistas certifican más que la medición oficial acumulada.
   controlMedicionSub     ControlMedicionSub @default(AVISAR)
+  /// Momento en que el presupuesto original quedó congelado (contractQuantity/contractAmount). Desde ahí solo cambia por adendas.
+  presupuestoCongeladoAt DateTime?
   createdAt              DateTime           @default(now())
   updatedAt              DateTime           @updatedAt
 
   budgetItems                BudgetItem[]
   budgetImports              BudgetImport[]
+  adendas                    Adenda[]
   budgetMovements            BudgetMovement[]
   laborPrices                LaborPrice[]
   subPlanillaLineas          SubPlanillaLinea[]
@@ -196,10 +199,6 @@ model Project {
   warehouseStock             WarehouseStock[]
   stockMovements             StockMovement[]
   stockTransfersIn           StockMovement[]             @relation("StockTransferCounterpart")
-  avances                    AvanceItem[]
-  avancesPlan                AvancePlanificado[]
-  cierres                    CierrePeriodo[]
-  reaperturas                CierreReapertura[]
   partesEquipo               ParteEquipo[]
   partesDiarios              ParteDiario[]
   horasPersonal              ParteHoraPersonal[]
@@ -265,6 +264,14 @@ model BudgetItem {
   sourceRow      Int?
   budgetImportId Int?
 
+  /// Presupuesto original congelado (contrato). totalQuantity y originalAmount son la cantidad y el monto VIGENTES
+  /// (contrato ± adendas aprobadas): son caché de `contractQuantity + Σ AdendaLinea.deltaQuantity`.
+  contractQuantity Decimal @default(0) @db.Decimal(18, 4)
+  contractAmount   Decimal @default(0) @db.Decimal(18, 2)
+  /// Ítem creado por una adenda (no estaba en el contrato original: contractQuantity 0).
+  isExtra          Boolean @default(false)
+  origenAdendaId   Int?
+
   // Caché del libro mayor (BudgetMovement). No se editan a mano.
   costCommittedAmount Decimal @default(0) @db.Decimal(18, 2)
   costActualAmount    Decimal @default(0) @db.Decimal(18, 2)
@@ -290,14 +297,13 @@ model BudgetItem {
   liquidaciones      LiquidacionPersonal[]
   componentes        ComponenteItem[]
   stockMovements     StockMovement[]
-  avances            AvanceItem[]
-  avancesPlan        AvancePlanificado[]
   partesEquipo       ParteEquipo[]
   horasPersonal      ParteHoraPersonal[]
   viajesCamion       ViajeCamion[]
   facturaItems       InvoiceItem[]
   lineasAsiento      LineaAsiento[]
   workFront          WorkFront?
+  adendaLineas       AdendaLinea[]
 
   @@unique([projectId, path])
   @@index([projectId])
@@ -345,8 +351,6 @@ model BudgetMovement {
   sourceNumber   String?
   /// Fecha del hecho (OC, recepción, transferencia…). createdAt es solo la hora de registro.
   fecha          DateTime             @default(now()) @db.Date
-  /// Fecha real del documento cuando llegó tarde (período cerrado) y se contabilizó en `fecha`, el primer día abierto.
-  fechaDocumento DateTime?            @db.Date
   reversalOfId   Int?
   overBudget     Boolean              @default(false)
   note           String?
@@ -737,8 +741,6 @@ model StockMovement {
   /// Con signo: entradas positivas, salidas negativas.
   quantity             Decimal           @db.Decimal(18, 4)
   fecha                DateTime          @default(now()) @db.Date
-  /// Fecha real del documento (recepción tardía) cuando `fecha` se movió al primer día abierto.
-  fechaDocumento       DateTime?         @db.Date
   /// Ítem de destino (salida directa).
   budgetItemId         Int?
   /// Otra obra de una transferencia.
@@ -830,9 +832,6 @@ model Invoice {
   certificationId Int?
   certification   Certification? @relation(fields: [certificationId], references: [id], onDelete: SetNull)
 
-  /// Factura al cliente generada desde un cierre oficial (una por cierre).
-  cierreId Int?           @unique
-  cierre   CierrePeriodo? @relation(fields: [cierreId], references: [id], onDelete: Restrict)
 
   items            InvoiceItem[]
   payments         Payment[]
@@ -1153,10 +1152,6 @@ model SubPlanillaLinea {
   budgetItemId Int?
   numero       String
   correlativo  Int
-  /// Unidades de avance del ítem por unidad medida en la línea.
-  factorAvance Decimal  @default(1) @db.Decimal(18, 6)
-  /// false = tarea complementaria: cuesta, pero no suma avance al ítem.
-  aportaAvance Boolean  @default(true)
   createdAt    DateTime @default(now())
 
   project    Project             @relation(fields: [projectId], references: [id], onDelete: Restrict)
@@ -1383,92 +1378,6 @@ model RRHHConfig {
 // ═══════════════════════════════════════════════════════════════════════════
 // AVANCE FECHADO Y CIERRES OFICIALES
 // ═══════════════════════════════════════════════════════════════════════════
-
-/// PARTE_DIARIO = provisorio. MEDICION_OFICIAL = cantidad del período medida oficialmente; al
-/// llegar, reemplaza a los partes con fecha hasta la suya.
-enum AvanceOrigen {
-  PARTE_DIARIO
-  MEDICION_OFICIAL
-}
-
-/// Hecho de avance físico: cantidad ejecutada de un ítem con fecha. Nunca se guardan acumulados.
-model AvanceItem {
-  id           Int          @id @default(autoincrement())
-  projectId    Int
-  budgetItemId Int
-  fecha        DateTime     @db.Date
-  cantidad     Decimal      @db.Decimal(18, 4)
-  origen       AvanceOrigen
-  /// Documento que lo generó (medición oficial = Certification al cliente).
-  sourceType   String?
-  sourceId     Int?
-  nota         String?
-  createdBy    String?
-  createdAt    DateTime     @default(now())
-
-  project    Project    @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  budgetItem BudgetItem @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
-
-  @@index([projectId, fecha])
-  @@index([budgetItemId, fecha])
-  @@index([sourceType, sourceId])
-}
-
-/// Cantidad planificada de un ítem para el período que termina en `fecha` (cronograma).
-model AvancePlanificado {
-  id           Int      @id @default(autoincrement())
-  projectId    Int
-  budgetItemId Int
-  fecha        DateTime @db.Date
-  cantidad     Decimal  @db.Decimal(18, 4)
-  createdAt    DateTime @default(now())
-
-  project    Project    @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  budgetItem BudgetItem @relation(fields: [budgetItemId], references: [id], onDelete: Cascade)
-
-  @@unique([budgetItemId, fecha])
-  @@index([projectId, fecha])
-}
-
-/// Cierre oficial: congela [desde, hasta]. Lo que tenga fecha dentro del rango ya no se edita.
-/// snapshot guarda el avance oficial (y luego el costo) tal como quedó al cerrar.
-model CierrePeriodo {
-  id        Int      @id @default(autoincrement())
-  projectId Int
-  desde     DateTime @db.Date
-  hasta     DateTime @db.Date
-  snapshot  Json
-  notas     String?
-  createdBy String?
-  createdAt DateTime @default(now())
-
-  project Project  @relation(fields: [projectId], references: [id], onDelete: Restrict)
-  factura Invoice?
-
-  @@index([projectId, hasta])
-}
-
-/// Cierre oficial reabierto: copia del cierre (con su snapshot) antes de borrarlo. Solo se reabre el último.
-model CierreReapertura {
-  id               Int      @id @default(autoincrement())
-  projectId        Int
-  cierreIdOriginal Int
-  desde            DateTime @db.Date
-  hasta            DateTime @db.Date
-  snapshot         Json
-  notas            String?
-  cerradoPor       String?
-  cerradoEl        DateTime
-  /// Factura al cliente que tenía el cierre (queda vigente, desvinculada del cierre).
-  facturaId        Int?
-  motivo           String
-  reabiertoPor     String?
-  createdAt        DateTime @default(now())
-
-  project Project @relation(fields: [projectId], references: [id], onDelete: Restrict)
-
-  @@index([projectId, hasta])
-}
 
 /// Horas de un equipo (insumo TIEMPO) en la obra, del parte diario. Sin ítem: se prorratea.
 /// Son la llave de reparto de los costos por tiempo (vía C), no un costo en sí.
@@ -1763,4 +1672,62 @@ model PagoSolicitudFondo {
 
   @@index([solicitudId])
   @@index([grupoPagoId])
+}
+
+enum AdendaEstado {
+  BORRADOR
+  APROBADA
+  ANULADA
+}
+
+enum AdendaLineaTipo {
+  VARIACION
+  EXTRA
+}
+
+/// Adenda al contrato: cambia CANTIDADES del presupuesto (los precios unitarios no cambian) o suma ítems extra.
+/// La cantidad vigente de un ítem = contractQuantity + Σ deltaQuantity de líneas de adendas APROBADAS.
+model Adenda {
+  id         Int          @id @default(autoincrement())
+  projectId  Int
+  /// Correlativo por obra.
+  numero     Int
+  titulo     String
+  motivo     String?
+  resolucion String?
+  fecha      DateTime     @db.Date
+  estado     AdendaEstado @default(BORRADOR)
+  approvedAt DateTime?
+  createdBy  String?
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  project Project       @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  lineas  AdendaLinea[]
+
+  @@unique([projectId, numero])
+  @@index([projectId, estado])
+}
+
+model AdendaLinea {
+  id            Int             @id @default(autoincrement())
+  adendaId      Int
+  tipo          AdendaLineaTipo @default(VARIACION)
+  /// VARIACION: ítem existente. EXTRA: se completa al aprobar, con el ítem creado.
+  budgetItemId  Int?
+  /// Con signo: positivo amplía, negativo deduce. En EXTRA es la cantidad inicial del ítem.
+  deltaQuantity Decimal         @db.Decimal(18, 4)
+  nota          String?
+  // Datos del ítem nuevo (solo EXTRA)
+  codigo         String?
+  nombre         String?
+  unidad         String?
+  parentId       Int?
+  precioUnitario Decimal?       @db.Decimal(18, 4)
+
+  adenda     Adenda      @relation(fields: [adendaId], references: [id], onDelete: Cascade)
+  budgetItem BudgetItem? @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+
+  @@index([adendaId])
+  @@index([budgetItemId])
 }

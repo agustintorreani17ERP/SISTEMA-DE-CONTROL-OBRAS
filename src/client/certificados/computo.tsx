@@ -1,7 +1,7 @@
 import React, { useRef } from "react";
 import { Camera, ImagePlus, Plus, X } from "lucide-react";
 import { Button, cx, inputClass } from "../ui";
-import { auxFormula, auxSubtotal, measuredQuantity } from "../../modules/certifications/certMath";
+import { auxFormula, auxSubtotal, measuredQuantity } from "../../ecms/modules/certifications/certMath";
 import { formatQty } from "../utils/numbers";
 
 /** Línea del cómputo auxiliar de una medición (piezas × largo × ancho × alto). */

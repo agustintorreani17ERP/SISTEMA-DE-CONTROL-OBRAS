@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { analizarCombustible } from "../fuelMath";
+import { analizarCombustible } from "../../ecms/domain/fuelMath";
 
 const eq = { id: 1, consumoLh: 12, toleranciaPct: 10 };
 

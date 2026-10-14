@@ -362,7 +362,6 @@ export function MeasurementWizard({ project, partners, subcontracts, currency, i
                       <td className="px-3 py-2">{lp?.description}</td>
                       <td className={cx("px-3 py-2", !it && "text-red-600")}>
                         {it ? `${it.code} · ${it.name}` : "Sin asignar"}
-                        {!r.aportaAvance && <span className="block text-xs">Complementaria: sin avance</span>}
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums">{formatQty(nro?.anterior ?? 0)}</td>
                       <td className="px-3 py-2 text-right font-medium tabular-nums">{formatQty(q)}</td>

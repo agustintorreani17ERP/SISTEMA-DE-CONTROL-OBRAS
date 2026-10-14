@@ -11,7 +11,6 @@ import {
   Search,
   Settings,
   SlidersHorizontal,
-  TrendingUp,
   Users,
   X,
 } from "lucide-react";
@@ -19,7 +18,7 @@ import { api } from "../api";
 import { BudgetItem, BudgetMovement, BudgetMovementSource, CostControlData, CostNode, Project, PurchaseOrder } from "../types";
 import { formatMoney, parseFlexibleNumber } from "../utils/format";
 import { ExcelBudgetImporter } from "./ExcelBudgetImporter";
-import { RubrosExtrasTab } from "./RubrosExtrasTab";
+import { AdendasPanel } from "../adendas/AdendasPanel";
 import { BudgetItemSelect } from "./BudgetItemSelect";
 import { LaborPricesPanel } from "./LaborPricesPanel";
 import { BackButton, Button, EmptyState, Modal, Page, PageHeader, SectionNav } from "../ui";
@@ -28,8 +27,7 @@ import { CostSheet } from "../costos/CostSheet";
 import { buildSheetRows } from "../costos/sheetModel";
 import { exportCostSheet } from "../costos/exportCostSheet";
 import { AcuPanel } from "../costos/AcuPanel";
-import { AvancePanel } from "../costos/AvancePanel";
-import { CostoRealPanel } from "../costos/CostoRealPanel";
+import { PrevistoEjecutadoPanel } from "../previsto/PrevistoEjecutadoPanel";
 import { CostParamsBar } from "../costos/CostParamsBar";
 
 import { formatPct, formatQty } from "../utils/numbers";
@@ -45,7 +43,7 @@ interface CentroCostosTabProps {
   laborImportNonce?: number;
 }
 
-type SubTab = "control" | "acu" | "avance" | "costo-real" | "mano-obra" | "adendas" | "importer";
+type SubTab = "control" | "acu" | "previsto-ejecutado" | "mano-obra" | "adendas" | "importer";
 
 export const SOURCE_LABEL: Record<BudgetMovementSource, string> = {
   PURCHASE_ORDER: "Órdenes de compra",
@@ -226,14 +224,13 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
               title: "Costos",
               items: [
                 { value: "acu", label: "ACU", description: "Análisis de costo unitario por ítem", icon: <Calculator className="h-5 w-5" />, badge: data?.kpis.itemsConAcu },
-                { value: "costo-real", label: "Costo real", description: "Costo incurrido por ítem en el rango", icon: <Scale className="h-5 w-5" /> },
+                { value: "previsto-ejecutado", label: "Previsto vs ejecutado", description: "Cantidades contractuales, adendas, reales y ejecutadas", icon: <Scale className="h-5 w-5" /> },
                 { value: "mano-obra", label: "Precios de mano de obra", description: "Lista de precios de subcontratistas", icon: <Users className="h-5 w-5" /> },
               ],
             },
             {
-              title: "Avance",
+              title: "Obra",
               items: [
-                { value: "avance", label: "Avance y cierres", description: "Mediciones y cierres oficiales del período", icon: <TrendingUp className="h-5 w-5" /> },
                 { value: "adendas", label: "Adendas y extras", description: "Rubros y partidas fuera del presupuesto base", icon: <FileText className="h-5 w-5" /> },
               ],
             },
@@ -397,15 +394,14 @@ export const CentroCostosTab: React.FC<CentroCostosTabProps> = ({
         />
       )}
 
-      {subTab === "avance" && project && <AvancePanel project={project} onChanged={load} showToast={showToast} />}
-      {subTab === "costo-real" && project && <CostoRealPanel project={project} showToast={showToast} />}
+      {subTab === "previsto-ejecutado" && project && <PrevistoEjecutadoPanel project={project} showToast={showToast} />}
 
       {subTab === "mano-obra" && project && (
         <LaborPricesPanel project={project} currency={currency} showToast={showToast} openImport={laborImportNonce} />
       )}
 
-      {subTab === "adendas" && (
-        <RubrosExtrasTab project={project} budgetItems={budgetItems} currency={currency} onRefresh={onRefresh} showToast={showToast} />
+      {subTab === "adendas" && project && (
+        <AdendasPanel project={project} budgetItems={budgetItems} currency={currency} onRefresh={onRefresh} showToast={showToast} />
       )}
 
       {subTab === "importer" && (
