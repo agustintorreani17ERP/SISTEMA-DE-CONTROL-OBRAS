@@ -372,7 +372,11 @@ export interface MaterialRequest {
 
 export interface PurchaseOrderDetail {
   id: number;
-  materialId: number;
+  /** null en renglones de un pedido del Taller (repuesto en texto libre). */
+  materialId: number | null;
+  descripcion?: string | null;
+  requisicionLineaId?: number | null;
+  requisicionLinea?: { unidad: string | null; nroParte?: string | null; maquinaCodigo?: string | null } | null;
   budgetItemId: number | null;
   tipo?: InsumoTipo;
   quantity: string | number;
@@ -386,9 +390,12 @@ export interface PurchaseOrderDetail {
 export interface PurchaseOrder {
   id: number;
   number: string;
-  projectId: number;
+  /** null en una OC de un pedido del Taller sin obra. */
+  projectId: number | null;
   partnerId: number;
   materialRequestId?: number | null;
+  requisicionId?: number | null;
+  requisicion?: { id: number; sistemaOrigen: "ECMS" | "TALLER"; numeroOrigen: string; maquinaTexto: string | null; obraTexto: string | null } | null;
   fecha?: string;
   issueDate?: string | null;
   receivedDate?: string | null;
@@ -1358,7 +1365,9 @@ export type OrigenSolicitudFondo = "CERT_SUBCONTRATISTA" | "ANTICIPO" | "FACTURA
 export interface SolicitudFondo {
   id: number;
   projectId: number;
+  anio: number;
   numero: number;
+  sistemaOrigen: string;
   origen: OrigenSolicitudFondo;
   sourceType: string;
   sourceId: number;
@@ -1429,5 +1438,108 @@ export interface AnticipoOtorgado {
   saldoAplicado: number;
   saldoPendiente: number;
   anuladoAt?: string | null;
-  solicitud: { id: number; numero: number; estado: EstadoSolicitudFondo; montoPagado: number } | null;
+  solicitud: { id: number; anio: number; numero: number; estado: EstadoSolicitudFondo; montoPagado: number } | null;
+}
+
+// ─── Notas de envío (ERP, ECMS y Taller) ─────────────────────────────────────
+
+export type NotaEnvioEstado = "ENVIADA" | "RECIBIDA" | "ANULADA";
+export type NotaEnvioLugar = "OFICINA" | "OBRA" | "TALLER";
+export type NotaEnvioContenido = "DOCUMENTOS" | "MATERIALES";
+export type NotaEnvioLineaTipo = "PEDIDO" | "OC" | "RECEPCION" | "SF" | "CERTIFICADO" | "FACTURA" | "REMITO" | "MATERIAL" | "MANUAL";
+export type SistemaApp = "ERP" | "ECMS";
+
+export interface NotaEnvioLinea {
+  id: number;
+  position: number;
+  kind: NotaEnvioLineaTipo;
+  descripcion: string;
+  cantidad: number | null;
+  unidad: string | null;
+  vigente: boolean;
+}
+
+export interface NotaEnvio {
+  id: number;
+  anio: number;
+  numero: number;
+  /** "N/AAAA": el correlativo único de la empresa. */
+  etiqueta: string;
+  fecha: string;
+  sistemaOrigen: "ERP" | "ECMS" | "TALLER";
+  recibeSistema: "ERP" | "ECMS" | "TALLER";
+  origenTipo: NotaEnvioLugar;
+  origenProject: { id: number; code: string; name: string } | null;
+  destinoTipo: NotaEnvioLugar;
+  destinoProject: { id: number; code: string; name: string } | null;
+  contenido: NotaEnvioContenido;
+  chofer: string | null;
+  observaciones: string | null;
+  estado: NotaEnvioEstado;
+  recibidoFecha: string | null;
+  recibidoPor: string | null;
+  anuladoMotivo: string | null;
+  creadoPor: string;
+  lineas: NotaEnvioLinea[];
+}
+
+export interface NotaEnvioInput {
+  sistema: SistemaApp;
+  fecha: string;
+  origenTipo: NotaEnvioLugar;
+  origenProjectId?: number | null;
+  destinoTipo: NotaEnvioLugar;
+  destinoProjectId?: number | null;
+  contenido: NotaEnvioContenido;
+  chofer?: string | null;
+  observaciones?: string | null;
+  lineas: {
+    kind: NotaEnvioLineaTipo;
+    materialRequestId?: number | null;
+    purchaseOrderId?: number | null;
+    solicitudFondoId?: number | null;
+    certificationId?: number | null;
+    invoiceId?: number | null;
+    descripcion?: string | null;
+    cantidad?: number | null;
+    unidad?: string | null;
+  }[];
+}
+
+// ─── Bandeja de pedidos del ERP ─────────────────────────────────────────────
+
+export type RequisicionEstado = "RECIBIDA" | "EN_COMPRA" | "COMPRADA_PARCIAL" | "COMPRADA" | "RECHAZADA" | "ANULADA";
+
+export interface RequisicionLinea {
+  id: number;
+  position: number;
+  descripcion: string;
+  unidad: string | null;
+  cantidad: number;
+  pedida: number;
+  recibida: number;
+  pendiente: number;
+  materialId: number | null;
+  budgetItemId: number | null;
+  materialRequestDetailId: number | null;
+  nroParte: string | null;
+  maquinaCodigo: string | null;
+  rubro: string | null;
+}
+
+export interface Requisicion {
+  id: number;
+  sistemaOrigen: "ECMS" | "TALLER";
+  numeroOrigen: string;
+  fecha: string;
+  projectId: number | null;
+  project: { id: number; code: string; name: string } | null;
+  obraTexto: string | null;
+  maquinaTexto: string | null;
+  compraCentral: boolean;
+  estado: RequisicionEstado;
+  observaciones: string | null;
+  materialRequestId: number | null;
+  lineas: RequisicionLinea[];
+  purchaseOrders: { id: number; number: string; status: PurchaseOrder["status"] }[];
 }

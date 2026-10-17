@@ -5,3 +5,4 @@
 export { EVENTO, postAsientoDesdeRegla } from "../erp/domain/contabilidad";
 export { evaluateMatch } from "../erp/domain/threeWayMatch";
 export { solicitudDesdeCertificacion, solicitudDesdeCertificadoSubcontrato, anularSolicitudPorOrigen } from "../erp/domain/fondos";
+export { crearRequisicionDesdePedido } from "../erp/domain/requisiciones";

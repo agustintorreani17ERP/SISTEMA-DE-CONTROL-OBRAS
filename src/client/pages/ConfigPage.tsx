@@ -1,35 +1,31 @@
-import React, { useState } from "react";
+import React from "react";
 import { Material, Partner } from "../types";
-import { Page, PageHeader, Tabs } from "../ui";
+import { Page, PageHeader } from "../ui";
+import { APPS, type AppId } from "../apps";
 import { InsumosPage } from "../insumos/InsumosPage";
 import { SuppliersListTab } from "../components/SuppliersListTab";
 
 interface ConfigPageProps {
+  app: AppId;
   materials: Material[];
   partners: Partner[];
   onRefresh: () => void;
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
 }
 
-/** Catálogos que se usan en todas las obras: insumos y proveedores / subcontratistas. */
-export const ConfigPage: React.FC<ConfigPageProps> = ({ materials, partners, onRefresh, showToast }) => {
-  const [tab, setTab] = useState<"insumos" | "proveedores">("insumos");
+/**
+ * Catálogo que se edita en cada app y se usa en todas las obras: los insumos se editan en el ERP
+ * (el ECMS solo los usa); los proveedores y subcontratistas, en el ECMS.
+ */
+export const ConfigPage: React.FC<ConfigPageProps> = ({ app, materials, partners, onRefresh, showToast }) => {
+  const insumos = APPS[app].catalogo === "insumos";
   return (
     <Page>
-      <PageHeader title="Configuración" help="Catálogos compartidos por todas las obras." />
-      <Tabs
-        value={tab}
-        onChange={setTab}
-        items={[
-          { value: "insumos", label: "Insumos", count: materials.length },
-          { value: "proveedores", label: "Proveedores y subcontratistas", count: partners.length },
-        ]}
+      <PageHeader
+        title={insumos ? "Insumos" : "Proveedores y subcontratistas"}
+        help={insumos ? `Catálogo de insumos compartido por todas las obras (${materials.length}).` : `Proveedores y subcontratistas compartidos por todas las obras (${partners.length}).`}
       />
-      {tab === "insumos" ? (
-        <InsumosPage showToast={showToast} />
-      ) : (
-        <SuppliersListTab partners={partners} onRefresh={onRefresh} showToast={showToast} />
-      )}
+      {insumos ? <InsumosPage showToast={showToast} /> : <SuppliersListTab partners={partners} onRefresh={onRefresh} showToast={showToast} />}
     </Page>
   );
 };

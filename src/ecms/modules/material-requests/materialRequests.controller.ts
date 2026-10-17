@@ -9,6 +9,7 @@ import { assertDocTransition, assertMutableDocument } from "../../../core/domain
 import { audit, nextNumber } from "../../../core/domain/audit";
 import { toDecimal } from "../../../lib/money";
 import { resolveLineItem } from "../../domain/imputation";
+import { crearRequisicionDesdePedido } from "../../../bridge/finance";
 import { toDay } from "../../../core/domain/prices";
 
 export const materialRequestsRouter = Router();
@@ -138,6 +139,8 @@ materialRequestsRouter.post(
         fromStatus: request.status,
         toStatus: next.status,
       });
+      // El pedido aprobado llega a la bandeja del ERP, que lo convierte en orden de compra
+      await crearRequisicionDesdePedido(tx, id);
       return next;
     });
     ok(res, updated);

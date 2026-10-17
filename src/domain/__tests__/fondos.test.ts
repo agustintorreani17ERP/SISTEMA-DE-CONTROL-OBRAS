@@ -37,6 +37,8 @@ const REL: Record<string, Record<string, { table: string; fk: string; many?: boo
 function matches(row: Row, where: Row = {}): boolean {
   return Object.entries(where).every(([k, v]) => {
     if (k === "sourceType_sourceId") return row.sourceType === v.sourceType && row.sourceId === v.sourceId;
+    if (k === "tipo_anio") return row.tipo === v.tipo && row.anio === v.anio;
+    if (k === "tipo_sistema_externalId") return row.tipo === v.tipo && row.sistema === v.sistema && row.externalId === v.externalId;
     if (v && typeof v === "object" && "in" in v) return v.in.includes(row[k]);
     return row[k] === v;
   });
@@ -88,6 +90,16 @@ function fakeDb(seed: Record<string, Row[]> = {}) {
       applyData(row, data);
       return row;
     },
+    upsert: async ({ where, create, update }: Row) => {
+      const row = t(name).find((r) => matches(r, where));
+      if (row) {
+        applyData(row, update);
+        return row;
+      }
+      const nuevo: Row = { id: (ids[name] = (ids[name] ?? 0) + 1), ...create };
+      t(name).push(nuevo);
+      return nuevo;
+    },
     aggregate: async ({ where, _max }: Row) => {
       const rows = t(name).filter((r) => matches(r, where));
       const max: Row = {};
@@ -113,6 +125,8 @@ function fakeDb(seed: Record<string, Row[]> = {}) {
     "movimientoCuentaFinanciera",
     "reglaAsientoContable",
     "asiento",
+    "secuenciaDocumento",
+    "numeroAsignado",
   ];
   const tx = Object.fromEntries(names.map((n) => [n, model(n)])) as any;
   return { tx, tables, t };

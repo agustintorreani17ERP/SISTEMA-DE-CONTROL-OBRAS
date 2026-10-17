@@ -14,6 +14,7 @@ import {
   Users,
 } from "lucide-react";
 import { Project, User } from "../types";
+import { APPS, type ActiveTab, type AppId } from "../apps";
 import {
   Sidebar as SidebarRoot,
   SidebarContent,
@@ -29,21 +30,7 @@ import {
   useSidebar,
 } from "../ui/sidebar";
 
-export type ActiveTab =
-  | "dashboard"
-  | "centro-costos"
-  | "ejecucion-certificaciones"
-  | "suministros"
-  | "stock"
-  | "partes-diarios"
-  | "contabilidad-finanzas"
-  | "rrhh"
-  | "configuracion"
-  // Alias heredados
-  | "certificaciones"
-  | "subcontratistas";
-
-export type SuministrosSubTab = "pedidos" | "compras" | "stock" | "materiales" | "proveedores";
+export type { ActiveTab, SuministrosSubTab } from "../apps";
 
 export interface SidebarBadges {
   compras?: number;
@@ -51,6 +38,7 @@ export interface SidebarBadges {
 }
 
 interface SidebarProps {
+  app: AppId;
   activeTab: ActiveTab;
   onNavigate: (tab: ActiveTab) => void;
   onGoPortfolio: () => void;
@@ -60,17 +48,6 @@ interface SidebarProps {
   badges?: SidebarBadges;
 }
 
-const PROJECT_MENU: { id: ActiveTab; label: string; icon: React.ElementType; badge?: keyof SidebarBadges }[] = [
-  { id: "dashboard", label: "Resumen", icon: LayoutDashboard },
-  { id: "centro-costos", label: "Centro de Costos", icon: Calculator },
-  { id: "suministros", label: "Compras", icon: ShoppingCart, badge: "compras" },
-  { id: "stock", label: "Stock", icon: Package },
-  { id: "ejecucion-certificaciones", label: "Certificados", icon: ClipboardCheck, badge: "certificados" },
-  { id: "contabilidad-finanzas", label: "Finanzas", icon: Wallet },
-  { id: "partes-diarios", label: "Campo", icon: HardHat },
-  { id: "rrhh", label: "RRHH", icon: Users },
-];
-
 const isActive = (active: ActiveTab, id: ActiveTab) =>
   active === id ||
   (id === "centro-costos" && active === "certificaciones") ||
@@ -78,6 +55,7 @@ const isActive = (active: ActiveTab, id: ActiveTab) =>
 
 /** Menú lateral (shadcn Sidebar): Inicio (cartera) y, dentro de la obra, sus módulos. */
 export const Sidebar: React.FC<SidebarProps> = ({
+  app,
   activeTab,
   onNavigate,
   onGoPortfolio,
@@ -86,10 +64,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onLogout,
   badges = {},
 }) => {
+  const configLabel = APPS[app].catalogo === "insumos" ? "Insumos" : "Proveedores";
   return (
     <SidebarRoot>
       <SidebarHeader>
-        <BrandMark />
+        <BrandMark app={app} />
       </SidebarHeader>
 
       <SidebarContent>
@@ -109,7 +88,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               {project.code} · {project.name}
             </SidebarGroupLabel>
             <SidebarMenu>
-              {PROJECT_MENU.map(({ id, label, icon, badge }) => (
+              {APPS[app].menu.map(({ id, label, icon, badge }) => (
                 <SidebarMenuItem key={id}>
                   <NavButton
                     icon={icon}
@@ -131,8 +110,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {project && (
           <SidebarMenu>
             <SidebarMenuItem>
-              <NavButton icon={Settings} isActive={activeTab === "configuracion"} tooltip="Configuración" onClick={() => onNavigate("configuracion")}>
-                Configuración
+              <NavButton icon={Settings} isActive={activeTab === "configuracion"} tooltip={configLabel} onClick={() => onNavigate("configuracion")}>
+                {configLabel}
               </NavButton>
             </SidebarMenuItem>
           </SidebarMenu>
@@ -158,7 +137,8 @@ function NavButton({ onClick, ...props }: React.ComponentProps<typeof SidebarMen
   );
 }
 
-function BrandMark() {
+function BrandMark({ app }: { app: AppId }) {
+  const def = APPS[app];
   const { state, isMobile } = useSidebar();
   const collapsed = state === "collapsed" && !isMobile;
   return (
@@ -168,8 +148,8 @@ function BrandMark() {
       </div>
       {!collapsed && (
         <div className="min-w-0 leading-tight">
-          <p className="truncate text-sm font-semibold text-slate-900">InfraTrack</p>
-          <p className="truncate text-[11px] text-slate-500">Control de obras</p>
+          <p className="truncate text-sm font-semibold text-slate-900">{def.name}</p>
+          <p className="truncate text-[11px] text-slate-500">{def.tagline}</p>
         </div>
       )}
     </>

@@ -8,6 +8,13 @@ export default defineConfig({
   build: {
     outDir: "dist-client",
     emptyOutDir: true,
+    // Dos apps (ERP y ECMS) sobre el mismo servidor: una página de entrada cada una
+    rollupOptions: {
+      input: {
+        erp: path.resolve(__dirname, "erp.html"),
+        ecms: path.resolve(__dirname, "ecms.html"),
+      },
+    },
   },
   resolve: {
     alias: {

@@ -229,7 +229,7 @@ fondosRouter.get(
       where: { projectId, tipo: "OTORGADO" },
       include: {
         partner: { select: { id: true, name: true } },
-        solicitudesFondo: { select: { id: true, numero: true, estado: true, montoPagado: true } },
+        solicitudesFondo: { select: { id: true, anio: true, numero: true, estado: true, montoPagado: true } },
       },
       orderBy: [{ fecha: "desc" }, { id: "desc" }],
     });

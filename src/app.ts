@@ -25,10 +25,14 @@ export function createApp() {
   // Serve static client assets
   const clientDistPath = path.resolve(__dirname, "../dist-client");
   if (fs.existsSync(clientDistPath)) {
-    app.use(express.static(clientDistPath));
+    // index: false: "/" no sirve un HTML suelto, redirige al ERP
+    app.use(express.static(clientDistPath, { index: false }));
+    app.get("/", (_req, res) => res.redirect("/erp"));
+    // Dos apps sobre el mismo servidor: /erp (oficina central) y /ecms (ingenieros en obra)
     app.use((req, res, next) => {
       if (req.method === "GET" && !req.path.startsWith("/api")) {
-        return res.sendFile(path.join(clientDistPath, "index.html"));
+        const page = req.path === "/ecms" || req.path.startsWith("/ecms/") ? "ecms.html" : "erp.html";
+        return res.sendFile(path.join(clientDistPath, page));
       }
       next();
     });

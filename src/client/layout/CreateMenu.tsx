@@ -12,22 +12,13 @@ import {
   Ruler,
   ShoppingCart,
   SlidersHorizontal,
+  Truck,
   Wallet,
 } from "lucide-react";
 import { cx } from "../ui";
+import { APPS, type AppId, type CreateActionId } from "../apps";
 
-export type CreateAction =
-  | "new-request"
-  | "new-order"
-  | "stock-out"
-  | "stock-adjust"
-  | "new-measurement"
-  | "new-contract"
-  | "new-invoice"
-  | "petty-expense"
-  | "import-budget"
-  | "labor-prices"
-  | "new-project";
+export type CreateAction = CreateActionId;
 
 interface ActionDef {
   id: CreateAction;
@@ -49,6 +40,7 @@ const ACTIONS: ActionDef[] = [
   { id: "petty-expense", label: "Gasto de caja chica", group: "Finanzas", icon: Wallet, keywords: "caja chica gasto fondo", needsProject: true },
   { id: "import-budget", label: "Importar presupuesto", group: "Centro de Costos", icon: FileSpreadsheet, keywords: "presupuesto excel importar", needsProject: true },
   { id: "labor-prices", label: "Precios de mano de obra", group: "Centro de Costos", icon: SlidersHorizontal, keywords: "mano obra precios subcontratista lista", needsProject: true },
+  { id: "new-note", label: "Nueva nota de envío", group: "Envíos", icon: Truck, keywords: "nota envio remito traslado documentos materiales", needsProject: false },
   { id: "new-project", label: "Nueva obra", group: "General", icon: Building2, keywords: "obra proyecto nuevo" },
 ];
 
@@ -56,7 +48,7 @@ const ACTIONS: ActionDef[] = [
  * Botón "+ Crear" del encabezado, paleta con atajo (N o Ctrl+K) y botón flotante en celular.
  * Cada opción abre directamente su formulario.
  */
-export function CreateMenu({ hasProject, onAction }: { hasProject: boolean; onAction: (action: CreateAction) => void }) {
+export function CreateMenu({ app, hasProject, onAction }: { app: AppId; hasProject: boolean; onAction: (action: CreateAction) => void }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -64,8 +56,8 @@ export function CreateMenu({ hasProject, onAction }: { hasProject: boolean; onAc
 
   const available = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return ACTIONS.filter((a) => (hasProject || !a.needsProject) && (!q || `${a.label} ${a.keywords}`.toLowerCase().includes(q)));
-  }, [query, hasProject]);
+    return ACTIONS.filter((a) => APPS[app].createActions.includes(a.id) && (hasProject || !a.needsProject) && (!q || `${a.label} ${a.keywords}`.toLowerCase().includes(q)));
+  }, [query, hasProject, app]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

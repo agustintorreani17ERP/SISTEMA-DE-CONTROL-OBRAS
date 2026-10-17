@@ -14,6 +14,8 @@ import { EVENTO, postAsientoDesdeRegla } from "../../domain/contabilidad";
 import { toDay } from "../../../core/domain/prices";
 import { toDecimal } from "../../../lib/money";
 import { recalculateProjectFinancials } from "../../../bridge/domain/projectFinancials";
+import { actualizarEstadoRequisicion, avisarOcEmitida, avisarPedidoTomado, avisarRecepcion } from "../../domain/requisiciones";
+import { validarRenglonesOC } from "../../domain/requisicionesMath";
 
 export const purchaseOrdersRouter = Router();
 
@@ -21,7 +23,8 @@ const poInclude = {
   partner: true,
   project: true,
   materialRequest: true,
-  details: { include: { material: true, budgetItem: true, requestDetail: true } },
+  requisicion: { select: { id: true, sistemaOrigen: true, numeroOrigen: true, maquinaTexto: true, obraTexto: true } },
+  details: { include: { material: true, budgetItem: true, requestDetail: true, requisicionLinea: true } },
 } satisfies Prisma.PurchaseOrderInclude;
 
 purchaseOrdersRouter.get(
@@ -38,6 +41,9 @@ purchaseOrdersRouter.get(
 );
 
 const dateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha AAAA-MM-DD");
+
+/** OC de un pedido del Taller: no tiene pedido de obra y su costo no entra al libro de ninguna obra. */
+const esDelTaller = (o: { materialRequestId: number | null; requisicionId: number | null }) => o.materialRequestId == null && o.requisicionId != null;
 
 const createSchema = z.object({
   materialRequestId: z.number().int(),
@@ -127,6 +133,13 @@ purchaseOrdersRouter.post(
           });
         }
 
+        // La OC del pedido de obra queda enlazada a su requisición de la bandeja
+        const requisicion = await tx.requisicion.findUnique({ where: { materialRequestId: request.id }, include: { lineas: true } });
+        for (const l of lines) {
+          (l as { requisicionLineaId?: number | null }).requisicionLineaId =
+            requisicion?.lineas.find((rl) => rl.materialRequestDetailId === l.requestDetailId)?.id ?? null;
+        }
+
         const number = await nextNumber(tx, "OC", () => tx.purchaseOrder.count());
         const order = await tx.purchaseOrder.create({
           data: {
@@ -134,6 +147,7 @@ purchaseOrdersRouter.post(
             projectId: request.projectId,
             partnerId: body.partnerId,
             materialRequestId: request.id,
+            requisicionId: requisicion?.id ?? null,
             fecha: toDay(body.fecha),
             expectedDate: body.expectedDate ? new Date(body.expectedDate) : undefined,
             totalAmount: total,
@@ -148,11 +162,105 @@ purchaseOrdersRouter.post(
           toStatus: DocumentStatus.BORRADOR,
           payload: { materialRequestId: request.id },
         });
+        if (order.requisicionId) await actualizarEstadoRequisicion(tx, order.requisicionId);
         return order;
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
     );
 
+    ok(res, created, 201);
+  })
+);
+
+// ─── OC desde un pedido del Taller (bandeja del ERP) ─────────────────────────
+
+const createTallerSchema = z.object({
+  requisicionId: z.number().int(),
+  partnerId: z.number().int(),
+  fecha: dateSchema,
+  expectedDate: z.string().datetime().optional(),
+  details: z
+    .array(
+      z.object({
+        requisicionLineaId: z.number().int(),
+        quantity: z.coerce.number().positive(),
+        unitPrice: z.coerce.number().min(0),
+      })
+    )
+    .min(1),
+});
+
+/**
+ * Crea la OC de un pedido del Taller. El repuesto se pide en texto libre (sin insumo del catálogo)
+ * y el costo no se imputa a ninguna obra: la OC no genera movimientos de presupuesto. El proveedor
+ * se elige a mano.
+ */
+purchaseOrdersRouter.post(
+  "/desde-requisicion",
+  asyncHandler(async (req, res) => {
+    const body = createTallerSchema.parse(req.body);
+    const created = await prisma.$transaction(
+      async (tx) => {
+        const requisicion = await tx.requisicion.findUnique({ where: { id: body.requisicionId }, include: { lineas: true } });
+        if (!requisicion) throw new NotFoundError("Requisición", body.requisicionId);
+        if (requisicion.sistemaOrigen !== "TALLER") {
+          throw new DomainError("USAR_PEDIDO_DE_OBRA", "Los pedidos de obra se compran desde su pedido (POST /compras con materialRequestId)", 422);
+        }
+        if (requisicion.estado === "RECHAZADA" || requisicion.estado === "ANULADA") {
+          throw new DomainError("REQUISICION_CERRADA", `El pedido está ${requisicion.estado.toLowerCase()}`, 409);
+        }
+        const partner = await tx.partner.findUnique({ where: { id: body.partnerId } });
+        if (!partner) throw new NotFoundError("Proveedor", body.partnerId);
+        if (partner.kind === "SUBCONTRACTOR") throw new DomainError("INVALID_PARTNER", "El partner debe ser proveedor o mixto");
+
+        // Lo que falta comprar de cada renglón: pedido menos lo que ya cubren las OC vigentes
+        const ya = await tx.purchaseOrderDetail.groupBy({
+          by: ["requisicionLineaId"],
+          where: { requisicionLineaId: { in: requisicion.lineas.map((l) => l.id) }, order: { status: { not: DocumentStatus.ANULADO } } },
+          _sum: { quantity: true },
+        });
+        const usado = new Map(ya.map((y) => [y.requisicionLineaId, Number(y._sum.quantity ?? 0)]));
+        const pendientes = new Map(requisicion.lineas.map((l) => [l.id, Number(l.cantidad) - (usado.get(l.id) ?? 0)]));
+        const problemas = validarRenglonesOC(body.details, pendientes);
+        if (problemas.length) throw new DomainError("OC_INVALIDA", problemas.join("; "), 422, problemas);
+
+        const lines = body.details.map((d) => {
+          const rl = requisicion.lineas.find((l) => l.id === d.requisicionLineaId)!;
+          const qty = toDecimal(d.quantity);
+          const unitPrice = toDecimal(d.unitPrice);
+          return {
+            requisicionLineaId: rl.id,
+            descripcion: rl.nroParte ? `${rl.descripcion} (parte ${rl.nroParte})` : rl.descripcion,
+            quantity: qty,
+            unitPrice,
+            subtotal: qty.times(unitPrice).toDecimalPlaces(2),
+          };
+        });
+        const total = lines.reduce((acc, l) => acc.plus(l.subtotal), toDecimal(0));
+        const primera = (await tx.purchaseOrder.count({ where: { requisicionId: requisicion.id, status: { not: DocumentStatus.ANULADO } } })) === 0;
+
+        const number = await nextNumber(tx, "OC", () => tx.purchaseOrder.count());
+        const order = await tx.purchaseOrder.create({
+          data: {
+            number,
+            projectId: requisicion.projectId,
+            partnerId: body.partnerId,
+            requisicionId: requisicion.id,
+            fecha: toDay(body.fecha),
+            expectedDate: body.expectedDate ? new Date(body.expectedDate) : undefined,
+            totalAmount: total,
+            details: { create: lines },
+          },
+          include: poInclude,
+        });
+        await audit(tx, { entity: "PurchaseOrder", entityId: order.id, action: "CREATE", toStatus: DocumentStatus.BORRADOR, payload: { requisicionId: requisicion.id } });
+        await actualizarEstadoRequisicion(tx, requisicion.id);
+        // El Taller deja de comprar este pedido apenas el ERP lo toma
+        if (primera) await avisarPedidoTomado(tx, requisicion.id, order.number);
+        return order;
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
     ok(res, created, 201);
   })
 );
@@ -194,10 +302,18 @@ purchaseOrdersRouter.post(
           include: { details: true, materialRequest: true },
         });
         if (!order) throw new NotFoundError("Orden de compra", id);
-        if (!order.materialRequestId) {
+        assertDocTransition(order.status, DocumentStatus.EMITIDA);
+        if (esDelTaller(order)) {
+          // Pedido del Taller: no compromete presupuesto de ninguna obra
+          const next = await tx.purchaseOrder.update({ where: { id }, data: { status: DocumentStatus.EMITIDA, issueDate: new Date() }, include: poInclude });
+          await audit(tx, { entity: "PurchaseOrder", entityId: id, action: "ISSUE", fromStatus: order.status, toStatus: next.status });
+          await actualizarEstadoRequisicion(tx, order.requisicionId!);
+          await avisarOcEmitida(tx, order.requisicionId!, order.number, order.fecha);
+          return { ...next, budgetWarnings: [] as BudgetWarning[] };
+        }
+        if (!order.materialRequestId || !order.projectId || !order.materialRequest) {
           throw new TraceabilityError("La OC no está vinculada a un Pedido de Material");
         }
-        assertDocTransition(order.status, DocumentStatus.EMITIDA);
 
         // DIRECTO (y TIEMPO con ítem) a su ítem; COMÚN y TIEMPO sin ítem al pozo "a distribuir".
         const lines = await ledgerLines(tx, order.projectId, order.details);
@@ -239,6 +355,7 @@ purchaseOrdersRouter.post(
           toStatus: next.status,
           payload: budgetWarnings.length ? { budgetWarnings: budgetWarnings.map((w) => w.message) } : undefined,
         });
+        if (order.requisicionId) await actualizarEstadoRequisicion(tx, order.requisicionId);
         return { ...next, budgetWarnings };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
@@ -271,8 +388,30 @@ purchaseOrdersRouter.post(
           throw new DomainError("RECEIPT_BEFORE_ORDER", "La recepción no puede ser anterior a la fecha de la OC", 422);
         }
 
+        if (esDelTaller(order)) {
+          // Pedido del Taller: no entra al stock ni al libro de una obra (el costo se define después)
+          const next = await tx.purchaseOrder.update({
+            where: { id },
+            data: { status: DocumentStatus.RECIBIDO, receivedDate: fecha, receiptNumber: body.remito || null },
+            include: poInclude,
+          });
+          await audit(tx, { entity: "PurchaseOrder", entityId: id, action: "RECEIVE", fromStatus: order.status, toStatus: next.status });
+          await actualizarEstadoRequisicion(tx, order.requisicionId!);
+          await avisarRecepcion(tx, order.requisicionId!, {
+            number: order.number,
+            receiptNumber: body.remito || null,
+            fecha,
+            detalles: order.details.map((d) => ({ requisicionLineaId: d.requisicionLineaId, quantity: d.quantity })),
+          });
+          return next;
+        }
+        if (!order.projectId || !order.materialRequestId) {
+          throw new TraceabilityError("La OC no está vinculada a un Pedido de Material");
+        }
+
         for (const d of order.details) {
           if (d.tipo === "TIEMPO") continue; // servicios y alquileres: no pasan por el depósito
+          if (d.materialId == null) throw new TraceabilityError("Un renglón de la OC no tiene insumo del catálogo");
           const base = {
             projectId: order.projectId,
             materialId: d.materialId,
@@ -333,6 +472,7 @@ purchaseOrdersRouter.post(
           where: { id: order.materialRequestId },
           data: { status: DocumentStatus.RECIBIDO },
         });
+        if (order.requisicionId) await actualizarEstadoRequisicion(tx, order.requisicionId);
         await recalculateProjectFinancials(tx, order.projectId);
         await audit(tx, {
           entity: "PurchaseOrder",
@@ -362,7 +502,7 @@ purchaseOrdersRouter.post(
         if (!order) throw new NotFoundError("Orden de compra", id);
         assertDocTransition(order.status, DocumentStatus.ANULADO);
 
-        if (order.status === DocumentStatus.EMITIDA) {
+        if (order.status === DocumentStatus.EMITIDA && order.projectId && !esDelTaller(order)) {
           await reverseMovements(tx, {
             sourceType: "PurchaseOrder",
             sourceId: order.id,
@@ -383,6 +523,7 @@ purchaseOrdersRouter.post(
           fromStatus: order.status,
           toStatus: next.status,
         });
+        if (order.requisicionId) await actualizarEstadoRequisicion(tx, order.requisicionId);
         return next;
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
@@ -420,6 +561,7 @@ purchaseOrdersRouter.delete(
         action: "DELETE",
         fromStatus: order.status,
       });
+      if (order.requisicionId) await actualizarEstadoRequisicion(tx, order.requisicionId);
     });
     ok(res, { deleted: true });
   })

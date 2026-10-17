@@ -11,12 +11,14 @@ interface StockPageProps {
   materials: Material[];
   workFronts: WorkFront[];
   intent?: { action: "out" | "adjust"; nonce: number } | null;
+  /** ERP: solo consulta. */
+  readOnly?: boolean;
   onRefresh: () => void;
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
 }
 
 /** Stock de materiales de la obra: existencias, salidas a obra y ajustes. */
-export function StockPage({ project, stock, movements, materials, workFronts, intent, onRefresh, showToast }: StockPageProps) {
+export function StockPage({ project, stock, movements, materials, workFronts, intent, readOnly, onRefresh, showToast }: StockPageProps) {
   const month = todayIso().slice(0, 7);
   const withStock = stock.filter((s) => Number(s.currentStock) > 0).length;
   const low = stock.filter((s) => Number(s.currentStock) <= 5).length;
@@ -37,6 +39,7 @@ export function StockPage({ project, stock, movements, materials, workFronts, in
         materials={materials}
         workFronts={workFronts}
         intent={intent}
+        readOnly={readOnly}
         onRefresh={onRefresh}
         showToast={showToast}
       />

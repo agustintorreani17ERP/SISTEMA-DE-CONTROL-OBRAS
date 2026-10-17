@@ -9,6 +9,10 @@ export const env = {
     .map((origin) => origin.trim())
     .filter(Boolean),
   databaseUrl: process.env.DATABASE_URL ?? "",
+  /** Clave de máquina con la que el Taller llama a /api/integracion (no es un rol de usuario). */
+  integracionTallerKey: process.env.INTEGRACION_TALLER_KEY ?? "",
+  /** URL base del Taller (p. ej. http://127.0.0.1:3101): a donde el ERP entrega sus avisos. */
+  tallerUrl: process.env.TALLER_URL ?? "",
 };
 
 if (!env.databaseUrl) {

@@ -176,7 +176,7 @@ const SolicitudesView: React.FC<{ project: Project; fixedProject?: boolean; show
       const aoa: (string | number)[][] = [
         ["N°", "Obra", "Proveedor", "RUC", "Origen", "Documento", "Concepto", "Bruto", "Fondo de reparo", "Retenciones", "Anticipo", "Neto", "Pagado", "Saldo", "Vencimiento", "Programada", "Estado", "Generada por", "Aprobada por", "Motivo rechazo"],
         ...all.rows.map((s) => [
-          s.numero,
+          `${s.numero}/${s.anio}`,
           s.project?.code ?? "",
           s.partner?.name ?? "",
           s.partner?.taxId ?? "",
@@ -330,7 +330,7 @@ const SolicitudesView: React.FC<{ project: Project; fixedProject?: boolean; show
               return (
                 <tr key={s.id} className="border-b border-slate-100 align-top">
                   <td className={td}>{pagable && <input type="checkbox" checked={seleccion.has(s.id)} onChange={() => toggle(s.id)} />}</td>
-                  <td className={td}>{s.numero}</td>
+                  <td className={td}>{s.numero}/{s.anio}</td>
                   {!fixedProject && !soloObra && <td className={td}>{s.project?.code}</td>}
                   <td className={td}>{s.partner?.name}</td>
                   <td className={td}>
@@ -367,7 +367,7 @@ const SolicitudesView: React.FC<{ project: Project; fixedProject?: boolean; show
                   </td>
                   <td className={`${td} space-x-2`}>
                     {s.estado === "PENDIENTE" && (
-                      <button className={linkBtn} onClick={() => accion(() => api.aprobarSolicitudFondo(s.id), `Solicitud N° ${s.numero} aprobada`)}>
+                      <button className={linkBtn} onClick={() => accion(() => api.aprobarSolicitudFondo(s.id), `Solicitud N° ${s.numero}/${s.anio} aprobada`)}>
                         Aprobar
                       </button>
                     )}
@@ -428,7 +428,7 @@ const SolicitudesView: React.FC<{ project: Project; fixedProject?: boolean; show
           onSave={(body) => {
             const s = programar;
             setProgramar(null);
-            accion(() => api.programarSolicitudFondo(s.id, body), `Solicitud N° ${s.numero} programada`);
+            accion(() => api.programarSolicitudFondo(s.id, body), `Solicitud N° ${s.numero}/${s.anio} programada`);
           }}
         />
       )}
@@ -439,7 +439,7 @@ const SolicitudesView: React.FC<{ project: Project; fixedProject?: boolean; show
           onSave={(motivo) => {
             const s = rechazar;
             setRechazar(null);
-            accion(() => api.rechazarSolicitudFondo(s.id, motivo), `Solicitud N° ${s.numero} rechazada`);
+            accion(() => api.rechazarSolicitudFondo(s.id, motivo), `Solicitud N° ${s.numero}/${s.anio} rechazada`);
           }}
         />
       )}
@@ -483,7 +483,7 @@ const PagarModal: React.FC<{
       const base = { cuentaFinancieraId: Number(cuentaId), fecha, metodo, referencia: referencia.trim() };
       if (unica) {
         await api.pagarSolicitudFondo(unica.id, { ...base, monto: Number(monto) });
-        onDone(`Pago registrado: solicitud N° ${unica.numero}`);
+        onDone(`Pago registrado: solicitud N° ${unica.numero}/${unica.anio}`);
       } else {
         const r = await api.pagarSolicitudesLote({ ...base, items: solicitudes.map((s) => ({ solicitudId: s.id })) });
         onDone(`Pago en lote: ${r.cantidad} solicitudes por ${formatGs(r.total)}`);
@@ -497,7 +497,7 @@ const PagarModal: React.FC<{
 
   return (
     <Modal
-      title={unica ? `Pagar solicitud N° ${unica.numero}` : `Pagar ${solicitudes.length} solicitudes`}
+      title={unica ? `Pagar solicitud N° ${unica.numero}/${unica.anio}` : `Pagar ${solicitudes.length} solicitudes`}
       onClose={onClose}
       footer={
         <>
@@ -561,7 +561,7 @@ const ProgramarModal: React.FC<{
   const [cuentaId, setCuentaId] = useState<number | "">(solicitud.cuentaFinancieraId ?? "");
   return (
     <Modal
-      title={`Programar solicitud N° ${solicitud.numero}`}
+      title={`Programar solicitud N° ${solicitud.numero}/${solicitud.anio}`}
       size="sm"
       onClose={onClose}
       footer={
@@ -594,7 +594,7 @@ const RechazarModal: React.FC<{ solicitud: SolicitudFondo; onClose: () => void; 
   const [motivo, setMotivo] = useState("");
   return (
     <Modal
-      title={`Rechazar solicitud N° ${solicitud.numero}`}
+      title={`Rechazar solicitud N° ${solicitud.numero}/${solicitud.anio}`}
       size="sm"
       onClose={onClose}
       footer={
@@ -723,7 +723,7 @@ const AnticiposView: React.FC<{ project: Project; showToast: Toast }> = ({ proje
                 <td className={num}>{formatGs(a.monto)}</td>
                 <td className={num}>{formatGs(a.saldoAplicado)}</td>
                 <td className={num}>{formatGs(a.saldoPendiente)}</td>
-                <td className={td}>{a.solicitud ? `N° ${a.solicitud.numero} · ${ESTADO_LABEL[a.solicitud.estado]}` : "—"}</td>
+                <td className={td}>{a.solicitud ? `N° ${a.solicitud.numero}/${a.solicitud.anio} · ${ESTADO_LABEL[a.solicitud.estado]}` : "—"}</td>
                 <td className={td}>
                   {a.anuladoAt ? (
                     "Anulado"

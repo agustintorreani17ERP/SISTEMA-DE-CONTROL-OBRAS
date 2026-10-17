@@ -1,6 +1,11 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { AlertCircle, RefreshCw } from "lucide-react";
 import { Sidebar, ActiveTab, SuministrosSubTab } from "./components/Sidebar";
+import { isReadOnlyTab, tabsOf, type AppId } from "./apps";
+import { PrevistoEjecutadoPanel } from "./previsto/PrevistoEjecutadoPanel";
+import { SolicitudesFondosPanel } from "./fondos/SolicitudesFondosPanel";
+import { NotasEnvioPage } from "./notas/NotasEnvioPage";
+import { Page, PageHeader } from "./ui";
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "./ui/sidebar";
 import { CentroCostosTab } from "./components/CentroCostosTab";
 import { SuministrosTab } from "./components/SuministrosTab";
@@ -38,7 +43,7 @@ import { cacheGetJson, cacheSetJson, flushOutbox } from "./offline/outbox";
 
 type FinanzasSubTab = "facturas" | "auditoria-match" | "cuentas-pagar" | "cuentas-cobrar" | "caja-chica";
 
-export function App() {
+export function App({ app = "ERP" }: { app?: AppId }) {
   const [activeTab, setActiveTab] = useState<ActiveTab>("dashboard");
   const [suministrosSubTab, setSuministrosSubTab] = useState<SuministrosSubTab | null>(null);
   const [finanzasSubTab, setFinanzasSubTab] = useState<FinanzasSubTab | null>(null);
@@ -54,6 +59,7 @@ export function App() {
   const [stockIntent, setStockIntent] = useState<{ action: "out" | "adjust"; nonce: number } | null>(null);
   const [certIntent, setCertIntent] = useState<CertificadosIntent>(null);
   const [laborImportNonce, setLaborImportNonce] = useState(0);
+  const [notaIntent, setNotaIntent] = useState<{ nonce: number } | null>(null);
 
   const [currentUser, setCurrentUser] = useState<User | null>(() => {
     try {
@@ -170,6 +176,8 @@ export function App() {
   };
 
   const navigate = (tab: ActiveTab) => {
+    // Las pestañas de la otra app no existen acá (p. ej. Finanzas desde un aviso del resumen)
+    if (!tabsOf(app).includes(tab)) return;
     setActiveTab(tab);
     setOpenImporterTrigger(false);
   };
@@ -199,6 +207,9 @@ export function App() {
       case "new-order":
         setComprasIntent({ action, nonce });
         return navigate("suministros");
+      case "new-note":
+        setNotaIntent({ nonce });
+        return navigate("notas-envio");
       case "stock-out":
       case "stock-adjust":
         setStockIntent({ action: action === "stock-out" ? "out" : "adjust", nonce });
@@ -283,6 +294,7 @@ export function App() {
   return (
     <SidebarProvider className="bg-slate-50 text-slate-900">
       <Sidebar
+        app={app}
         activeTab={activeTab}
         onNavigate={navigate}
         onGoPortfolio={goPortfolio}
@@ -310,7 +322,7 @@ export function App() {
             </select>
           )}
           <div className="ml-auto flex items-center gap-2">
-            <CreateMenu hasProject={!!project} onAction={handleCreate} />
+            <CreateMenu app={app} hasProject={!!project} onAction={handleCreate} />
             <div className="flex rounded-xl border border-slate-200 p-0.5 text-xs font-medium">
               {(["PYG", "USD"] as const).map((c) => (
                 <button
@@ -361,12 +373,19 @@ export function App() {
               currency={currency}
               onNavigate={navigateFromOverview}
               onImportBudget={() => {
-                setActiveTab("centro-costos");
+                navigate("centro-costos");
                 setOpenImporterTrigger(true);
               }}
               refreshKey={refreshKey}
               showToast={showToast}
             />
+          )}
+
+          {project && activeTab === "previsto" && (
+            <Page>
+              <PageHeader title="Previsto vs Ejecutado" help="Cantidades contractuales, adendas, reales y ejecutadas (certificados al cliente) por ítem." />
+              <PrevistoEjecutadoPanel project={project} showToast={showToast} />
+            </Page>
           )}
 
           {project && (activeTab === "centro-costos" || activeTab === "certificaciones") && (
@@ -390,6 +409,7 @@ export function App() {
               subcontracts={subcontracts}
               currency={currency}
               intent={certIntent}
+              readOnly={isReadOnlyTab(app, "ejecucion-certificaciones")}
               onRefresh={handleRefresh}
               showToast={showToast}
             />
@@ -397,6 +417,7 @@ export function App() {
 
           {project && activeTab === "suministros" && (
             <SuministrosTab
+              app={app}
               project={project}
               materialRequests={materialRequests}
               purchaseOrders={purchaseOrders}
@@ -425,9 +446,16 @@ export function App() {
               materials={materials}
               workFronts={workFronts}
               intent={stockIntent}
+              readOnly={isReadOnlyTab(app, "stock")}
               onRefresh={handleRefresh}
               showToast={showToast}
             />
+          )}
+
+          {project && activeTab === "solicitudes-fondos" && <SolicitudesFondosPanel project={project} showToast={showToast} />}
+
+          {project && activeTab === "notas-envio" && (
+            <NotasEnvioPage app={app} project={project} projects={projects} currentUser={currentUser} intent={notaIntent} showToast={showToast} />
           )}
 
           {project && activeTab === "partes-diarios" && (
@@ -455,6 +483,7 @@ export function App() {
 
           {project && activeTab === "configuracion" && (
             <ConfigPage
+              app={app}
               materials={materials}
               partners={partners}
               onRefresh={handleRefresh}

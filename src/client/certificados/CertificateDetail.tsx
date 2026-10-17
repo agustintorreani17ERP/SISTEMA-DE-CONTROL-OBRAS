@@ -16,13 +16,15 @@ interface CertificateDetailProps {
   currency: "PYG" | "USD";
   onClose: () => void;
   onChanged: () => void;
+  /** ERP: se consulta el certificado pero no se cierra, aprueba ni cambia el fondo de reparo. */
+  readOnly?: boolean;
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
 }
 
 const qty = (v: number) => formatQty(v);
 
 /** Certificado con el formato de la skill: Medición (N) + Cert (N), verificación final y exportación. */
-export function CertificateDetail({ certificationId, project, currency, onClose, onChanged, showToast }: CertificateDetailProps) {
+export function CertificateDetail({ certificationId, project, currency, onClose, onChanged, readOnly, showToast }: CertificateDetailProps) {
   const [data, setData] = useState<CertificateSummaryData | null>(null);
   const [retention, setRetention] = useState("");
   const [busy, setBusy] = useState(false);
@@ -259,12 +261,12 @@ ${pie("Total", money(s.periodAmount))}${pie(`Fondo de reparo ${s.retentionPct}%`
           <Button icon={<Download className="h-4 w-4" />} onClick={exportCsv}>
             CSV para ERP
           </Button>
-          {cert.estado === "MEDICION_BORRADOR" && (
+          {!readOnly && cert.estado === "MEDICION_BORRADOR" && (
             <Button variant="primary" disabled={busy} onClick={() => act(() => api.closeCertificationMeasurement(cert.id), "Borrador de certificado creado")}>
               Crear borrador de certificado
             </Button>
           )}
-          {cert.estado === "CERTIFICADO_BORRADOR" && (
+          {!readOnly && cert.estado === "CERTIFICADO_BORRADOR" && (
             <Button
               variant="primary"
               disabled={busy || checks.pendingReview > 0}
@@ -411,7 +413,7 @@ ${pie("Total", money(s.periodAmount))}${pie(`Fondo de reparo ${s.retentionPct}%`
           <div className="flex items-center justify-between gap-3 border-b border-slate-100 py-1.5">
             <dt className="text-slate-500">Fondo de reparo</dt>
             <dd className="flex items-center gap-2">
-              {editable ? (
+              {editable && !readOnly ? (
                 <>
                   <input type="number" min={0} max={30} step="0.5" value={retention} onChange={(e) => setRetention(e.target.value)} className={`${inputClass} w-20 py-1 text-right`} />
                   <span className="text-slate-500">%</span>

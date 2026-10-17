@@ -30,10 +30,15 @@ catalogsRouter.post(
       await prisma.budgetItem.deleteMany({});
       await prisma.budgetImport.deleteMany({});
       await prisma.certificacion.deleteMany({});
-      await prisma.materialRequestDetail.deleteMany({});
-      await prisma.materialRequest.deleteMany({});
+      // Las OC apuntan a la bandeja (Requisicion) y al pedido; las notas de envío, a las obras
       await prisma.purchaseOrderDetail.deleteMany({});
       await prisma.purchaseOrder.deleteMany({});
+      await prisma.notaEnvioLinea.deleteMany({});
+      await prisma.notaEnvio.deleteMany({});
+      await prisma.requisicionLinea.deleteMany({});
+      await prisma.requisicion.deleteMany({});
+      await prisma.materialRequestDetail.deleteMany({});
+      await prisma.materialRequest.deleteMany({});
       await prisma.subcontractorCertificate.deleteMany({});
       await prisma.subcontractorContract.deleteMany({});
       await prisma.warehouseStock.deleteMany({});

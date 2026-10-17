@@ -15,7 +15,8 @@
     "db:migrate": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
-    "test": "vitest run"
+    "test": "vitest run --exclude \"**/*.db.test.ts\" --exclude \"**/node_modules/**\"",
+    "test:db": "vitest run src/bridge/__tests__/integracion.db.test.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

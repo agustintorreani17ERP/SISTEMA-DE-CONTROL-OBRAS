@@ -8,7 +8,7 @@ import { ok } from "../../../http/respond";
 import { DomainError, NotFoundError } from "../../../errors/domain";
 import { moneyNumber } from "../../../lib/money";
 import { addPrice, today } from "../../../core/domain/prices";
-import { MO_CATEGORY_LABEL, parseMoList } from "../insumos/moImport";
+import { MO_CATEGORY_LABEL, parseMoList } from "./moImport";
 import { laborRowsFromParsed, moInsumoCode, planInsumoPrice } from "./laborImport";
 
 /**

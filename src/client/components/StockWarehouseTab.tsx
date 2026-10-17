@@ -20,6 +20,8 @@ interface StockWarehouseTabProps {
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
   /** Abre "Salida" o "Ajuste" desde el botón global Crear. */
   intent?: { action: "out" | "adjust"; nonce: number } | null;
+  /** Solo consulta (ERP): sin salidas, ajustes, transferencias, conteos ni borrados. */
+  readOnly?: boolean;
 }
 
 export const KIND_LABEL: Record<StockMovementKind, string> = {
@@ -36,7 +38,7 @@ export const KIND_LABEL: Record<StockMovementKind, string> = {
 type Dialog = "out" | "adjust" | "transfer" | "count" | null;
 type View = "stock" | "movimientos" | "conteos";
 
-export const StockWarehouseTab: React.FC<StockWarehouseTabProps> = ({ project, stock, movements, materials, workFronts, onRefresh, showToast, intent }) => {
+export const StockWarehouseTab: React.FC<StockWarehouseTabProps> = ({ project, stock, movements, materials, workFronts, onRefresh, showToast, intent, readOnly }) => {
   const [view, setView] = useState<View>("stock");
   const [dialog, setDialog] = useState<Dialog>(null);
   const [search, setSearch] = useState("");
@@ -46,7 +48,7 @@ export const StockWarehouseTab: React.FC<StockWarehouseTabProps> = ({ project, s
   const [conteos, setConteos] = useState<ConteoInventario[]>([]);
 
   useEffect(() => {
-    if (intent) setDialog(intent.action === "out" ? "out" : "adjust");
+    if (intent && !readOnly) setDialog(intent.action === "out" ? "out" : "adjust");
   }, [intent?.nonce]);
 
   useEffect(() => {
@@ -106,6 +108,7 @@ export const StockWarehouseTab: React.FC<StockWarehouseTabProps> = ({ project, s
             </select>
           </Field>
         )}
+        {!readOnly && (
         <div className="ml-auto flex flex-wrap gap-2">
           <Button icon={<ClipboardCheck className="h-4 w-4" />} onClick={() => setDialog("count")}>
             Conteo
@@ -120,6 +123,7 @@ export const StockWarehouseTab: React.FC<StockWarehouseTabProps> = ({ project, s
             Salida
           </Button>
         </div>
+        )}
       </div>
 
       {view === "stock" && (
@@ -255,7 +259,7 @@ export const StockWarehouseTab: React.FC<StockWarehouseTabProps> = ({ project, s
                       {c.nota}
                     </td>
                     <td className="px-1 text-center">
-                      <button
+                      {!readOnly && <button
                         className="p-1 text-slate-400 hover:text-slate-900"
                         title="Borrar conteo (se recalculan los ajustes)"
                         onClick={async () => {
@@ -270,7 +274,7 @@ export const StockWarehouseTab: React.FC<StockWarehouseTabProps> = ({ project, s
                         }}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      </button>}
                     </td>
                   </tr>
                 ))}

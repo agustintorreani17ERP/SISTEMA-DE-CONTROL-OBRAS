@@ -38,7 +38,7 @@ export function OrdersView({ project, orders, showProject, currency, onNew, onRe
     return orders.filter(
       (o) =>
         (filter === "ALL" || o.status === filter) &&
-        (!q || `${o.number} ${o.project?.name ?? ""} ${o.partner?.name ?? ""} ${o.materialRequest?.number ?? ""}`.toLowerCase().includes(q))
+        (!q || `${o.number} ${o.project?.name ?? ""} ${o.partner?.name ?? ""} ${o.materialRequest?.number ?? ""} ${o.requisicion?.numeroOrigen ?? ""} ${o.requisicion?.maquinaTexto ?? ""}`.toLowerCase().includes(q))
     );
   }, [orders, filter, search]);
 
@@ -170,9 +170,9 @@ export function OrdersView({ project, orders, showProject, currency, onNew, onRe
                         <p className="font-medium text-slate-900">{o.number}</p>
                         <p className="text-xs text-slate-500">{fmtDate(o.issueDate ?? o.createdAt)}</p>
                       </td>
-                      {showProject && <td className="px-3 py-3 text-slate-700">{o.project?.name ?? "—"}</td>}
+                      {showProject && <td className="px-3 py-3 text-slate-700">{o.project?.name ?? (o.requisicion?.sistemaOrigen === "TALLER" ? `Taller${o.requisicion.maquinaTexto ? ` · ${o.requisicion.maquinaTexto}` : ""}` : "—")}</td>}
                       <td className="px-3 py-3 text-slate-700">{o.partner?.name ?? "—"}</td>
-                      <td className="px-3 py-3 text-slate-500">{o.materialRequest?.number ?? "—"}</td>
+                      <td className="px-3 py-3 text-slate-500">{o.materialRequest?.number ?? (o.requisicion ? `${o.requisicion.sistemaOrigen === "TALLER" ? "Taller " : ""}${o.requisicion.numeroOrigen}` : "—")}</td>
                       <td className="px-3 py-3 text-right font-medium tabular-nums">{money(o.totalAmount)}</td>
                       <td className="px-3 py-3">
                         <StatusPill tone={st.tone}>{st.label}</StatusPill>
@@ -240,10 +240,16 @@ export function OrdersView({ project, orders, showProject, currency, onNew, onRe
             {(detail.details ?? []).map((d) => (
               <div key={d.id} className="flex justify-between gap-3 px-3 py-2.5 text-sm">
                 <div>
-                  <p className="text-slate-800">{d.material?.description}</p>
+                  <p className="text-slate-800">{d.material?.description ?? d.descripcion}</p>
                   <p className="text-xs text-slate-500">
-                    {fmtQty(d.quantity)} {d.material?.unit} × {money(d.unitPrice)} ·{" "}
-                    {d.budgetItem ? `${d.budgetItem.code} ${d.budgetItem.name}` : d.tipo === "TIEMPO" ? "Tiempo: a distribuir" : "Stock de obra"}
+                    {fmtQty(d.quantity)} {d.material?.unit ?? d.requisicionLinea?.unidad ?? ""} × {money(d.unitPrice)} ·{" "}
+                    {!d.material
+                      ? "Pedido del Taller: costo sin imputar a obra"
+                      : d.budgetItem
+                      ? `${d.budgetItem.code} ${d.budgetItem.name}`
+                      : d.tipo === "TIEMPO"
+                      ? "Tiempo: a distribuir"
+                      : "Stock de obra"}
                   </p>
                 </div>
                 <span className="shrink-0 tabular-nums">{money(d.subtotal)}</span>
@@ -312,15 +318,15 @@ export function OrdersView({ project, orders, showProject, currency, onNew, onRe
           number={printing.number}
           onClose={() => setPrinting(null)}
           meta={[
-            { label: "Obra", value: `${(printing.project ?? project).code} · ${(printing.project ?? project).name}` },
+            { label: printing.project || !printing.requisicion ? "Obra" : "Origen", value: printing.project ? `${printing.project.code} · ${printing.project.name}` : printing.requisicion ? `Pedido del Taller ${printing.requisicion.numeroOrigen}${printing.requisicion.maquinaTexto ? ` · ${printing.requisicion.maquinaTexto}` : ""}` : `${project.code} · ${project.name}` },
             { label: "Proveedor", value: `${printing.partner?.name ?? "—"}${printing.partner?.taxId ? ` (RUC ${printing.partner.taxId})` : ""}` },
-            { label: "Pedido", value: printing.materialRequest?.number ?? "—" },
+            { label: "Pedido", value: printing.materialRequest?.number ?? printing.requisicion?.numeroOrigen ?? "—" },
             { label: "Fecha", value: fmtDate(printing.fecha) },
             { label: "Entrega", value: fmtDate(printing.expectedDate) },
           ]}
           lines={(printing.details ?? []).map((d) => ({
             code: d.material?.code,
-            description: d.material?.description ?? "",
+            description: d.material?.description ?? d.descripcion ?? "",
             unit: d.material?.unit,
             quantity: fmtQty(d.quantity),
             unitPrice: money(d.unitPrice),

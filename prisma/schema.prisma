@@ -220,6 +220,9 @@ model Project {
   retencionesFondo           RetencionFondo[]
   configRetencionesAnticipos ConfigRetencionesAnticipos?
   solicitudesFondo           SolicitudFondo[]
+  notasEnvioOrigen           NotaEnvio[]                 @relation("NotaEnvioOrigen")
+  notasEnvioDestino          NotaEnvio[]                 @relation("NotaEnvioDestino")
+  requisiciones              Requisicion[]
 
   @@index([status])
 }
@@ -337,25 +340,25 @@ model BudgetImport {
 
 /// Libro mayor presupuestario: cada descuento es una fila; anular crea un reverso, nunca borra.
 model BudgetMovement {
-  id             Int                  @id @default(autoincrement())
-  projectId      Int
-  budgetItemId   Int
+  id           Int                  @id @default(autoincrement())
+  projectId    Int
+  budgetItemId Int
   /// Insumo del hecho (renglón de OC, gasto de caja chica, MO del subcontratista…), si se conoce.
-  insumoId       Int?
-  source         BudgetMovementSource
-  stage          BudgetMovementStage
-  amount         Decimal              @db.Decimal(18, 2)
-  quantity       Decimal?             @db.Decimal(18, 4)
-  sourceType     String
-  sourceId       Int
-  sourceNumber   String?
+  insumoId     Int?
+  source       BudgetMovementSource
+  stage        BudgetMovementStage
+  amount       Decimal              @db.Decimal(18, 2)
+  quantity     Decimal?             @db.Decimal(18, 4)
+  sourceType   String
+  sourceId     Int
+  sourceNumber String?
   /// Fecha del hecho (OC, recepción, transferencia…). createdAt es solo la hora de registro.
-  fecha          DateTime             @default(now()) @db.Date
-  reversalOfId   Int?
-  overBudget     Boolean              @default(false)
-  note           String?
-  createdBy      String?
-  createdAt      DateTime             @default(now())
+  fecha        DateTime             @default(now()) @db.Date
+  reversalOfId Int?
+  overBudget   Boolean              @default(false)
+  note         String?
+  createdBy    String?
+  createdAt    DateTime             @default(now())
 
   project     Project              @relation(fields: [projectId], references: [id], onDelete: Restrict)
   budgetItem  BudgetItem           @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
@@ -579,6 +582,7 @@ model MaterialRequest {
   requestedBy    Personnel?              @relation(fields: [requestedById], references: [id], onDelete: Restrict)
   details        MaterialRequestDetail[]
   purchaseOrders PurchaseOrder[]
+  requisicion    Requisicion?
 
   @@index([projectId, status])
 }
@@ -601,9 +605,13 @@ model MaterialRequestDetail {
 model PurchaseOrder {
   id                Int            @id @default(autoincrement())
   number            String         @unique
-  projectId         Int
+  /// Opcional solo para OC de un pedido del Taller (sin obra).
+  projectId         Int?
   partnerId         Int
-  materialRequestId Int
+  /// Pedido de obra (ECMS) del que sale la OC; null si sale de un pedido del Taller.
+  materialRequestId Int?
+  /// Requisición de la bandeja (ECMS o Taller) de la que sale la OC.
+  requisicionId     Int?
   status            DocumentStatus @default(BORRADOR)
   /// Fecha de la OC (obligatoria en la API). issueDate es cuándo se emitió en el sistema.
   fecha             DateTime       @default(now()) @db.Date
@@ -616,9 +624,10 @@ model PurchaseOrder {
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
 
-  project         Project               @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  project         Project?              @relation(fields: [projectId], references: [id], onDelete: Restrict)
   partner         Partner               @relation(fields: [partnerId], references: [id], onDelete: Restrict)
-  materialRequest MaterialRequest       @relation(fields: [materialRequestId], references: [id], onDelete: Restrict)
+  materialRequest MaterialRequest?      @relation(fields: [materialRequestId], references: [id], onDelete: Restrict)
+  requisicion     Requisicion?          @relation(fields: [requisicionId], references: [id], onDelete: Restrict)
   details         PurchaseOrderDetail[]
   invoices        Invoice[]
 
@@ -627,22 +636,28 @@ model PurchaseOrder {
 }
 
 model PurchaseOrderDetail {
-  id              Int        @id @default(autoincrement())
-  orderId         Int
-  materialId      Int
-  requestDetailId Int
+  id                 Int        @id @default(autoincrement())
+  orderId            Int
+  /// Opcional solo en renglones de un pedido del Taller (repuesto en texto libre).
+  materialId         Int?
+  requestDetailId    Int?
+  /// Renglón de la bandeja del que sale (ECMS o Taller).
+  requisicionLineaId Int?
+  /// Descripción del renglón cuando no hay insumo del catálogo (repuesto del Taller).
+  descripcion        String?
   /// Obligatorio solo si tipo = DIRECTO. COMUN va al stock; TIEMPO sin ítem va a "a distribuir".
-  budgetItemId    Int?
+  budgetItemId       Int?
   /// Tipo del insumo al crear la línea: define la imputación aunque luego cambie el catálogo.
-  tipo            InsumoTipo @default(DIRECTO)
-  quantity        Decimal    @db.Decimal(18, 4)
-  unitPrice       Decimal    @db.Decimal(18, 4)
-  subtotal        Decimal    @db.Decimal(18, 2)
+  tipo               InsumoTipo @default(DIRECTO)
+  quantity           Decimal    @db.Decimal(18, 4)
+  unitPrice          Decimal    @db.Decimal(18, 4)
+  subtotal           Decimal    @db.Decimal(18, 2)
 
-  order         PurchaseOrder         @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  material      Material              @relation(fields: [materialId], references: [id], onDelete: Restrict)
-  requestDetail MaterialRequestDetail @relation(fields: [requestDetailId], references: [id], onDelete: Restrict)
-  budgetItem    BudgetItem?           @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
+  order            PurchaseOrder          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  material         Material?              @relation(fields: [materialId], references: [id], onDelete: Restrict)
+  requestDetail    MaterialRequestDetail? @relation(fields: [requestDetailId], references: [id], onDelete: Restrict)
+  requisicionLinea RequisicionLinea?      @relation(fields: [requisicionLineaId], references: [id], onDelete: Restrict)
+  budgetItem       BudgetItem?            @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
 
   @@index([orderId])
   @@index([budgetItemId])
@@ -831,7 +846,6 @@ model Invoice {
 
   certificationId Int?
   certification   Certification? @relation(fields: [certificationId], references: [id], onDelete: SetNull)
-
 
   items            InvoiceItem[]
   payments         Payment[]
@@ -1611,8 +1625,11 @@ enum EstadoSolicitudFondo {
 model SolicitudFondo {
   id                   Int                  @id @default(autoincrement())
   projectId            Int
-  /// Correlativo por obra.
+  /// Correlativo único de la empresa por año (ver core/domain/numeracion.ts): "385/2026".
+  anio                 Int
   numero               Int
+  /// Sistema que la creó (ERP | ECMS). Las del Taller viven en el Taller.
+  sistemaOrigen        String               @default("ERP")
   origen               OrigenSolicitudFondo
   sourceType           String
   sourceId             Int
@@ -1644,7 +1661,7 @@ model SolicitudFondo {
   pagos            PagoSolicitudFondo[]
 
   @@unique([sourceType, sourceId])
-  @@unique([projectId, numero])
+  @@unique([anio, numero])
   @@index([projectId, estado])
   @@index([partnerId])
   @@index([fechaVencimiento])
@@ -1710,24 +1727,254 @@ model Adenda {
 }
 
 model AdendaLinea {
-  id            Int             @id @default(autoincrement())
-  adendaId      Int
-  tipo          AdendaLineaTipo @default(VARIACION)
+  id             Int             @id @default(autoincrement())
+  adendaId       Int
+  tipo           AdendaLineaTipo @default(VARIACION)
   /// VARIACION: ítem existente. EXTRA: se completa al aprobar, con el ítem creado.
-  budgetItemId  Int?
+  budgetItemId   Int?
   /// Con signo: positivo amplía, negativo deduce. En EXTRA es la cantidad inicial del ítem.
-  deltaQuantity Decimal         @db.Decimal(18, 4)
-  nota          String?
+  deltaQuantity  Decimal         @db.Decimal(18, 4)
+  nota           String?
   // Datos del ítem nuevo (solo EXTRA)
   codigo         String?
   nombre         String?
   unidad         String?
   parentId       Int?
-  precioUnitario Decimal?       @db.Decimal(18, 4)
+  precioUnitario Decimal?        @db.Decimal(18, 4)
 
   adenda     Adenda      @relation(fields: [adendaId], references: [id], onDelete: Cascade)
   budgetItem BudgetItem? @relation(fields: [budgetItemId], references: [id], onDelete: Restrict)
 
   @@index([adendaId])
   @@index([budgetItemId])
+}
+
+/// Numeración única de documentos compartidos entre ERP, ECMS y Taller (SF, NE): una secuencia
+/// por tipo y año. `siguiente` es el próximo número a entregar.
+model SecuenciaDocumento {
+  tipo      String
+  anio      Int
+  siguiente Int    @default(1)
+
+  @@id([tipo, anio])
+}
+
+/// Número entregado a un documento de un sistema. Único por (tipo, sistema, externalId): pedir dos
+/// veces el número del mismo documento devuelve el mismo (idempotente ante reintentos).
+model NumeroAsignado {
+  id         Int      @id @default(autoincrement())
+  tipo       String
+  anio       Int
+  numero     Int
+  sistema    String
+  externalId String
+  createdAt  DateTime @default(now())
+
+  @@unique([tipo, anio, numero])
+  @@unique([tipo, sistema, externalId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Notas de envío (ERP, ECMS y Taller): documentos o materiales que viajan entre oficina, obra y
+// taller. Solo documentan: no mueven stock. El número es el correlativo único "NE" del ERP.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum NotaEnvioEstado {
+  ENVIADA
+  RECIBIDA
+  ANULADA
+}
+
+enum NotaEnvioLugar {
+  OFICINA
+  OBRA
+  TALLER
+}
+
+enum NotaEnvioContenido {
+  DOCUMENTOS
+  MATERIALES
+}
+
+enum NotaEnvioLineaTipo {
+  PEDIDO
+  OC
+  RECEPCION
+  SF
+  CERTIFICADO
+  FACTURA
+  REMITO
+  MATERIAL
+  MANUAL
+}
+
+model NotaEnvio {
+  id               Int                @id @default(autoincrement())
+  anio             Int
+  numero           Int
+  fecha            DateTime           @db.Date
+  /// Sistema que la emitió: ERP | ECMS | TALLER. Con TALLER, externalId es su id allá.
+  sistemaOrigen    String
+  externalId       String?
+  origenTipo       NotaEnvioLugar
+  origenProjectId  Int?
+  destinoTipo      NotaEnvioLugar
+  destinoProjectId Int?
+  contenido        NotaEnvioContenido
+  chofer           String?
+  observaciones    String?
+  estado           NotaEnvioEstado    @default(ENVIADA)
+  recibidoFecha    DateTime?          @db.Date
+  recibidoPor      String?
+  anuladoMotivo    String?
+  creadoPor        String
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  origenProject  Project?         @relation("NotaEnvioOrigen", fields: [origenProjectId], references: [id], onDelete: Restrict)
+  destinoProject Project?         @relation("NotaEnvioDestino", fields: [destinoProjectId], references: [id], onDelete: Restrict)
+  lineas         NotaEnvioLinea[]
+
+  @@unique([anio, numero])
+  @@unique([sistemaOrigen, externalId])
+  @@index([estado])
+  @@index([destinoTipo, estado])
+  @@index([origenProjectId])
+  @@index([destinoProjectId])
+}
+
+/// Un documento (pedido, OC, SF…) solo puede estar en una nota vigente: índices únicos parciales en
+/// prisma/sql/2026-10-17_notas_envio.sql; `vigente` se apaga al anular la nota.
+model NotaEnvioLinea {
+  id                Int                @id @default(autoincrement())
+  notaId            Int
+  position          Int
+  kind              NotaEnvioLineaTipo
+  materialRequestId Int?
+  purchaseOrderId   Int?
+  solicitudFondoId  Int?
+  certificationId   Int?
+  invoiceId         Int?
+  materialId        Int?
+  descripcion       String
+  cantidad          Decimal?           @db.Decimal(18, 4)
+  unidad            String?
+  vigente           Boolean            @default(true)
+
+  nota NotaEnvio @relation(fields: [notaId], references: [id], onDelete: Cascade)
+
+  @@unique([notaId, position])
+  @@index([materialRequestId])
+  @@index([purchaseOrderId])
+  @@index([solicitudFondoId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bandeja de pedidos del ERP: los pedidos de materiales de obra (ECMS) y del Taller llegan
+// normalizados. El ERP los convierte en órdenes de compra.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum RequisicionEstado {
+  RECIBIDA
+  EN_COMPRA
+  COMPRADA_PARCIAL
+  COMPRADA
+  RECHAZADA
+  ANULADA
+}
+
+model Requisicion {
+  id                Int               @id @default(autoincrement())
+  /// ECMS | TALLER
+  sistemaOrigen     String
+  externalId        String
+  numeroOrigen      String
+  fecha             DateTime          @db.Date
+  projectId         Int?
+  obraTexto         String?
+  maquinaTexto      String?
+  /// Pedido del Taller marcado "compra central".
+  compraCentral     Boolean           @default(false)
+  estado            RequisicionEstado @default(RECIBIDA)
+  observaciones     String?
+  /// Pedido del ECMS del que nació (único: una requisición por pedido).
+  materialRequestId Int?              @unique
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  project         Project?           @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  materialRequest MaterialRequest?   @relation(fields: [materialRequestId], references: [id], onDelete: Cascade)
+  lineas          RequisicionLinea[]
+  purchaseOrders  PurchaseOrder[]
+
+  @@unique([sistemaOrigen, externalId])
+  @@index([estado])
+  @@index([projectId])
+}
+
+model RequisicionLinea {
+  id                      Int     @id @default(autoincrement())
+  requisicionId           Int
+  position                Int
+  descripcion             String
+  cantidad                Decimal @db.Decimal(18, 4)
+  unidad                  String?
+  materialId              Int?
+  // Origen ECMS
+  budgetItemId            Int?
+  materialRequestDetailId Int?    @unique
+  // Origen Taller
+  nroParte                String?
+  maquinaCodigo           String?
+  rubro                   String?
+  externalLineId          String?
+
+  requisicion     Requisicion           @relation(fields: [requisicionId], references: [id], onDelete: Cascade)
+  purchaseDetails PurchaseOrderDetail[]
+
+  @@unique([requisicionId, position])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Integración con el Taller
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Cola de avisos del ERP hacia otro sistema (outbox): se reintenta con espera creciente hasta que
+/// el destino responde. El aviso no se pierde si el destino está caído.
+model EventoSalida {
+  id             Int       @id @default(autoincrement())
+  destino        String
+  tipo           String
+  payload        Json
+  /// PENDIENTE | ENVIADO | FALLIDO (agotó los intentos)
+  estado         String    @default("PENDIENTE")
+  intentos       Int       @default(0)
+  proximoIntento DateTime  @default(now())
+  ultimoError    String?
+  createdAt      DateTime  @default(now())
+  enviadoAt      DateTime?
+
+  @@index([destino, estado, proximoIntento])
+}
+
+/// Copia, para la bandeja del ERP, de una solicitud de fondos que vive en el Taller. La fuente de
+/// verdad es el Taller: se actualiza cada vez que el Taller la envía.
+model SolicitudFondoTaller {
+  id            Int      @id @default(autoincrement())
+  externalId    String   @unique
+  anio          Int
+  numero        Int
+  fecha         DateTime @db.Date
+  proveedor     String
+  proveedorRuc  String?
+  monto         Decimal  @db.Decimal(18, 2)
+  moneda        String
+  concepto      String
+  maquinaCodigo String?
+  anulado       Boolean  @default(false)
+  updatedAt     DateTime @updatedAt
+  createdAt     DateTime @default(now())
+
+  @@unique([anio, numero])
+  @@index([fecha])
 }

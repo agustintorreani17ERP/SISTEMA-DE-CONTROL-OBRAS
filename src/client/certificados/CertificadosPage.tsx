@@ -20,6 +20,8 @@ interface CertificadosPageProps {
   subcontracts: SubcontractorContract[];
   currency: "PYG" | "USD";
   intent?: CertificadosIntent;
+  /** ERP: consulta de mediciones y certificados, sin crear, aprobar ni borrar. */
+  readOnly?: boolean;
   onRefresh: () => void;
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
 }
@@ -28,10 +30,11 @@ type Sub = "mediciones" | "certificados" | "contratos";
 type Destino = "ALL" | "OBRA" | "SUB";
 
 /** Certificados: 1. Mediciones → 2. Certificados (formato Medición N / Cert N) · Contratos de subcontratistas. */
-export function CertificadosPage({ project, budgetItems, partners, subcontracts, currency, intent, onRefresh, showToast }: CertificadosPageProps) {
+export function CertificadosPage({ project, budgetItems, partners, subcontracts, currency, intent, readOnly = false, onRefresh, showToast }: CertificadosPageProps) {
   const [sub, setSub] = useState<Sub>("mediciones");
   /** Mediciones y Certificados se ven como fichas por contratista o como lista. */
-  const [vista, setVista] = useState<"FICHAS" | "LISTA">("FICHAS");
+  const [vistaElegida, setVista] = useState<"FICHAS" | "LISTA">("FICHAS");
+  const vista = readOnly ? "LISTA" : vistaElegida;
   const [certs, setCerts] = useState<Certification[]>([]);
   const [wizard, setWizard] = useState(false);
   /** Contratista elegido desde su tarjeta: el asistente arranca con él (null = certificado al cliente). */
@@ -56,7 +59,7 @@ export function CertificadosPage({ project, budgetItems, partners, subcontracts,
   }, [load]);
 
   useEffect(() => {
-    if (!intent) return;
+    if (!intent || readOnly) return;
     if (intent.action === "new-measurement") {
       setSub("mediciones");
       setWizard(true);
@@ -97,6 +100,12 @@ export function CertificadosPage({ project, budgetItems, partners, subcontracts,
   };
 
   const nextAction = (c: Certification) => {
+    if (readOnly)
+      return (
+        <Button size="sm" variant="ghost" onClick={() => setDetailId(c.id)}>
+          Ver
+        </Button>
+      );
     if (c.estado === "MEDICION_BORRADOR")
       return (
         <Button size="sm" variant="primary" onClick={() => setDetailId(c.id)}>
@@ -116,7 +125,7 @@ export function CertificadosPage({ project, budgetItems, partners, subcontracts,
     );
   };
 
-  const newButton = (
+  const newButton = readOnly ? undefined : (
     <Button variant="primary" icon={<Plus className="h-4 w-4" />} onClick={() => setWizard(true)}>
       Nueva medición
     </Button>
@@ -124,18 +133,21 @@ export function CertificadosPage({ project, budgetItems, partners, subcontracts,
 
   return (
     <Page>
-      <PageHeader title="Certificados" help="Medí en obra, generá el certificado y aprobalo. Al aprobar se descuenta del presupuesto." />
+      <PageHeader
+        title="Certificados"
+        help={readOnly ? "Consulta de las mediciones y certificados de la obra. Se cargan y aprueban en el ECMS." : "Medí en obra, generá el certificado y aprobalo. Al aprobar se descuenta del presupuesto."}
+      />
       <Tabs
         value={sub}
         onChange={setSub}
         items={[
           { value: "mediciones", label: "1. Mediciones", count: measurements.length },
           { value: "certificados", label: "2. Certificados", count: certificates.filter((c) => c.estado === "CERTIFICADO_BORRADOR").length },
-          { value: "contratos", label: "Contratos de subcontratistas" },
+          ...(readOnly ? [] : [{ value: "contratos" as const, label: "Contratos de subcontratistas" }]),
         ]}
       />
 
-      {sub !== "contratos" && (
+      {sub !== "contratos" && !readOnly && (
         <div className="flex justify-end">
           <div className="inline-flex rounded-xl border border-slate-200 bg-white p-0.5 text-xs font-medium">
             {(
@@ -255,7 +267,7 @@ export function CertificadosPage({ project, budgetItems, partners, subcontracts,
                             <MoreMenu
                               items={[
                                 { label: "Ver detalle", icon: <Eye className="h-4 w-4" />, onClick: () => setDetailId(c.id) },
-                                ...(c.estado !== "APROBADO"
+                                ...(c.estado !== "APROBADO" && !readOnly
                                   ? [{ label: "Borrar", icon: <Trash2 className="h-4 w-4" />, danger: true, onClick: () => remove(c) }]
                                   : []),
                               ]}
@@ -272,7 +284,7 @@ export function CertificadosPage({ project, budgetItems, partners, subcontracts,
         </>
       )}
 
-      {wizard && (
+      {wizard && !readOnly && (
         <MeasurementWizard
           project={project}
           partners={partners}
@@ -301,6 +313,7 @@ export function CertificadosPage({ project, budgetItems, partners, subcontracts,
           currency={currency}
           onClose={() => setDetailId(null)}
           onChanged={afterChange}
+          readOnly={readOnly}
           showToast={showToast}
         />
       )}

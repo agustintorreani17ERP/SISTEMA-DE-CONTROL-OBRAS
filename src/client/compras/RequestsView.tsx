@@ -15,7 +15,8 @@ interface RequestsViewProps {
   /** Vista "todas las obras": agrega la columna Obra. */
   showProject?: boolean;
   onNew: () => void;
-  onCreateOrder: (request: MaterialRequest) => void;
+  /** Solo el ERP convierte pedidos en OC; en el ECMS no se pasa. */
+  onCreateOrder?: (request: MaterialRequest) => void;
   onRefresh: () => void;
   showToast: (msg: string, type?: "success" | "error" | "info") => void;
 }
@@ -61,7 +62,7 @@ export function RequestsView({ project, requests, showProject, onNew, onCreateOr
         </Button>
       );
     // La OC se arma dentro de la obra seleccionada
-    if (r.status === "APROBADO_PARA_COMPRA" && r.projectId === project.id)
+    if (onCreateOrder && r.status === "APROBADO_PARA_COMPRA" && r.projectId === project.id)
       return (
         <Button size="sm" variant="primary" onClick={() => onCreateOrder(r)}>
           Crear OC

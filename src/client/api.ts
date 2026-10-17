@@ -58,6 +58,11 @@ import {
   SolicitudesFondosPage,
   PagoSolicitudInput,
   AnticipoOtorgado,
+  NotaEnvio,
+  NotaEnvioInput,
+  Requisicion,
+  RequisicionEstado,
+  SistemaApp,
 } from "./types";
 import type {
   ArithmeticStrategy,
@@ -286,6 +291,21 @@ export const api = {
 
   // Purchase Orders
   getPurchaseOrders: () => request<PurchaseOrder[]>("/api/compras"),
+  // Bandeja de pedidos del ERP (pedidos de obra y del Taller)
+  getBandeja: (f: { origen?: "ECMS" | "TALLER"; estado?: RequisicionEstado; projectId?: number } = {}) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(f)) if (v !== undefined) qs.set(k, String(v));
+    return request<Requisicion[]>(`/api/bandeja?${qs}`);
+  },
+  rechazarRequisicion: (id: number, motivo: string) =>
+    request<Requisicion>(`/api/bandeja/${id}/rechazar`, { method: "POST", body: JSON.stringify({ motivo }) }),
+  /** OC de un pedido del Taller (los de obra se compran con createPurchaseOrder). */
+  createPurchaseOrderDesdeRequisicion: (body: {
+    requisicionId: number;
+    partnerId: number;
+    fecha: string;
+    details: { requisicionLineaId: number; quantity: number; unitPrice: number }[];
+  }) => request<PurchaseOrder>("/api/compras/desde-requisicion", { method: "POST", body: JSON.stringify(body) }),
   createPurchaseOrder: (body: {
     materialRequestId: number;
     partnerId: number;
@@ -1054,4 +1074,18 @@ export const api = {
   createAnticipoOtorgado: (body: { projectId: number; partnerId: number; monto: number; fecha: string; concepto?: string }) =>
     request<{ id: number; solicitudId: number | null }>("/api/fondos/anticipos", { method: "POST", body: JSON.stringify(body) }),
   anularAnticipo: (id: number) => request<{ id: number }>(`/api/fondos/anticipos/${id}/anular`, { method: "POST", body: "{}" }),
+
+  // Notas de envío (ERP, ECMS y Taller)
+  getNotasEnvio: (f: { sistema: SistemaApp; vista?: "emitidas" | "por-recibir" | "todas"; projectId?: number; estado?: string }) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(f)) if (v !== undefined && v !== "") qs.set(k, String(v));
+    return request<NotaEnvio[]>(`/api/notas-envio?${qs}`);
+  },
+  getNotaEnvioDocumentos: (kind: "PEDIDO" | "OC" | "SF" | "CERTIFICADO" | "FACTURA", projectId?: number) =>
+    request<{ id: number; label: string }[]>(`/api/notas-envio/documentos?kind=${kind}${projectId ? `&projectId=${projectId}` : ""}`),
+  createNotaEnvio: (body: NotaEnvioInput) => request<NotaEnvio>("/api/notas-envio", { method: "POST", body: JSON.stringify(body) }),
+  recibirNotaEnvio: (id: number, body: { sistema: SistemaApp; recibidoPor: string; fecha?: string }) =>
+    request<NotaEnvio>(`/api/notas-envio/${id}/recibir`, { method: "POST", body: JSON.stringify(body) }),
+  anularNotaEnvio: (id: number, body: { sistema: SistemaApp; motivo: string }) =>
+    request<NotaEnvio>(`/api/notas-envio/${id}/anular`, { method: "POST", body: JSON.stringify(body) }),
 };

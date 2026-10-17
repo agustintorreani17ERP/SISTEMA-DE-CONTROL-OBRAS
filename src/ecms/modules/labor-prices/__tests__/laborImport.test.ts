@@ -1,7 +1,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { describe, expect, it } from "vitest";
-import { parseMoList } from "../../insumos/moImport";
+import { parseMoList } from "../moImport";
 import { laborRowsFromParsed, moInsumoCode, planInsumoPrice } from "../laborImport";
 
 const csvPath = join(__dirname, "../../../../../docs/PRECIO_MANO_DE_OBRA.csv");

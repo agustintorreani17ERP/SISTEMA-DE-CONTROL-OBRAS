@@ -4,6 +4,7 @@ import { DomainError, NotFoundError } from "../../errors/domain";
 import { moneyNumber } from "../../lib/money";
 import { EVENTO, postAsiento } from "./contabilidad";
 import { localIso } from "../../core/domain/localDate";
+import { asignarNumero, type SistemaOrigen } from "../../core/domain/numeracion";
 import {
   calcularNeto,
   estadoTrasPago,
@@ -68,6 +69,8 @@ export interface SolicitudInput {
   descuentos?: Descuentos;
   fechaVencimiento: Date;
   creadoPor: string;
+  /** Sistema que la crea: certificados de subcontratista = ECMS; anticipo y factura = ERP. */
+  sistemaOrigen?: Extract<SistemaOrigen, "ERP" | "ECMS">;
 }
 
 /**
@@ -106,12 +109,21 @@ export async function upsertSolicitudFondo(tx: Tx, input: SolicitudInput) {
     return existing;
   }
 
-  const last = await tx.solicitudFondo.aggregate({ where: { projectId: input.projectId }, _max: { numero: true } });
+  const sistemaOrigen = input.sistemaOrigen ?? "ERP";
+  // Correlativo único de la empresa por año (compartido con el Taller): "385/2026".
+  const { anio, numero } = await asignarNumero(tx, {
+    tipo: "SF",
+    fecha: hoy(),
+    sistema: sistemaOrigen,
+    externalId: `${input.sourceType}:${input.sourceId}`,
+  });
   return tx.solicitudFondo.create({
     data: {
       ...data,
       projectId: input.projectId,
-      numero: (last._max.numero ?? 0) + 1,
+      anio,
+      numero,
+      sistemaOrigen,
       origen: input.origen,
       sourceType: input.sourceType,
       sourceId: input.sourceId,
@@ -149,6 +161,7 @@ export async function solicitudDesdeCertificacion(tx: Tx, certificationId: numbe
   return upsertSolicitudFondo(tx, {
     projectId: cert.projectId,
     origen: "CERT_SUBCONTRATISTA",
+    sistemaOrigen: "ECMS",
     sourceType: FONDO_SOURCE.CERTIFICATION,
     sourceId: cert.id,
     partnerId: cert.partnerId,
@@ -170,6 +183,7 @@ export async function solicitudDesdeCertificadoSubcontrato(tx: Tx, certId: numbe
   return upsertSolicitudFondo(tx, {
     projectId: cert.contract.projectId,
     origen: "CERT_SUBCONTRATISTA",
+    sistemaOrigen: "ECMS",
     sourceType: FONDO_SOURCE.SUB_CERT,
     sourceId: cert.id,
     partnerId: cert.contract.partnerId,

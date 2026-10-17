@@ -4,10 +4,13 @@
  * guardan: los datos sin conexión los maneja la cola del parte diario (IndexedDB).
  * Solo corre en https o localhost (los navegadores no registran service workers en http).
  */
-const CACHE = "infratrack-shell-v1";
+const CACHE = "infratrack-shell-v2";
+// Las dos apps (ERP y ECMS) se guardan por separado, cada una bajo su ruta
+const SHELLS = ["/erp", "/ecms"];
+const shellKey = (req) => (req.mode === "navigate" ? new URL(req.url).pathname.replace(/\/+$/, "").split("/").slice(0, 2).join("/") || "/erp" : req);
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.add("/")).then(() => self.skipWaiting()));
+  event.waitUntil(caches.open(CACHE).then((c) => Promise.all(SHELLS.map((s) => c.add(s).catch(() => undefined)))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (event) => {
@@ -30,10 +33,10 @@ self.addEventListener("fetch", (event) => {
       .then((res) => {
         if (res.ok) {
           const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put(req.mode === "navigate" ? "/" : req, copy));
+          caches.open(CACHE).then((c) => c.put(shellKey(req), copy));
         }
         return res;
       })
-      .catch(() => caches.match(req.mode === "navigate" ? "/" : req).then((r) => r || Response.error()))
+      .catch(() => caches.match(shellKey(req)).then((r) => r || Response.error()))
   );
 });

@@ -1,6 +1,6 @@
 import { moneyNumber } from "../../../lib/money";
 import { type PriceLike, precioVigente, toDay } from "../../../core/domain/prices";
-import { MO_CODE_PREFIX, type MoParseResult } from "../insumos/moImport";
+import { MO_CODE_PREFIX, type MoParseResult } from "./moImport";
 
 /**
  * Lista de precios de MO de la obra: catálogo (código, descripción, unidad, precio y sector).
